@@ -85,7 +85,7 @@ struct EmbyLibraryView: Identifiable, Decodable, Hashable {
     }
 }
 
-struct EmbyAudioItem: Identifiable, Decodable, Hashable {
+struct EmbyAudioItem: Identifiable, Codable, Hashable {
     let id: String
     let name: String
     let album: String?
@@ -171,7 +171,7 @@ struct EmbyAudioItem: Identifiable, Decodable, Hashable {
     }
 }
 
-struct EmbyUserData: Decodable, Hashable {
+struct EmbyUserData: Codable, Hashable {
     let playCount: Int?
     let lastPlayedDate: Date?
 
@@ -208,11 +208,15 @@ struct MusicArtist: Identifiable, Hashable {
     var representativeSong: EmbyAudioItem? { songs.first }
 }
 
-struct MusicPlaylist: Identifiable, Hashable {
+struct MusicPlaylist: Identifiable, Codable, Hashable {
     let id: String
     let name: String
     let description: String
     let songs: [EmbyAudioItem]
+
+    var totalDuration: TimeInterval {
+        songs.reduce(0) { $0 + $1.duration }
+    }
 }
 
 extension Array where Element == EmbyAudioItem {
@@ -292,6 +296,10 @@ private extension KeyedDecodingContainer {
     }
 
     func decodeEmbyDateIfPresent(forKey key: Key) -> Date? {
+        if let date = try? decodeIfPresent(Date.self, forKey: key) {
+            return date
+        }
+
         guard let rawValue = (try? decodeIfPresent(String.self, forKey: key)) ?? nil,
               !rawValue.isEmpty else {
             return nil
@@ -314,5 +322,20 @@ extension TimeInterval {
         guard isFinite, self > 0 else { return "--:--" }
         let totalSeconds = Int(self.rounded())
         return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
+    }
+
+    var playlistDurationText: String {
+        guard isFinite, self > 0 else { return "0分钟" }
+        let totalMinutes = max(1, Int((self / 60).rounded()))
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0, minutes > 0 {
+            return "\(hours)小时\(minutes)分钟"
+        }
+        if hours > 0 {
+            return "\(hours)小时"
+        }
+        return "\(minutes)分钟"
     }
 }

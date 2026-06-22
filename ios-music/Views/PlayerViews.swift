@@ -35,10 +35,10 @@ struct MiniPlayerView: View {
                 } else {
                     ZStack {
                         RoundedRectangle(cornerRadius: isInline ? 7 : 8, style: .continuous)
-                            .fill(.black.opacity(0.08))
+                            .fill(.primary.opacity(0.08))
                         Image(systemName: "music.note")
                             .font(.system(size: isInline ? 13 : 15, weight: .semibold))
-                            .foregroundStyle(.black.opacity(0.42))
+                            .foregroundStyle(.secondary)
                     }
                     .frame(width: artworkSize, height: artworkSize)
                 }
@@ -46,11 +46,11 @@ struct MiniPlayerView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song?.name ?? "暂无歌曲")
                         .font(.system(size: titleSize, weight: .semibold))
-                        .foregroundStyle(.black)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
-                    Text(song.map { $0.artistLine.isEmpty ? "暂无艺术家" : $0.artistLine } ?? "播放后会显示当前歌曲")
+                    Text(miniSubtitle(for: song))
                         .font(.system(size: subtitleSize))
-                        .foregroundStyle(.black.opacity(0.62))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 .minimumScaleFactor(0.82)
@@ -64,10 +64,18 @@ struct MiniPlayerView: View {
                         store.play(song: song, in: store.songs)
                     }
                 } label: {
-                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.title3)
-                        .frame(width: 36, height: 36)
-                        .foregroundStyle(.black.opacity(song == nil ? 0.35 : 1))
+                    ZStack {
+                        if player.currentSong != nil && (player.isBuffering || player.isSeeking) {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.primary)
+                        } else {
+                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                                .font(.title3)
+                                .foregroundStyle(.primary.opacity(song == nil ? 0.35 : 1))
+                        }
+                    }
+                    .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.plain)
                 .disabled(song == nil)
@@ -78,7 +86,7 @@ struct MiniPlayerView: View {
                     Image(systemName: "forward.fill")
                         .font(.title3)
                         .frame(width: 36, height: 36)
-                        .foregroundStyle(.black.opacity(player.currentSong == nil ? 0.35 : 1))
+                        .foregroundStyle(.primary.opacity(player.currentSong == nil ? 0.35 : 1))
                 }
                 .buttonStyle(.plain)
                 .disabled(player.currentSong == nil)
@@ -94,9 +102,9 @@ struct MiniPlayerView: View {
                 .opacity(progressOpacity)
                 .frame(height: 3)
         }
-        .background(Color.white.opacity(0.86), in: shape)
+        .background(Color.musicMiniPlayerBackground, in: shape)
         .overlay {
-            shape.strokeBorder(Color.white.opacity(0.72), lineWidth: 0.8)
+            shape.strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
         }
         .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
         .opacity(visibility)
@@ -105,6 +113,10 @@ struct MiniPlayerView: View {
         .allowsHitTesting(visibility > 0.95)
         .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0.05), value: visibility)
     }
+
+    private func miniSubtitle(for song: EmbyAudioItem?) -> String {
+        return song.map { $0.artistLine.isEmpty ? "暂无艺术家" : $0.artistLine } ?? "播放后会显示当前歌曲"
+    }
 }
 
 struct NowPlayingView: View {
@@ -112,6 +124,8 @@ struct NowPlayingView: View {
     @EnvironmentObject private var player: PlayerController
     let namespace: Namespace.ID
     @Binding var collapseProgress: Double
+    let onOpenAlbum: (EmbyAudioItem) -> Void
+    let onOpenArtist: (EmbyAudioItem) -> Void
     let onDismiss: () -> Void
 
     @State private var mode: PlayerMode = .nowPlaying
@@ -122,6 +136,8 @@ struct NowPlayingView: View {
     @State private var dragOffset: CGFloat = 0
     @State private var isDismissing = false
     @State private var screenHeight: CGFloat = 0
+    @State private var isSleepTimerDialogPresented = false
+    @State private var sleepTimerRemainingSnapshot: String?
 
     private var cornerRadius: CGFloat {
         dragOffset > 0 && !isDismissing ? 28 : 0
@@ -132,22 +148,28 @@ struct NowPlayingView: View {
         return 1 - (0.12 * min(dragOffset / 360, 1))
     }
 
-    private var liveProgress: Double {
-        guard player.duration > 0 else { return 0 }
-        return min(max(player.elapsed / player.duration, 0), 1)
+    private func liveProgress(for song: EmbyAudioItem) -> Double {
+        guard player.currentSong != nil, effectiveDuration(for: song) > 0 else { return 0 }
+        return min(max(player.elapsed / effectiveDuration(for: song), 0), 1)
     }
 
-    private var displayedProgress: Double {
-        (isScrubbing || player.isSeeking) ? scrubProgress : liveProgress
+    private func displayedProgress(for song: EmbyAudioItem) -> Double {
+        (isScrubbing || player.isSeeking) ? scrubProgress : liveProgress(for: song)
     }
 
-    private var displayedElapsed: TimeInterval {
-        guard player.duration > 0 else { return player.elapsed }
-        return displayedProgress * player.duration
+    private func displayedElapsed(for song: EmbyAudioItem) -> TimeInterval {
+        guard player.currentSong != nil else { return 0 }
+        let duration = effectiveDuration(for: song)
+        guard duration > 0 else { return player.elapsed }
+        return displayedProgress(for: song) * duration
+    }
+
+    private func effectiveDuration(for song: EmbyAudioItem) -> TimeInterval {
+        player.currentSong == nil ? song.duration : player.duration
     }
 
     var body: some View {
-        if let song = player.currentSong {
+        if let song = player.currentSong ?? store.lastPlayedSong {
             GeometryReader { proxy in
                 let size = proxy.size
                 let topInset = max(proxy.safeAreaInsets.top, 44)
@@ -170,10 +192,19 @@ struct NowPlayingView: View {
             .offset(y: dragOffset)
             .ignoresSafeArea()
             .gesture(isDismissing ? nil : dragGesture)
+            .onAppear {
+                UIApplication.shared.isIdleTimerDisabled = store.keepsScreenAwakeOnPlayerPage
+            }
+            .onDisappear {
+                UIApplication.shared.isIdleTimerDisabled = false
+            }
             .onReceive(NotificationCenter.default.publisher(for: .lyricsTapped)) { _ in
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
                     mode = .nowPlaying
                 }
+            }
+            .onChange(of: store.keepsScreenAwakeOnPlayerPage) { _, enabled in
+                UIApplication.shared.isIdleTimerDisabled = enabled
             }
             .onChange(of: player.isSeeking) { _, isSeeking in
                 if !isSeeking, isScrubbing {
@@ -229,10 +260,10 @@ struct NowPlayingView: View {
     private func nowPlayingPage(song: EmbyAudioItem, size: CGSize) -> some View {
         let contentWidth = min(size.width - 48, 352)
         let compactHeight = size.height < 760
-        let artworkSize = min(contentWidth * (compactHeight ? 0.74 : 0.82), compactHeight ? 258 : 316)
-        let upperHeight = artworkSize
-        let topOffset: CGFloat = compactHeight ? 40 : 50
-        let titleGap: CGFloat = compactHeight ? 52 : 64
+        let artworkSize = min(contentWidth * (compactHeight ? 0.82 : 0.90), compactHeight ? 276 : 332)
+        let upperHeight = min(artworkSize + (compactHeight ? 26 : 34), compactHeight ? 304 : 366)
+        let topOffset: CGFloat = compactHeight ? 34 : 42
+        let titleGap: CGFloat = compactHeight ? 16 : 20
         let progressGap: CGFloat = compactHeight ? 10 : 12
 
         return VStack(spacing: 0) {
@@ -244,7 +275,7 @@ struct NowPlayingView: View {
 
             VStack(alignment: .leading, spacing: progressGap) {
                 songHeader(song)
-                progressControls
+                progressControls(song: song)
             }
             .frame(width: contentWidth)
 
@@ -253,7 +284,8 @@ struct NowPlayingView: View {
                     contentWidth: contentWidth,
                     screenWidth: size.width,
                     height: lowerProxy.size.height,
-                    compactHeight: compactHeight
+                    compactHeight: compactHeight,
+                    song: song
                 )
             }
             .frame(maxHeight: .infinity)
@@ -263,7 +295,7 @@ struct NowPlayingView: View {
         .padding(.top, 4)
     }
 
-    private func lowerControls(contentWidth: CGFloat, screenWidth: CGFloat, height: CGFloat, compactHeight: Bool) -> some View {
+    private func lowerControls(contentWidth: CGFloat, screenWidth: CGFloat, height: CGFloat, compactHeight: Bool, song: EmbyAudioItem) -> some View {
         let topGap = min(max(height * 0.045, compactHeight ? 8 : 12), compactHeight ? 18 : 24)
         let middleGap = min(max(height * 0.045, compactHeight ? 8 : 12), compactHeight ? 18 : 24)
         let lowerGap = min(max(height * 0.035, compactHeight ? 6 : 10), compactHeight ? 14 : 20)
@@ -271,9 +303,13 @@ struct NowPlayingView: View {
         return VStack(spacing: 0) {
             Spacer(minLength: topGap)
 
-            transportControls(width: contentWidth)
+            transportControls(width: contentWidth, song: song)
 
             Spacer(minLength: middleGap)
+
+            playbackModeControls(width: contentWidth)
+
+            Spacer(minLength: compactHeight ? 6 : 8)
 
             volumeControl
                 .frame(width: contentWidth)
@@ -295,7 +331,7 @@ struct NowPlayingView: View {
                 .frame(width: artworkSize, height: artworkSize)
                 .clipped()
                 .shadow(color: .black.opacity(0.28), radius: 22, y: 12)
-                .frame(width: width, height: height)
+                .frame(width: width, height: height, alignment: .top)
         case .lyrics:
             LyricsPanelView(song: song)
                 .frame(width: width, height: height)
@@ -308,95 +344,71 @@ struct NowPlayingView: View {
     private func songHeader(_ song: EmbyAudioItem) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Text(song.name)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
-                Text(song.artistLine)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.78))
-                    .lineLimit(1)
-                    .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 10) {
                 Button {
-                    store.toggleFavorite(song)
+                    onOpenAlbum(song)
                 } label: {
-                    Image(systemName: store.isFavorite(song) ? "star.fill" : "star")
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.16), in: Circle())
+                    Text(song.name)
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
 
-                Menu {
-                    Button {
-                        store.toggleFavorite(song)
-                    } label: {
-                        Label(store.isFavorite(song) ? "取消喜欢" : "喜欢", systemImage: store.isFavorite(song) ? "star.slash" : "star")
-                    }
-
-                    Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                            mode = .lyrics
-                        }
-                    } label: {
-                        Label("歌词", systemImage: "quote.bubble")
-                    }
-
-                    Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                            mode = .queue
-                        }
-                    } label: {
-                        Label("接下来播放", systemImage: "list.bullet")
-                    }
+                Button {
+                    onOpenArtist(song)
                 } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 18, weight: .bold))
-                        .frame(width: 34, height: 34)
-                        .background(.white.opacity(0.16), in: Circle())
+                    Text(song.artistLine)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .buttonStyle(.plain)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button {
+                store.toggleFavorite(song)
+            } label: {
+                Image(systemName: store.isFavorite(song) ? "star.fill" : "star")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 34, height: 34)
+                    .background(.white.opacity(0.16), in: Circle())
+            }
+            .buttonStyle(.plain)
             .foregroundStyle(.white.opacity(0.78))
         }
     }
 
-    private var progressControls: some View {
+    private func progressControls(song: EmbyAudioItem) -> some View {
         VStack(spacing: 4) {
-            HStack(spacing: 9) {
-                Slider(value: Binding(
-                    get: { displayedProgress },
-                    set: { scrubProgress = $0 }
-                ), in: 0...1) { editing in
-                    if editing {
-                        if !isScrubbing {
-                            scrubProgress = liveProgress
-                        }
-                        isScrubbing = true
-                    } else {
-                        player.seek(to: scrubProgress)
+            Slider(value: Binding(
+                get: { displayedProgress(for: song) },
+                set: { scrubProgress = $0 }
+            ), in: 0...1) { editing in
+                if editing {
+                    if !isScrubbing {
+                        scrubProgress = liveProgress(for: song)
                     }
-                }
-                .tint(.white)
-
-                if player.isSeeking {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .tint(.white)
-                        .frame(width: 16, height: 16)
+                    isScrubbing = true
+                } else {
+                    player.seek(to: scrubProgress)
                 }
             }
+            .tint(.white)
+            .disabled(player.currentSong == nil)
 
             HStack {
-                Text(displayedElapsed.musicDurationText)
+                let elapsed = displayedElapsed(for: song)
+                let duration = effectiveDuration(for: song)
+                Text(elapsed.musicDurationText)
                     .monospacedDigit()
                 Spacer()
-                Text("-\(max(player.duration - displayedElapsed, 0).musicDurationText)")
+                Text("-\(max(duration - elapsed, 0).musicDurationText)")
                     .monospacedDigit()
             }
             .font(.system(size: 11, weight: .semibold))
@@ -404,7 +416,7 @@ struct NowPlayingView: View {
         }
     }
 
-    private func transportControls(width: CGFloat) -> some View {
+    private func transportControls(width: CGFloat, song: EmbyAudioItem) -> some View {
         HStack(spacing: 42) {
             Button {
                 player.previous()
@@ -413,13 +425,27 @@ struct NowPlayingView: View {
                     .font(.system(size: 29, weight: .semibold))
                     .frame(width: 52, height: 52)
             }
+            .disabled(player.currentSong == nil)
+            .opacity(player.currentSong == nil ? 0.42 : 1)
 
             Button {
-                player.togglePlayPause()
+                if player.currentSong == nil {
+                    store.play(song: song, in: store.songs)
+                } else {
+                    player.togglePlayPause()
+                }
             } label: {
-                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 45, weight: .semibold))
-                    .frame(width: 68, height: 62)
+                ZStack {
+                    if player.isBuffering || player.isSeeking {
+                        ProgressView()
+                            .controlSize(.regular)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 45, weight: .semibold))
+                    }
+                }
+                .frame(width: 68, height: 62)
             }
 
             Button {
@@ -429,9 +455,36 @@ struct NowPlayingView: View {
                     .font(.system(size: 29, weight: .semibold))
                     .frame(width: 52, height: 52)
             }
+            .disabled(player.currentSong == nil)
+            .opacity(player.currentSong == nil ? 0.42 : 1)
         }
         .frame(width: width)
         .foregroundStyle(.white)
+    }
+
+    private func playbackModeControls(width: CGFloat) -> some View {
+        HStack(spacing: 28) {
+            Button {
+                player.toggleShuffle()
+            } label: {
+                Image(systemName: "shuffle")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 38, height: 30)
+                    .foregroundStyle(player.isShuffleEnabled ? .white : .white.opacity(0.42))
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                player.cycleRepeatMode()
+            } label: {
+                Image(systemName: player.repeatMode.iconName)
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 38, height: 30)
+                    .foregroundStyle(player.repeatMode == .none ? .white.opacity(0.42) : .white)
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(width: width)
     }
 
     private var volumeControl: some View {
@@ -447,18 +500,87 @@ struct NowPlayingView: View {
     }
 
     private func bottomBar(width: CGFloat) -> some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 48) {
-                playerModeButton(.lyrics, icon: "quote.bubble")
-                playerModeButton(.nowPlaying, icon: "airplayaudio")
-                playerModeButton(.queue, icon: "list.bullet")
-            }
-
-            Text("iPhone -> \(store.session?.username ?? "Emby")")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.54))
+        HStack(spacing: 48) {
+            playerModeButton(.lyrics, icon: "quote.bubble")
+            sleepTimerButton
+            playerModeButton(.queue, icon: "list.bullet")
         }
         .frame(width: width)
+    }
+
+    private var sleepTimerButton: some View {
+        Button {
+            sleepTimerRemainingSnapshot = player.sleepTimerEndDate.map { sleepTimerRemainingText(until: $0, from: Date()) }
+            isSleepTimerDialogPresented = true
+        } label: {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 34, height: 28)
+                .foregroundStyle(player.sleepTimerEndDate == nil ? .white.opacity(0.42) : .white.opacity(0.92))
+        }
+        .buttonStyle(.plain)
+        .confirmationDialog("睡眠播放", isPresented: $isSleepTimerDialogPresented, titleVisibility: .visible) {
+            Button("15分钟") {
+                setSleepTimer(after: 15 * 60, snapshot: "15分钟")
+            }
+
+            Button("30分钟") {
+                setSleepTimer(after: 30 * 60, snapshot: "30分钟")
+            }
+
+            Button("60分钟") {
+                setSleepTimer(after: 60 * 60, snapshot: "60分钟")
+            }
+
+            Button("2小时") {
+                setSleepTimer(after: 2 * 60 * 60, snapshot: "2小时")
+            }
+
+            Button("3小时") {
+                setSleepTimer(after: 3 * 60 * 60, snapshot: "3小时")
+            }
+
+            Button("4小时") {
+                setSleepTimer(after: 4 * 60 * 60, snapshot: "4小时")
+            }
+
+            if player.sleepTimerEndDate != nil {
+                Button("关闭睡眠播放", role: .destructive) {
+                    player.cancelSleepTimer()
+                    sleepTimerRemainingSnapshot = nil
+                }
+            }
+
+            Button("取消", role: .cancel) {}
+        } message: {
+            if let sleepTimerRemainingSnapshot {
+                Text("剩余 \(sleepTimerRemainingSnapshot)")
+            } else {
+                Text("选择自动停止播放的时间")
+            }
+        }
+    }
+
+    private func setSleepTimer(after duration: TimeInterval, snapshot: String) {
+        player.setSleepTimer(after: duration)
+        sleepTimerRemainingSnapshot = snapshot
+    }
+
+    private func sleepTimerRemainingText(until endDate: Date, from referenceDate: Date) -> String {
+        let remainingSeconds = max(0, endDate.timeIntervalSince(referenceDate))
+        guard remainingSeconds >= 60 else { return "不到1分钟" }
+
+        let totalMinutes = max(1, Int((remainingSeconds / 60).rounded()))
+        let hours = totalMinutes / 60
+        let minutes = totalMinutes % 60
+
+        if hours > 0, minutes > 0 {
+            return "\(hours)小时\(minutes)分钟"
+        }
+        if hours > 0 {
+            return "\(hours)小时"
+        }
+        return "\(minutes)分钟"
     }
 
     private func playerModeButton(_ target: PlayerMode, icon: String) -> some View {
@@ -585,20 +707,36 @@ struct LyricsPanelView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
-                    Text(line.text)
-                        .font(.system(size: activeLyricIndex == index ? 24 : 19, weight: .bold))
-                        .lineSpacing(2)
-                        .multilineTextAlignment(.leading)
-                        .foregroundStyle(activeLyricIndex == index ? .white : .white.opacity(0.38))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                        Button {
+                            player.seek(toLyric: line)
+                        } label: {
+                            Text(line.text)
+                                .font(.system(size: activeLyricIndex == index ? 24 : 19, weight: .bold))
+                                .lineSpacing(2)
+                                .multilineTextAlignment(.leading)
+                                .foregroundStyle(activeLyricIndex == index ? .white : .white.opacity(0.38))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .id(line.id)
+                        .buttonStyle(.plain)
+                        .disabled(line.time == nil)
+                    }
+                }
+                .padding(.vertical, 12)
+            }
+            .scrollIndicators(.hidden)
+            .onChange(of: activeLyricId) { _, id in
+                guard let id else { return }
+                withAnimation(.easeInOut(duration: 0.28)) {
+                    proxy.scrollTo(id, anchor: .center)
                 }
             }
-            .padding(.vertical, 12)
         }
-        .scrollIndicators(.hidden)
         .mask {
             LinearGradient(
                 stops: [
@@ -625,6 +763,11 @@ struct LyricsPanelView: View {
         let duration = max(player.duration, 1)
         let progress = min(max(player.elapsed / duration, 0), 0.999)
         return min(Int(progress * Double(lines.count)), lines.count - 1)
+    }
+
+    private var activeLyricId: Int? {
+        guard lines.indices.contains(activeLyricIndex) else { return nil }
+        return lines[activeLyricIndex].id
     }
 }
 
@@ -657,6 +800,16 @@ struct QueuePlayerView: View {
                         .foregroundStyle(player.repeatMode == .none ? .white.opacity(0.55) : Color.musicRed)
                 }
                 .buttonStyle(.plain)
+
+                Button {
+                    player.clearUpcomingQueue()
+                } label: {
+                    Image(systemName: "trash")
+                        .frame(width: 32, height: 30)
+                        .foregroundStyle(player.upcomingQueueSnapshot.isEmpty ? .white.opacity(0.24) : .white.opacity(0.75))
+                }
+                .buttonStyle(.plain)
+                .disabled(player.upcomingQueueSnapshot.isEmpty)
 
                 Button {
                     withAnimation(.snappy(duration: 0.18)) {
@@ -725,6 +878,16 @@ struct QueuePlayerView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.white.opacity(0.86))
+            } else {
+                Button {
+                    player.removeUpcomingQueueItem(at: index)
+                } label: {
+                    Image(systemName: "minus.circle")
+                        .font(.system(size: 18, weight: .semibold))
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(.white.opacity(0.62))
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(.vertical, 6)
@@ -786,8 +949,14 @@ private enum ColorExtractor {
                 return palette
             }
 
+            if let data = ArtworkDiskCache.dataSync(for: url),
+               let palette = backdropPalette(from: data) {
+                return palette
+            }
+
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
+                await ArtworkDiskCache.insert(data, for: url)
                 return backdropPalette(from: data) ?? BackdropPalette.fallback
             } catch {
                 return BackdropPalette.fallback

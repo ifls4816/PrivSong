@@ -18,14 +18,20 @@ struct ArtworkView: View {
     }
 
     var body: some View {
-        Group {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                placeholder
+        GeometryReader { proxy in
+            let side = max(proxy.size.width, proxy.size.height)
+
+            Group {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    placeholder
+                }
             }
+            .frame(width: side, height: side)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
         }
         .transaction { transaction in
             transaction.disablesAnimations = true
@@ -70,6 +76,16 @@ struct ArtworkView: View {
             return
         }
 
+        if let diskData = await ArtworkDiskCache.data(for: url),
+           let cached = UIImage(data: diskData) {
+            ArtworkImageCache.shared.insert(cached, for: url)
+            withoutAnimation {
+                image = cached
+                displayedURL = url
+            }
+            return
+        }
+
         if displayedURL != url {
             withoutAnimation {
                 image = nil
@@ -81,6 +97,7 @@ struct ArtworkView: View {
             let (data, _) = try await URLSession.shared.data(from: url)
             guard !Task.isCancelled, let loaded = UIImage(data: data) else { return }
             ArtworkImageCache.shared.insert(loaded, for: url)
+            await ArtworkDiskCache.insert(data, for: url)
             image = loaded
             displayedURL = url
         } catch {
@@ -99,7 +116,7 @@ struct ArtworkView: View {
 }
 
 @MainActor
-private final class ArtworkImageCache {
+final class ArtworkImageCache {
     static let shared = ArtworkImageCache()
 
     private let cache = NSCache<NSURL, UIImage>()
@@ -116,5 +133,57 @@ private final class ArtworkImageCache {
     func insert(_ image: UIImage, for url: URL) {
         let pixelCost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
         cache.setObject(image, forKey: url as NSURL, cost: pixelCost)
+    }
+
+    func clear() {
+        cache.removeAllObjects()
+    }
+}
+
+enum ArtworkDiskCache {
+    static func data(for url: URL) async -> Data? {
+        await Task.detached(priority: .utility) {
+            dataSync(for: url)
+        }.value
+    }
+
+    static func dataSync(for url: URL) -> Data? {
+        try? Data(contentsOf: fileURL(for: url))
+    }
+
+    static func insert(_ data: Data, for url: URL) async {
+        await Task.detached(priority: .utility) {
+            do {
+                try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+                try data.write(to: fileURL(for: url), options: [.atomic])
+            } catch {
+                print("[ArtworkDiskCache] Failed to save artwork: \(error.localizedDescription)")
+            }
+        }.value
+    }
+
+    static func clear() {
+        try? FileManager.default.removeItem(at: directoryURL)
+    }
+
+    private static func fileURL(for url: URL) -> URL {
+        directoryURL.appendingPathComponent(cacheKey(for: url)).appendingPathExtension("image")
+    }
+
+    private static func cacheKey(for url: URL) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for scalar in url.absoluteString.unicodeScalars {
+            hash ^= UInt64(scalar.value)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+
+    private static var directoryURL: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base
+            .appendingPathComponent("MusicEmby", isDirectory: true)
+            .appendingPathComponent("ArtworkCache", isDirectory: true)
     }
 }

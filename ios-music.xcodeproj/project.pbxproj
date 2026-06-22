@@ -24,6 +24,7 @@
 		1A000001000000000000000C /* ArtworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010C /* ArtworkView.swift */; };
 		1A000001000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010D /* Assets.xcassets */; };
 		1A000001000000000000000F /* MainPageChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010F /* MainPageChrome.swift */; };
+		1A0000010000000000000014 /* LibraryIndexViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000114 /* LibraryIndexViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -46,6 +47,7 @@
 		1A000001000000000000010D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		1A000001000000000000010E /* ios-music.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ios-music.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A000001000000000000010F /* MainPageChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainPageChrome.swift; sourceTree = "<group>"; };
+		1A0000010000000000000114 /* LibraryIndexViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryIndexViews.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -128,6 +130,7 @@
 				1A000001000000000000010B /* PlayerViews.swift */,
 				1A000001000000000000010C /* ArtworkView.swift */,
 				1A000001000000000000010F /* MainPageChrome.swift */,
+				1A0000010000000000000114 /* LibraryIndexViews.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -226,6 +229,7 @@
 				1A000001000000000000000B /* PlayerViews.swift in Sources */,
 				1A000001000000000000000C /* ArtworkView.swift in Sources */,
 				1A000001000000000000000F /* MainPageChrome.swift in Sources */,
+				1A0000010000000000000014 /* LibraryIndexViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

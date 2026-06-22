@@ -4,26 +4,31 @@ struct SearchView: View {
     @EnvironmentObject private var store: AppStore
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
+    @State private var submittedSearchText = ""
 
     private var trimmedText: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var submittedTerm: String {
+        submittedSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var visibleSongs: [EmbyAudioItem] {
-        trimmedText.isEmpty ? [] : store.searchResults
+        submittedTerm.isEmpty ? [] : store.searchResults
     }
 
     private var visibleAlbums: [MusicAlbum] {
-        guard !trimmedText.isEmpty else { return [] }
+        guard !submittedTerm.isEmpty else { return [] }
         return store.albums.filter {
-            $0.title.localizedCaseInsensitiveContains(trimmedText) ||
-                $0.artist.localizedCaseInsensitiveContains(trimmedText)
+            $0.title.localizedCaseInsensitiveContains(submittedTerm) ||
+                $0.artist.localizedCaseInsensitiveContains(submittedTerm)
         }
     }
 
     private var visibleArtists: [MusicArtist] {
-        guard !trimmedText.isEmpty else { return [] }
-        return store.artists.filter { $0.name.localizedCaseInsensitiveContains(trimmedText) }
+        guard !submittedTerm.isEmpty else { return [] }
+        return store.artists.filter { $0.name.localizedCaseInsensitiveContains(submittedTerm) }
     }
 
     var body: some View {
@@ -32,7 +37,7 @@ struct SearchView: View {
                 Color.musicPageBackground
                     .ignoresSafeArea()
 
-                if trimmedText.isEmpty {
+                if submittedTerm.isEmpty {
                     emptyState
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -41,8 +46,14 @@ struct SearchView: View {
             }
             .mainPageToolbar("搜索")
             .searchable(text: $searchText, placement: .automatic, prompt: "搜索")
+            .submitLabel(.search)
+            .onSubmit(of: .search) {
+                submitSearch()
+            }
             .onChange(of: searchText) { _, newValue in
-                scheduleSearch(newValue)
+                if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    clearSearch()
+                }
             }
             .onDisappear {
                 searchTask?.cancel()
@@ -108,17 +119,13 @@ struct SearchView: View {
 
                 if !visibleSongs.isEmpty {
                     SearchResultSection(title: "歌曲") {
-                        ForEach(visibleSongs) { song in
-                            Button {
-                                store.play(song: song, in: visibleSongs)
-                            } label: {
-                                SearchArtworkRow(
-                                    title: song.name,
-                                    subtitle: song.artistLine,
-                                    imageURL: store.imageURL(for: song, size: 160)
-                                )
+                        ForEach(Array(visibleSongs.enumerated()), id: \.element.id) { index, song in
+                            SongRow(song: song, imageURL: store.imageURL(for: song, size: 160), songs: visibleSongs)
+
+                            if index < visibleSongs.count - 1 {
+                                Divider()
+                                    .padding(.leading, 56)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -127,7 +134,7 @@ struct SearchView: View {
                     visibleSongs.isEmpty &&
                     visibleAlbums.isEmpty &&
                     visibleArtists.isEmpty {
-                    ContentUnavailableView.search(text: trimmedText)
+                    ContentUnavailableView.search(text: submittedTerm)
                         .padding(.top, 70)
                 }
             }
@@ -137,16 +144,26 @@ struct SearchView: View {
         }
     }
 
-    private func scheduleSearch(_ term: String) {
+    private func submitSearch() {
+        let term = trimmedText
         searchTask?.cancel()
-        if term.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            searchTask = Task { await store.search("") }
-        } else {
-            searchTask = Task {
-                try? await Task.sleep(nanoseconds: 280_000_000)
-                guard !Task.isCancelled else { return }
-                await store.search(term)
-            }
+        submittedSearchText = term
+
+        guard !term.isEmpty else {
+            clearSearch()
+            return
+        }
+
+        searchTask = Task {
+            await store.search(term)
+        }
+    }
+
+    private func clearSearch() {
+        searchTask?.cancel()
+        submittedSearchText = ""
+        searchTask = Task {
+            await store.search("")
         }
     }
 }
@@ -169,7 +186,11 @@ private struct SearchResultSection<Content: View>: View {
                 content
             }
             .padding(.horizontal, 12)
-            .background(.white.opacity(0.76), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
+            }
         }
     }
 }
