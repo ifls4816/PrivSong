@@ -14,12 +14,6 @@ final class AppStore: ObservableObject {
     @Published var libraryStatus = "Not connected"
     @Published var favoriteSongIds: Set<String> = []
     @Published var recentSongIds: [String] = []
-    @Published var isPlaybackFadeEnabled = false {
-        didSet {
-            UserDefaults.standard.set(isPlaybackFadeEnabled, forKey: playbackFadeKey)
-            player?.setPlaybackFadesEnabled(isPlaybackFadeEnabled)
-        }
-    }
     @Published var cellularOnlineQuality: OnlinePlaybackQuality = .standard {
         didSet {
             UserDefaults.standard.set(cellularOnlineQuality.rawValue, forKey: cellularOnlineQualityKey)
@@ -32,7 +26,7 @@ final class AppStore: ObservableObject {
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
         }
     }
-    @Published var audioTranscodeFormat: AudioTranscodeFormat = .mp3 {
+    @Published var audioTranscodeFormat: AudioTranscodeFormat = .aac {
         didSet {
             UserDefaults.standard.set(audioTranscodeFormat.rawValue, forKey: audioTranscodeFormatKey)
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
@@ -65,7 +59,6 @@ final class AppStore: ObservableObject {
     private let sessionKey = "EmbySession"
     private let favoritesKey = "FavoriteSongIds"
     private let recentKey = "RecentSongIds"
-    private let playbackFadeKey = "PlaybackFadeEnabled"
     private let cellularOnlineQualityKey = "CellularOnlinePlaybackQuality"
     private let wifiOnlineQualityKey = "WiFiOnlinePlaybackQuality"
     private let audioTranscodeFormatKey = "AudioTranscodeFormat"
@@ -78,7 +71,6 @@ final class AppStore: ObservableObject {
 
     weak var player: PlayerController? {
         didSet {
-            player?.setPlaybackFadesEnabled(isPlaybackFadeEnabled)
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
         }
     }
@@ -380,7 +372,6 @@ final class AppStore: ObservableObject {
     private func restoreLocalState() {
         favoriteSongIds = Set(UserDefaults.standard.stringArray(forKey: favoritesKey) ?? [])
         recentSongIds = UserDefaults.standard.stringArray(forKey: recentKey) ?? []
-        isPlaybackFadeEnabled = UserDefaults.standard.bool(forKey: playbackFadeKey)
         if let rawValue = UserDefaults.standard.string(forKey: cellularOnlineQualityKey),
            let quality = OnlinePlaybackQuality(rawValue: rawValue) {
             cellularOnlineQuality = quality
@@ -389,9 +380,13 @@ final class AppStore: ObservableObject {
            let quality = OnlinePlaybackQuality(rawValue: rawValue) {
             wifiOnlineQuality = quality
         }
-        if let rawValue = UserDefaults.standard.string(forKey: audioTranscodeFormatKey),
-           let format = AudioTranscodeFormat(rawValue: rawValue) {
-            audioTranscodeFormat = format
+        if let rawValue = UserDefaults.standard.string(forKey: audioTranscodeFormatKey) {
+            if let format = AudioTranscodeFormat(rawValue: rawValue) {
+                audioTranscodeFormat = format
+            } else {
+                UserDefaults.standard.set(AudioTranscodeFormat.aac.rawValue, forKey: audioTranscodeFormatKey)
+                audioTranscodeFormat = .aac
+            }
         }
         startsOnBrowse = UserDefaults.standard.bool(forKey: startsOnBrowseKey)
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)

@@ -57,7 +57,6 @@ enum OnlinePlaybackQuality: String, CaseIterable, Codable, Identifiable, Hashabl
 }
 
 enum AudioTranscodeFormat: String, CaseIterable, Codable, Identifiable, Hashable {
-    case mp3
     case aac
 
     var id: String { rawValue }
@@ -67,30 +66,15 @@ enum AudioTranscodeFormat: String, CaseIterable, Codable, Identifiable, Hashable
     }
 
     var codec: String {
-        switch self {
-        case .mp3:
-            return "mp3"
-        case .aac:
-            return "aac"
-        }
+        "aac"
     }
 
     var transcodingContainer: String {
-        switch self {
-        case .mp3:
-            return "mp3"
-        case .aac:
-            return "m4a"
-        }
+        "aac"
     }
 
     var containerQueryValue: String {
-        switch self {
-        case .mp3:
-            return "mp3"
-        case .aac:
-            return "m4a,aac"
-        }
+        "aac"
     }
 
     var fileExtension: String {
@@ -106,7 +90,7 @@ enum PlaybackNetworkKind: String, Hashable {
 struct PlaybackQualityPreferences: Equatable {
     var cellularQuality: OnlinePlaybackQuality = .standard
     var wifiQuality: OnlinePlaybackQuality = .lossless
-    var transcodeFormat: AudioTranscodeFormat = .mp3
+    var transcodeFormat: AudioTranscodeFormat = .aac
 
     func quality(for networkKind: PlaybackNetworkKind) -> OnlinePlaybackQuality {
         switch networkKind {
@@ -392,11 +376,13 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
 }
 
 struct EmbyMediaSource: Codable, Hashable {
+    let id: String?
     let container: String?
     let bitrate: Int?
     let mediaStreams: [EmbyMediaStream]?
 
     enum CodingKeys: String, CodingKey {
+        case id = "Id"
         case container = "Container"
         case bitrate = "Bitrate"
         case mediaStreams = "MediaStreams"
@@ -404,6 +390,7 @@ struct EmbyMediaSource: Codable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
         self.container = try container.decodeIfPresent(String.self, forKey: .container)
         bitrate = container.decodeIntIfPresent(forKey: .bitrate)
         mediaStreams = try container.decodeIfPresent([EmbyMediaStream].self, forKey: .mediaStreams)

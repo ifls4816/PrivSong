@@ -103,9 +103,6 @@ struct MiniPlayerView: View {
                 .frame(height: 3)
         }
         .background(Color.musicMiniPlayerBackground, in: shape)
-        .overlay {
-            shape.strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
-        }
         .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
         .opacity(visibility)
         .contentShape(shape)
@@ -155,7 +152,14 @@ struct NowPlayingView: View {
     }
 
     private func displayedProgress(for song: EmbyAudioItem) -> Double {
-        (isScrubbing || player.isSeeking) ? scrubProgress : liveProgress(for: song)
+        if isScrubbing {
+            return scrubProgress
+        }
+        let duration = effectiveDuration(for: song)
+        if let seekTarget = player.seekTarget, duration > 0 {
+            return min(max(seekTarget / duration, 0), 1)
+        }
+        return liveProgress(for: song)
     }
 
     private func displayedElapsed(for song: EmbyAudioItem) -> TimeInterval {
@@ -367,7 +371,9 @@ struct NowPlayingView: View {
                     }
                     isScrubbing = true
                 } else {
-                    player.seek(to: scrubProgress)
+                    let targetProgress = scrubProgress
+                    isScrubbing = false
+                    player.seek(to: targetProgress)
                 }
             }
             .tint(Color.musicRed)

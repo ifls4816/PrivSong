@@ -448,17 +448,18 @@ struct EmbyClient {
         session embySession: EmbySession,
         options: PlaybackStreamOptions = PlaybackStreamOptions(
             quality: .lossless,
-            transcodeFormat: .mp3,
+            transcodeFormat: .aac,
             networkKind: .wifi
         ),
+        playSessionId requestedPlaySessionId: String? = nil,
         startTime: TimeInterval = 0
     ) -> [URL] {
-        let playSessionId = UUID().uuidString
+        let playSessionId = requestedPlaySessionId ?? UUID().uuidString
         let startTimeTicks = startTime.embyStartTimeTicks
         let candidates: [URL?]
         if let bitrate = options.quality.bitrate {
             candidates = [
-                universalAudioStreamURL(
+                transcodedAudioStreamURL(
                     for: item,
                     session: embySession,
                     playSessionId: playSessionId,
@@ -496,6 +497,64 @@ struct EmbyClient {
         playbackURLCandidates(for: item, session: embySession).first ?? embySession.serverURL
     }
 
+    func reportPlaybackStarted(
+        item: EmbyAudioItem,
+        session embySession: EmbySession,
+        playSessionId: String,
+        playMethod: EmbyPlaybackReportMethod,
+        position: TimeInterval
+    ) async throws {
+        try await sendPlaybackReport(
+            path: "Sessions/Playing",
+            item: item,
+            session: embySession,
+            playSessionId: playSessionId,
+            playMethod: playMethod,
+            position: position,
+            isPaused: false,
+            includeStartFields: true
+        )
+    }
+
+    func reportPlaybackProgress(
+        item: EmbyAudioItem,
+        session embySession: EmbySession,
+        playSessionId: String,
+        playMethod: EmbyPlaybackReportMethod,
+        position: TimeInterval,
+        isPaused: Bool
+    ) async throws {
+        try await sendPlaybackReport(
+            path: "Sessions/Playing/Progress",
+            item: item,
+            session: embySession,
+            playSessionId: playSessionId,
+            playMethod: playMethod,
+            position: position,
+            isPaused: isPaused,
+            includeStartFields: false
+        )
+    }
+
+    func reportPlaybackStopped(
+        item: EmbyAudioItem,
+        session embySession: EmbySession,
+        playSessionId: String,
+        playMethod: EmbyPlaybackReportMethod,
+        position: TimeInterval
+    ) async throws {
+        try await sendPlaybackReport(
+            path: "Sessions/Playing/Stopped",
+            item: item,
+            session: embySession,
+            playSessionId: playSessionId,
+            playMethod: playMethod,
+            position: position,
+            isPaused: true,
+            includeStartFields: false
+        )
+    }
+
     private func directAudioStreamURL(
         for item: EmbyAudioItem,
         session embySession: EmbySession,
@@ -518,7 +577,7 @@ struct EmbyClient {
         return components?.url
     }
 
-    private func universalAudioStreamURL(
+    private func transcodedAudioStreamURL(
         for item: EmbyAudioItem,
         session embySession: EmbySession,
         playSessionId: String,
@@ -527,7 +586,7 @@ struct EmbyClient {
         maxStreamingBitrate: Int
     ) -> URL? {
         var components = URLComponents(
-            url: embySession.serverURL.appending(path: "Audio/\(item.id)/universal"),
+            url: embySession.serverURL.appending(path: "Audio/\(item.id)/stream.\(format.transcodingContainer)"),
             resolvingAgainstBaseURL: false
         )
         var queryItems = [
@@ -535,16 +594,13 @@ struct EmbyClient {
             URLQueryItem(name: "UserId", value: embySession.userId),
             URLQueryItem(name: "DeviceId", value: deviceId),
             URLQueryItem(name: "PlaySessionId", value: playSessionId),
-            URLQueryItem(name: "AudioCodec", value: format.codec),
+            URLQueryItem(name: "Static", value: "false"),
             URLQueryItem(name: "Container", value: format.containerQueryValue),
-            URLQueryItem(name: "TranscodingContainer", value: format.transcodingContainer),
-            URLQueryItem(name: "TranscodingProtocol", value: "http"),
-            URLQueryItem(name: "MaxStreamingBitrate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "AudioCodec", value: format.codec),
             URLQueryItem(name: "AudioBitRate", value: "\(maxStreamingBitrate)"),
             URLQueryItem(name: "MaxAudioBitrate", value: "\(maxStreamingBitrate)"),
-            URLQueryItem(name: "EnableDirectPlay", value: "false"),
-            URLQueryItem(name: "EnableDirectStream", value: "false"),
-            URLQueryItem(name: "EnableRedirection", value: "false")
+            URLQueryItem(name: "MaxStreamingBitrate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "EnableAutoStreamCopy", value: "false")
         ]
         if let startTimeTicks {
             queryItems.append(URLQueryItem(name: "StartTimeTicks", value: "\(startTimeTicks)"))
@@ -562,6 +618,42 @@ struct EmbyClient {
             URLQueryItem(name: "api_key", value: embySession.accessToken)
         ]
         return components?.url
+    }
+
+    private func sendPlaybackReport(
+        path: String,
+        item: EmbyAudioItem,
+        session embySession: EmbySession,
+        playSessionId: String,
+        playMethod: EmbyPlaybackReportMethod,
+        position: TimeInterval,
+        isPaused: Bool,
+        includeStartFields: Bool
+    ) async throws {
+        var request = URLRequest(url: embySession.serverURL.appending(path: path))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+
+        var body: [String: Any] = [
+            "ItemId": item.id,
+            "PlaySessionId": playSessionId,
+            "PlayMethod": playMethod.rawValue,
+            "PositionTicks": position.embyPositionTicks,
+            "IsPaused": isPaused,
+            "IsMuted": false,
+            "VolumeLevel": 100
+        ]
+        if let mediaSourceId = item.mediaSources?.first?.id, !mediaSourceId.isEmpty {
+            body["MediaSourceId"] = mediaSourceId
+        }
+        if includeStartFields {
+            body["CanSeek"] = true
+            body["QueueableMediaTypes"] = ["Audio"]
+        }
+
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        try await sendEmpty(request)
     }
 
     private var deviceId: String {
@@ -610,6 +702,14 @@ struct EmbyClient {
             return try jsonDecoder.decode(T.self, from: data)
         } catch {
             throw EmbyError.decoding(error.localizedDescription)
+        }
+    }
+
+    private func sendEmpty(_ request: URLRequest) async throws {
+        let (_, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw EmbyError.invalidResponse }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw EmbyError.server(statusCode: httpResponse.statusCode)
         }
     }
 
@@ -674,9 +774,20 @@ enum EmbyError: LocalizedError {
     }
 }
 
+enum EmbyPlaybackReportMethod: String, Sendable {
+    case directPlay = "DirectPlay"
+    case directStream = "DirectStream"
+    case transcode = "Transcode"
+}
+
 private extension TimeInterval {
     var embyStartTimeTicks: Int64? {
         guard isFinite, self > 0 else { return nil }
+        return embyPositionTicks
+    }
+
+    var embyPositionTicks: Int64 {
+        guard isFinite, self > 0 else { return 0 }
         return Int64((self * 10_000_000).rounded())
     }
 }

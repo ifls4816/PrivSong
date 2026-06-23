@@ -15,6 +15,7 @@ final class PlayerController: ObservableObject {
     @Published private(set) var currentSong: EmbyAudioItem?
     @Published private(set) var isPlaying = false
     @Published private(set) var isSeeking = false
+    @Published private(set) var seekTarget: TimeInterval?
     @Published private(set) var elapsed: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
     @Published private(set) var queueSnapshot: [EmbyAudioItem] = []
@@ -44,6 +45,9 @@ final class PlayerController: ObservableObject {
     private var streamCandidateIndex = 0
     private var currentStreamURL: URL?
     private var streamStartOffset: TimeInterval = 0
+    private var currentPlaySessionId: String?
+    private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
+    private var lastPlaybackProgressReport = Date.distantPast
     private var currentNetworkKind: PlaybackNetworkKind = .wifi
     private var playbackQualityPreferences = PlaybackQualityPreferences()
     private var activeAudioCacheKey: PlaybackAudioCache.Key?
@@ -51,7 +55,6 @@ final class PlayerController: ObservableObject {
     private var lastNowPlayingSync = Date.distantPast
     private var shouldResumeAfterInterruption = false
     private var isSwitchingTracks = false
-    private var isFadingToPause = false
     private var pendingSeekTarget: TimeInterval?
     private var suppressTimeUpdatesUntil = Date.distantPast
 
@@ -65,10 +68,9 @@ final class PlayerController: ObservableObject {
     private var routeChangeObserver: NSObjectProtocol?
     private var artworkTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
-    private var fadeTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
     private var audioCacheTask: Task<Void, Never>?
-    private var playbackFadesEnabled = false
+    private var playbackReportTask: Task<Void, Never>?
 
     init() {
         engine.volume = Float(volume)
@@ -95,31 +97,39 @@ final class PlayerController: ObservableObject {
         }
 
         syncQueueSnapshots()
-        transitionToSong(song, session: session, autoplay: true)
+        start(song: song, session: session, autoplay: true)
     }
 
     func togglePlayPause() {
-        if isFadingToPause {
-            resume()
-        } else if isPlaying || engine.timeControlStatus == .playing {
+        if isPlaying || engine.timeControlStatus == .playing {
             pause()
         } else {
             resume()
         }
     }
 
-    func setPlaybackFadesEnabled(_ enabled: Bool) {
-        playbackFadesEnabled = enabled
-        if !enabled {
-            fadeTask?.cancel()
-            engine.volume = Float(volume)
-            isSwitchingTracks = false
-            isFadingToPause = false
-        }
-    }
-
     func setPlaybackQualityPreferences(_ preferences: PlaybackQualityPreferences) {
+        let previousOptions = currentPlaybackStreamOptions()
         playbackQualityPreferences = preferences
+        let updatedOptions = currentPlaybackStreamOptions()
+        if previousOptions.transcodeFormat != updatedOptions.transcodeFormat,
+           currentSong != nil,
+           currentStreamURL != nil {
+            stopPlaybackForConfigurationChange()
+            return
+        }
+
+        guard previousOptions != updatedOptions,
+              let currentSong,
+              let session,
+              currentStreamURL != nil else { return }
+
+        let resumePosition = elapsed
+        let shouldResume = isPlaying || engine.timeControlStatus == .playing
+        start(song: currentSong, session: session, autoplay: shouldResume)
+        if resumePosition > 0 {
+            seek(toSeconds: resumePosition, shouldPlayAfterSeek: shouldResume)
+        }
     }
 
     func seek(to progress: Double) {
@@ -150,7 +160,7 @@ final class PlayerController: ObservableObject {
 
     func playQueued(song: EmbyAudioItem) {
         guard activeQueue.contains(song), let session else { return }
-        transitionToSong(song, session: session, autoplay: true)
+        start(song: song, session: session, autoplay: true)
     }
 
     func playNext(_ song: EmbyAudioItem) {
@@ -216,9 +226,7 @@ final class PlayerController: ObservableObject {
     func setVolume(_ value: Double) {
         let clamped = min(max(value, 0), 1)
         volume = clamped
-        if !isFadingToPause {
-            engine.volume = Float(clamped)
-        }
+        engine.volume = Float(clamped)
     }
 
     func setSleepTimer(after duration: TimeInterval) {
@@ -257,6 +265,13 @@ final class PlayerController: ObservableObject {
         )
     }
 
+    private func playbackReportMethod(for options: PlaybackStreamOptions, isUsingLocalFile: Bool) -> EmbyPlaybackReportMethod {
+        if isUsingLocalFile {
+            return .directPlay
+        }
+        return options.quality.usesTranscoding ? .transcode : .directStream
+    }
+
     private func configureNetworkPathMonitor() {
         currentNetworkKind = pathMonitor.currentPath.playbackNetworkKind
         pathMonitor.pathUpdateHandler = { [weak self] path in
@@ -283,8 +298,8 @@ final class PlayerController: ObservableObject {
     }
 
     private func start(song: EmbyAudioItem, session: EmbySession, autoplay: Bool) {
+        reportPlaybackStoppedIfNeeded(position: elapsed)
         audioCacheTask?.cancel()
-        isFadingToPause = false
         isSwitchingTracks = true
         currentSong = song
         elapsed = 0
@@ -298,63 +313,46 @@ final class PlayerController: ObservableObject {
         lastNowPlayingSync = .distantPast
         currentStreamURL = nil
         streamStartOffset = 0
+        seekTarget = nil
+        pendingSeekTarget = nil
+        suppressTimeUpdatesUntil = .distantPast
+        lastPlaybackProgressReport = .distantPast
 
         let streamOptions = currentPlaybackStreamOptions()
         let cacheKey = PlaybackAudioCache.Key(session: session, item: song, options: streamOptions)
+        let playSessionId = UUID().uuidString
         activeAudioCacheKey = cacheKey
-        streamCandidates = client.playbackURLCandidates(for: song, session: session, options: streamOptions)
+        currentPlaySessionId = playSessionId
+        streamCandidates = client.playbackURLCandidates(
+            for: song,
+            session: session,
+            options: streamOptions,
+            playSessionId: playSessionId
+        )
         streamCandidateIndex = 0
         syncQueueSnapshots()
 
         audioSession.activate()
-        let cachedURL = PlaybackAudioCache.cachedFileURL(for: cacheKey)
+        let allowsLocalCachePlayback = !streamOptions.quality.usesTranscoding
+        let cachedURL = allowsLocalCachePlayback ? PlaybackAudioCache.cachedFileURL(for: cacheKey) : nil
         let initialURL = cachedURL ?? streamCandidates.first
+        currentPlaybackReportMethod = playbackReportMethod(for: streamOptions, isUsingLocalFile: cachedURL != nil)
         replaceCurrentItem(with: initialURL, autoplay: autoplay, candidateIndex: 0)
-        cacheCurrentSong(from: streamStartOffset == 0 ? streamCandidates.first : nil, cacheKey: cacheKey)
+        if allowsLocalCachePlayback {
+            cacheCurrentSong(from: streamStartOffset == 0 ? streamCandidates.first : nil, cacheKey: cacheKey)
+        }
         loadArtwork(for: song, session: session)
         loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
+        reportPlaybackStarted(position: 0)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
-    }
-
-    private func transitionToSong(_ song: EmbyAudioItem, session: EmbySession, autoplay: Bool) {
-        guard playbackFadesEnabled,
-              engine.currentItem != nil,
-              engine.timeControlStatus == .playing || isPlaying else {
-            start(song: song, session: session, autoplay: autoplay)
-            return
-        }
-
-        isFadingToPause = false
-        isSwitchingTracks = true
-        fadeTask?.cancel()
-        fadeTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let steps = 10
-            let startVolume = Double(self.engine.volume)
-            let duration: TimeInterval = 0.35
-            let stepDuration = duration / Double(steps)
-
-            for step in 1...steps {
-                guard !Task.isCancelled else { return }
-                let progress = Double(step) / Double(steps)
-                let value = startVolume + (0 - startVolume) * progress
-                self.engine.volume = Float(min(max(value, 0), 1))
-                try? await Task.sleep(nanoseconds: UInt64(stepDuration * 1_000_000_000))
-            }
-
-            guard !Task.isCancelled else { return }
-            self.engine.volume = 0
-            self.start(song: song, session: session, autoplay: autoplay)
-        }
     }
 
     private func replaceCurrentItem(
         with url: URL?,
         autoplay: Bool,
         startAt startTime: TimeInterval? = nil,
-        candidateIndex: Int? = nil,
-        usesFadeIn: Bool = true
+        candidateIndex: Int? = nil
     ) {
         guard let url else {
             print("[Player] No playable Emby URL for current item.")
@@ -394,77 +392,86 @@ final class PlayerController: ObservableObject {
                     self.pendingSeekTarget = clampedStartTime
                     self.suppressTimeUpdatesUntil = Date().addingTimeInterval(0.8)
                     self.isSeeking = false
-                    self.beginPlaybackIfNeeded(autoplay: autoplay, usesFadeIn: usesFadeIn)
+                    self.beginPlaybackIfNeeded(autoplay: autoplay)
                     self.isSwitchingTracks = false
                     self.syncNowPlaying(force: true)
                 }
             }
         } else {
-            beginPlaybackIfNeeded(autoplay: autoplay, usesFadeIn: usesFadeIn)
+            beginPlaybackIfNeeded(autoplay: autoplay)
             isSwitchingTracks = false
         }
     }
 
-    private func beginPlaybackIfNeeded(autoplay: Bool, usesFadeIn: Bool) {
+    private func beginPlaybackIfNeeded(autoplay: Bool) {
         guard autoplay else { return }
-        if playbackFadesEnabled, usesFadeIn {
-            engine.volume = 0
-        } else {
-            engine.volume = Float(volume)
-        }
+        engine.volume = Float(volume)
         engine.play()
         isPlaying = true
-        if playbackFadesEnabled, usesFadeIn {
-            fadeEngineVolume(to: volume, duration: 1.1)
-        }
     }
 
     private func resume() {
         guard currentSong != nil else { return }
         audioSession.activate()
-        let wasFadingToPause = isFadingToPause
-        isFadingToPause = false
-        fadeTask?.cancel()
-
-        if playbackFadesEnabled, !wasFadingToPause {
-            engine.volume = 0
-        }
+        engine.volume = Float(volume)
         engine.play()
         isPlaying = true
-        if playbackFadesEnabled {
-            fadeEngineVolume(to: volume, duration: wasFadingToPause ? 0.35 : 0.8)
-        }
         syncNowPlaying(force: true)
+        reportPlaybackProgress(force: true)
     }
 
     private func pause() {
-        if playbackFadesEnabled, isPlaying {
-            isFadingToPause = true
-            isPlaying = false
-            syncNowPlaying(force: true)
-            fadeEngineVolume(to: 0, duration: 0.45, pauseWhenFinished: true)
-            return
-        }
-        fadeTask?.cancel()
-        isFadingToPause = false
         engine.pause()
         isPlaying = false
         syncNowPlaying(force: true)
+        reportPlaybackProgress(force: true, isPaused: true)
+    }
+
+    private func stopPlaybackForConfigurationChange() {
+        reportPlaybackStoppedIfNeeded(position: elapsed)
+        audioCacheTask?.cancel()
+        artworkTask?.cancel()
+        lyricsTask?.cancel()
+
+        engine.pause()
+        engine.replaceCurrentItem(with: nil)
+        isPlaying = false
+        isSeeking = false
+        isSwitchingTracks = false
+        isBuffering = false
+        playbackStatusText = nil
+        currentSong = nil
+        currentArtwork = nil
+        currentStreamURL = nil
+        streamCandidates = []
+        streamCandidateIndex = 0
+        streamStartOffset = 0
+        activeAudioCacheKey = nil
+        seekTarget = nil
+        pendingSeekTarget = nil
+        suppressTimeUpdatesUntil = .distantPast
+        elapsed = 0
+        duration = 0
+        lyrics = []
+        isLoadingLyrics = false
+        lastNowPlayingSync = .distantPast
+        syncQueueSnapshots()
+        syncNowPlaying(force: true)
+        syncRemoteCommandAvailability()
     }
 
     private func seek(toSeconds seconds: TimeInterval, shouldPlayAfterSeek: Bool) {
         let clamped = max(0, min(seconds, max(duration, 0)))
-        guard currentStreamURL?.isFileURL == true else {
-            seekRemoteStream(to: clamped, shouldPlayAfterSeek: shouldPlayAfterSeek)
-            return
-        }
+        guard currentStreamURL != nil else { return }
 
         let targetTime = CMTime(seconds: itemTime(forAbsoluteTime: clamped), preferredTimescale: 600)
         isSeeking = true
+        seekTarget = clamped
         pendingSeekTarget = clamped
         suppressTimeUpdatesUntil = Date().addingTimeInterval(1.0)
         elapsed = clamped
         syncNowPlaying(force: true)
+        reportPlaybackProgress(force: true, position: clamped)
         engine.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -477,49 +484,9 @@ final class PlayerController: ObservableObject {
                 self.suppressTimeUpdatesUntil = Date().addingTimeInterval(0.8)
                 self.isSeeking = false
                 self.syncNowPlaying(force: true)
+                self.reportPlaybackProgress(force: true, position: clamped)
             }
         }
-    }
-
-    private func seekRemoteStream(to seconds: TimeInterval, shouldPlayAfterSeek: Bool) {
-        guard let currentSong, let session else {
-            return
-        }
-
-        audioCacheTask?.cancel()
-        let clamped = max(0, min(seconds, max(duration, currentSong.duration)))
-        let streamOptions = currentPlaybackStreamOptions()
-        let candidates = client.playbackURLCandidates(
-            for: currentSong,
-            session: session,
-            options: streamOptions,
-            startTime: clamped
-        )
-
-        guard let firstCandidate = candidates.first else {
-            isSeeking = false
-            isBuffering = false
-            playbackStatusText = "播放失败"
-            syncNowPlaying(force: true)
-            return
-        }
-
-        streamCandidates = candidates
-        streamCandidateIndex = 0
-        streamStartOffset = clamped
-        isSeeking = true
-        pendingSeekTarget = clamped
-        suppressTimeUpdatesUntil = Date().addingTimeInterval(1.0)
-        elapsed = clamped
-        isBuffering = true
-        playbackStatusText = "正在跳转"
-        syncNowPlaying(force: true)
-        replaceCurrentItem(
-            with: firstCandidate,
-            autoplay: shouldPlayAfterSeek,
-            candidateIndex: 0,
-            usesFadeIn: false
-        )
     }
 
     private func playRelative(offset: Int, wrap: Bool) {
@@ -532,13 +499,13 @@ final class PlayerController: ObservableObject {
 
         let targetIndex = currentIndex + offset
         if songs.indices.contains(targetIndex) {
-            transitionToSong(songs[targetIndex], session: session, autoplay: true)
+            start(song: songs[targetIndex], session: session, autoplay: true)
             return
         }
 
         guard wrap, !songs.isEmpty else { return }
         let wrappedIndex = offset > 0 ? songs.startIndex : songs.index(before: songs.endIndex)
-        transitionToSong(songs[wrappedIndex], session: session, autoplay: true)
+        start(song: songs[wrappedIndex], session: session, autoplay: true)
     }
 
     private func handleTrackEnded() {
@@ -554,34 +521,7 @@ final class PlayerController: ObservableObject {
         if currentSong == before {
             isPlaying = false
             syncNowPlaying(force: true)
-        }
-    }
-
-    private func fadeEngineVolume(to target: Double, duration: TimeInterval, pauseWhenFinished: Bool = false) {
-        fadeTask?.cancel()
-        fadeTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let steps = 16
-            let startVolume = Double(self.engine.volume)
-            let stepDuration = duration / Double(steps)
-
-            for step in 1...steps {
-                guard !Task.isCancelled else { return }
-                let progress = Double(step) / Double(steps)
-                let value = startVolume + (target - startVolume) * progress
-                self.engine.volume = Float(min(max(value, 0), 1))
-                try? await Task.sleep(nanoseconds: UInt64(stepDuration * 1_000_000_000))
-            }
-
-            guard !Task.isCancelled else { return }
-            self.engine.volume = Float(min(max(target, 0), 1))
-            if pauseWhenFinished {
-                self.engine.pause()
-                self.engine.volume = Float(self.volume)
-                self.isPlaying = false
-                self.isFadingToPause = false
-                self.syncNowPlaying(force: true)
-            }
+            reportPlaybackStoppedIfNeeded(position: duration)
         }
     }
 
@@ -601,12 +541,13 @@ final class PlayerController: ObservableObject {
 
             playbackStatusText = "正在切换播放源"
             isBuffering = true
+            currentPlaybackReportMethod = playbackReportMethod(for: currentPlaybackStreamOptions(), isUsingLocalFile: false)
+            reportPlaybackProgress(force: true)
             replaceCurrentItem(
                 with: streamCandidates[streamCandidateIndex],
                 autoplay: true,
                 startAt: elapsed,
-                candidateIndex: streamCandidateIndex,
-                usesFadeIn: false
+                candidateIndex: streamCandidateIndex
             )
             return
         }
@@ -629,8 +570,7 @@ final class PlayerController: ObservableObject {
             with: streamCandidates[nextIndex],
             autoplay: true,
             startAt: elapsed,
-            candidateIndex: nextIndex,
-            usesFadeIn: false
+            candidateIndex: nextIndex
         )
         if streamStartOffset == 0, let activeAudioCacheKey {
             cacheCurrentSong(from: streamCandidates[nextIndex], cacheKey: activeAudioCacheKey)
@@ -801,17 +741,18 @@ final class PlayerController: ObservableObject {
     private func observeBuffering(of item: AVPlayerItem) {
         itemPlaybackBufferEmptyObserver = item.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] observedItem, _ in
             Task { @MainActor in
-                guard observedItem.isPlaybackBufferEmpty else { return }
-                self?.isBuffering = true
-                self?.playbackStatusText = "正在缓冲"
+                guard let self,
+                      observedItem.isPlaybackBufferEmpty,
+                      self.engine.rate == 0 else { return }
+                self.isBuffering = true
+                self.playbackStatusText = "正在缓冲"
             }
         }
 
         itemPlaybackLikelyToKeepUpObserver = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] observedItem, _ in
             Task { @MainActor in
                 guard observedItem.isPlaybackLikelyToKeepUp else { return }
-                self?.isBuffering = false
-                self?.playbackStatusText = nil
+                self?.clearTransientPlaybackStatus()
             }
         }
     }
@@ -826,9 +767,17 @@ final class PlayerController: ObservableObject {
                 return
             }
             self.pendingSeekTarget = nil
+            seekTarget = nil
+        } else if seekTarget != nil {
+            seekTarget = nil
         }
 
+        let previousElapsed = elapsed
         elapsed = newElapsed
+        if engine.rate > 0 || newElapsed > previousElapsed + 0.05 {
+            clearTransientPlaybackStatus()
+        }
+        reportPlaybackProgress()
         if let itemDuration = engine.currentItem?.duration.seconds,
            itemDuration.isFinite,
            itemDuration > 0 {
@@ -839,19 +788,29 @@ final class PlayerController: ObservableObject {
     }
 
     private func syncPlaybackStateFromEngine(forceNowPlaying: Bool) {
-        let playing = engine.timeControlStatus == .playing
-        let buffering = engine.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        let playing = engine.timeControlStatus == .playing || engine.rate > 0
+        let buffering = engine.timeControlStatus == .waitingToPlayAtSpecifiedRate && engine.rate == 0
         isBuffering = buffering
         if buffering {
             playbackStatusText = "正在缓冲"
-        } else if playbackStatusText == "正在缓冲" || playbackStatusText == "正在连接" {
-            playbackStatusText = nil
+        } else {
+            clearTransientPlaybackStatus()
         }
-        if !isFadingToPause, isPlaying != playing {
+        if isPlaying != playing {
             isPlaying = playing
         }
         syncNowPlaying(force: forceNowPlaying)
         syncRemoteCommandAvailability()
+    }
+
+    private func clearTransientPlaybackStatus() {
+        isBuffering = false
+        if playbackStatusText == "正在跳转" ||
+            playbackStatusText == "正在缓冲" ||
+            playbackStatusText == "正在连接" ||
+            playbackStatusText == "正在切换播放源" {
+            playbackStatusText = nil
+        }
     }
 
     private func itemTime(forAbsoluteTime absoluteTime: TimeInterval) -> TimeInterval {
@@ -903,6 +862,94 @@ final class PlayerController: ObservableObject {
         let canGoNext = repeatMode == .all || currentIndex.map { $0 < songs.index(before: songs.endIndex) } == true
         let canGoPrevious = elapsed > 3 || repeatMode == .all || currentIndex.map { $0 > songs.startIndex } == true
         remoteCommands.update(canGoNext: canGoNext, canGoPrevious: canGoPrevious, canSeek: duration > 0)
+    }
+
+    private func reportPlaybackStarted(position: TimeInterval) {
+        guard let currentSong, let session, let currentPlaySessionId else { return }
+
+        let item = currentSong
+        let activeSession = session
+        let playSessionId = currentPlaySessionId
+        let playMethod = currentPlaybackReportMethod
+        let clampedPosition = max(0, position)
+        lastPlaybackProgressReport = Date()
+
+        playbackReportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.client.reportPlaybackStarted(
+                    item: item,
+                    session: activeSession,
+                    playSessionId: playSessionId,
+                    playMethod: playMethod,
+                    position: clampedPosition
+                )
+            } catch {
+                print("[Player] Failed to report Emby playback start: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func reportPlaybackProgress(
+        force: Bool = false,
+        position: TimeInterval? = nil,
+        isPaused: Bool? = nil
+    ) {
+        guard let currentSong, let session, let currentPlaySessionId else { return }
+
+        let now = Date()
+        guard force || now.timeIntervalSince(lastPlaybackProgressReport) >= 5 else { return }
+        lastPlaybackProgressReport = now
+
+        let item = currentSong
+        let activeSession = session
+        let playSessionId = currentPlaySessionId
+        let playMethod = currentPlaybackReportMethod
+        let clampedPosition = max(0, min(position ?? elapsed, max(duration, currentSong.duration)))
+        let paused = isPaused ?? !isPlaying
+
+        playbackReportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.client.reportPlaybackProgress(
+                    item: item,
+                    session: activeSession,
+                    playSessionId: playSessionId,
+                    playMethod: playMethod,
+                    position: clampedPosition,
+                    isPaused: paused
+                )
+            } catch {
+                print("[Player] Failed to report Emby playback progress: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func reportPlaybackStoppedIfNeeded(position: TimeInterval? = nil) {
+        guard let currentSong, let session, let currentPlaySessionId else { return }
+
+        let item = currentSong
+        let activeSession = session
+        let playSessionId = currentPlaySessionId
+        let playMethod = currentPlaybackReportMethod
+        let clampedPosition = max(0, min(position ?? elapsed, max(duration, currentSong.duration)))
+        self.currentPlaySessionId = nil
+        lastPlaybackProgressReport = .distantPast
+
+        playbackReportTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.client.reportPlaybackStopped(
+                    item: item,
+                    session: activeSession,
+                    playSessionId: playSessionId,
+                    playMethod: playMethod,
+                    position: clampedPosition
+                )
+            } catch {
+                print("[Player] Failed to report Emby playback stop: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {
@@ -1083,7 +1130,7 @@ final class PlayerController: ObservableObject {
 }
 
 enum PlaybackAudioCache {
-    private static let version = "v2"
+    private static let version = "v3"
 
     struct Key: Hashable {
         let serverHash: String
