@@ -513,9 +513,32 @@ struct MusicPlaylist: Identifiable, Codable, Hashable {
     let name: String
     let description: String
     let songs: [EmbyAudioItem]
+    let songCount: Int?
+
+    init(
+        id: String,
+        name: String,
+        description: String,
+        songs: [EmbyAudioItem],
+        songCount: Int? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.songs = songs
+        self.songCount = songCount
+    }
 
     var totalDuration: TimeInterval {
         songs.reduce(0) { $0 + $1.duration }
+    }
+
+    var displaySongCount: Int {
+        songCount ?? songs.count
+    }
+
+    var hasCompleteSongList: Bool {
+        songCount.map { $0 <= songs.count } ?? true
     }
 }
 

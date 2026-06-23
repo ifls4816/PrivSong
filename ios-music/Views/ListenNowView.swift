@@ -13,17 +13,36 @@ struct ListenNowView: View {
         _pendingRoute = pendingRoute
     }
 
+    private var showsLibraryCategorySkeleton: Bool {
+        store.hasLoadedInitialContent && store.songs.isEmpty && store.isLoading
+    }
+
+    private var showsPlaylistSkeleton: Bool {
+        store.hasLoadedInitialContent && store.playlists.isEmpty && store.isLoading
+    }
+
+    private var showsHomeEmptyState: Bool {
+        !store.hasHomeContent && !showsLibraryCategorySkeleton && !showsPlaylistSkeleton
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if store.songs.isEmpty {
+                    if showsHomeEmptyState {
                         ContentUnavailableView("暂无资料库", systemImage: "music.note.list", description: Text(store.libraryStatus))
                             .frame(maxWidth: .infinity)
                             .padding(.top, 120)
                     } else {
-                        libraryCategorySection
-                        if !store.playlists.isEmpty {
+                        if showsLibraryCategorySkeleton {
+                            LibraryCategorySkeletonSection()
+                        } else if !store.songs.isEmpty {
+                            libraryCategorySection
+                        }
+
+                        if showsPlaylistSkeleton {
+                            PlaylistSkeletonSection()
+                        } else if !store.playlists.isEmpty {
                             playlistSection
                         }
                     }
@@ -38,11 +57,7 @@ struct ListenNowView: View {
             .navigationDestination(for: HomeRoute.self) { route in
                 switch route {
                 case .playlist(let id):
-                    if let playlist = store.playlists.first(where: { $0.id == id }) {
-                        PaginatedSongListView(title: playlist.name, songs: playlist.songs)
-                    } else {
-                        ContentUnavailableView("歌单不可用", systemImage: "music.note.list")
-                    }
+                    PlaylistDetailLoaderView(playlistID: id)
                 case .artist(let id):
                     if let artist = store.artists.first(where: { $0.id == id }) {
                         ArtistDetailView(artist: artist)
@@ -200,14 +215,10 @@ struct HomePlaylistRow: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                Text("\(playlist.songs.count) 首歌曲")
+                Text("\(playlist.displaySongCount) 首歌曲")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(playlist.totalDuration.playlistDurationText)
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary.opacity(0.86))
-                    .monospacedDigit()
             }
 
             Spacer(minLength: 8)
@@ -219,6 +230,70 @@ struct HomePlaylistRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+    }
+}
+
+private struct PlaylistDetailLoaderView: View {
+    @EnvironmentObject private var store: AppStore
+    let playlistID: String
+
+    @State private var loadedSongs: [EmbyAudioItem]?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    private var playlist: MusicPlaylist? {
+        store.playlists.first { $0.id == playlistID }
+    }
+
+    private var title: String {
+        playlist?.name ?? "歌单"
+    }
+
+    var body: some View {
+        Group {
+            if let loadedSongs {
+                PaginatedSongListView(title: title, songs: loadedSongs)
+            } else if let playlist, playlist.hasCompleteSongList {
+                PaginatedSongListView(title: playlist.name, songs: playlist.songs)
+            } else if isLoading {
+                ProgressView()
+                    .controlSize(.large)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.musicPageBackground.ignoresSafeArea())
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+            } else if let errorMessage {
+                ContentUnavailableView("歌单加载失败", systemImage: "exclamationmark.triangle", description: Text(errorMessage))
+                    .background(Color.musicPageBackground.ignoresSafeArea())
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+            } else {
+                ContentUnavailableView("歌单不可用", systemImage: "music.note.list")
+                    .background(Color.musicPageBackground.ignoresSafeArea())
+                    .navigationTitle(title)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .task(id: playlistID) {
+            await loadSongsIfNeeded()
+        }
+    }
+
+    private func loadSongsIfNeeded() async {
+        guard loadedSongs == nil,
+              let playlist,
+              !playlist.hasCompleteSongList else {
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+        do {
+            loadedSongs = try await store.loadPlaylistSongsIfNeeded(playlistId: playlistID)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
     }
 }
 
@@ -271,14 +346,20 @@ struct BrowseView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    if store.songs.isEmpty {
+                    if !store.hasBrowseContent {
                         ContentUnavailableView("暂无发现内容", systemImage: "sparkles", description: Text(store.libraryStatus))
                             .frame(maxWidth: .infinity)
                             .padding(.top, 120)
                     } else {
-                        dailyRecommendationCard
-                        RecentAddedSection()
-                        MostPlayedSection()
+                        if !store.dailyRecommendedSongs.isEmpty {
+                            dailyRecommendationCard
+                        }
+                        if !store.recentlyAddedSongs.isEmpty {
+                            RecentAddedSection()
+                        }
+                        if !store.mostPlayedSongs.isEmpty {
+                            MostPlayedSection()
+                        }
                     }
                 }
                 .padding(.horizontal, 18)
@@ -420,6 +501,115 @@ private struct LibraryCategoryCard: View {
     }
 }
 
+private struct LibraryCategorySkeletonSection: View {
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+            ForEach(0..<4, id: \.self) { _ in
+                LibraryCategorySkeletonCard()
+            }
+        }
+    }
+}
+
+private struct LibraryCategorySkeletonCard: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            SkeletonBlock(cornerRadius: 13)
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 8) {
+                SkeletonBlock(cornerRadius: 5)
+                    .frame(width: 74, height: 15)
+                SkeletonBlock(cornerRadius: 4)
+                    .frame(width: 46, height: 11)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
+        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct PlaylistSkeletonSection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("我的歌单")
+                .font(.system(size: 24, weight: .bold))
+
+            LazyVStack(spacing: 0) {
+                ForEach(0..<5, id: \.self) { index in
+                    PlaylistSkeletonRow()
+
+                    if index < 4 {
+                        Divider()
+                            .padding(.leading, 90)
+                    }
+                }
+            }
+            .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct PlaylistSkeletonRow: View {
+    var body: some View {
+        HStack(spacing: 12) {
+            SkeletonBlock(cornerRadius: 12)
+                .frame(width: 58, height: 58)
+
+            VStack(alignment: .leading, spacing: 9) {
+                SkeletonBlock(cornerRadius: 5)
+                    .frame(width: 132, height: 15)
+                SkeletonBlock(cornerRadius: 4)
+                    .frame(width: 70, height: 11)
+            }
+
+            Spacer(minLength: 8)
+
+            SkeletonBlock(cornerRadius: 6)
+                .frame(width: 18, height: 18)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+}
+
+private struct SkeletonBlock: View {
+    let cornerRadius: CGFloat
+    @State private var isAnimating = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(Color.secondary.opacity(0.13))
+                .overlay {
+                    LinearGradient(
+                        colors: [
+                            .clear,
+                            Color.white.opacity(0.34),
+                            .clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .rotationEffect(.degrees(18))
+                    .frame(width: max(proxy.size.width * 0.72, 24), height: proxy.size.height * 2.4)
+                    .offset(x: isAnimating ? proxy.size.width * 1.2 : -proxy.size.width * 1.2)
+                }
+                .clipped()
+        }
+        .onAppear {
+            withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) {
+                isAnimating = true
+            }
+        }
+    }
+}
+
 struct RecentAddedSection: View {
     @EnvironmentObject private var store: AppStore
 
@@ -437,7 +627,7 @@ struct RecentAddedSection: View {
                             subtitle: song.artistLine,
                             imageURL: store.imageURL(for: song, size: 320)
                         ) {
-                            store.play(song: song, in: store.songs)
+                            store.play(song: song, in: store.recentlyAddedSongs)
                         }
                     }
                 }

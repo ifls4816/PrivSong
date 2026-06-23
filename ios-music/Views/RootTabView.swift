@@ -29,7 +29,7 @@ struct RootTabView: View {
                 }
             }
             .overlay {
-                if store.session != nil, !store.hasLibraryCache, store.songs.isEmpty, store.isLoading {
+                if store.session != nil, !store.hasLoadedInitialContent, store.isLoading {
                     LaunchLoadingView()
                         .transition(.opacity)
                 }

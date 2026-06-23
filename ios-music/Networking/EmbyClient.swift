@@ -1,5 +1,12 @@
 import Foundation
 
+struct InitialHomeContent: Codable {
+    let playlists: [MusicPlaylist]
+    let dailySeedSongs: [EmbyAudioItem]
+    let recentlyAddedSongs: [EmbyAudioItem]
+    let mostPlayedSongs: [EmbyAudioItem]
+}
+
 struct EmbyClient {
     private let session: URLSession
     private let jsonDecoder: JSONDecoder
@@ -32,11 +39,7 @@ struct EmbyClient {
     }
 
     func fetchSongs(session embySession: EmbySession, searchTerm: String? = nil) async throws -> [EmbyAudioItem] {
-        let views = try await fetchViews(session: embySession)
-        let musicViews = views.filter(\.isMusicLibrary)
-        guard !musicViews.isEmpty else {
-            throw EmbyError.noMusicLibrary(views.map { "\($0.name)(\($0.collectionType ?? "unknown"))" })
-        }
+        let musicViews = try await fetchMusicViews(session: embySession)
         let scopedSongs = try await fetchSongsFromViews(
             musicViews,
             session: embySession,
@@ -87,6 +90,40 @@ struct EmbyClient {
         return visibleItems.filter(\.isAudio)
     }
 
+    func fetchInitialHomeContent(session embySession: EmbySession) async throws -> InitialHomeContent {
+        let musicViews = try await fetchMusicViews(session: embySession)
+
+        async let playlists = fetchPlaylistSummaries(session: embySession)
+        async let dailySeedSongs = fetchSongSample(
+            from: musicViews,
+            session: embySession,
+            sortBy: "Random",
+            sortOrder: "Ascending",
+            limit: 50
+        )
+        async let recentlyAddedSongs = fetchSongSample(
+            from: musicViews,
+            session: embySession,
+            sortBy: "DateCreated",
+            sortOrder: "Descending",
+            limit: 50
+        )
+        async let mostPlayedSongs = fetchSongSample(
+            from: musicViews,
+            session: embySession,
+            sortBy: "PlayCount",
+            sortOrder: "Descending",
+            limit: 50
+        )
+
+        return InitialHomeContent(
+            playlists: (try? await playlists) ?? [],
+            dailySeedSongs: (try? await dailySeedSongs) ?? [],
+            recentlyAddedSongs: (try? await recentlyAddedSongs) ?? [],
+            mostPlayedSongs: (try? await mostPlayedSongs) ?? []
+        )
+    }
+
     func fetchPlaylists(session embySession: EmbySession) async throws -> [MusicPlaylist] {
         let playlistItems = try await fetchPlaylistItems(session: embySession)
         guard !playlistItems.isEmpty else { return [] }
@@ -99,12 +136,51 @@ struct EmbyClient {
                     id: item.id,
                     name: item.name,
                     description: "\(songs.count) 首歌曲",
-                    songs: songs
+                    songs: songs,
+                    songCount: item.childCount ?? songs.count
                 )
             )
         }
 
         return playlists.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func fetchPlaylistSummaries(session embySession: EmbySession) async throws -> [MusicPlaylist] {
+        try await fetchPlaylistItems(session: embySession)
+            .map { item in
+                let count = item.childCount ?? 0
+                return MusicPlaylist(
+                    id: item.id,
+                    name: item.name,
+                    description: "\(count) 首歌曲",
+                    songs: [],
+                    songCount: item.childCount
+                )
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func fetchPlaylistSongs(playlistId: String, session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+        do {
+            return try await fetchPlaylistSongsFromPlaylistEndpoint(playlistId: playlistId, session: embySession)
+        } catch {
+            return try await fetchSongs(
+                session: embySession,
+                searchTerm: nil,
+                parentId: playlistId,
+                filterName: "IncludeItemTypes",
+                filterValue: "Audio"
+            )
+        }
+    }
+
+    private func fetchMusicViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
+        let views = try await fetchViews(session: embySession)
+        let musicViews = views.filter(\.isMusicLibrary)
+        guard !musicViews.isEmpty else {
+            throw EmbyError.noMusicLibrary(views.map { "\($0.name)(\($0.collectionType ?? "unknown"))" })
+        }
+        return musicViews
     }
 
     private func fetchViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
@@ -283,7 +359,9 @@ struct EmbyClient {
                 filterName: filterName,
                 filterValue: filterValue,
                 startIndex: startIndex,
-                limit: pageLimit
+                limit: pageLimit,
+                sortBy: "SortName",
+                sortOrder: "Ascending"
             )
             songs.append(contentsOf: response.items)
             totalRecordCount = response.totalRecordCount
@@ -297,6 +375,74 @@ struct EmbyClient {
         return songs
     }
 
+    private func fetchSongSample(
+        from views: [EmbyLibraryView],
+        session embySession: EmbySession,
+        sortBy: String,
+        sortOrder: String,
+        limit: Int
+    ) async throws -> [EmbyAudioItem] {
+        var songs: [EmbyAudioItem] = []
+        var lastError: Error?
+        let perViewLimit = max(limit, 1)
+
+        for view in views {
+            do {
+                let response = try await fetchSongPage(
+                    session: embySession,
+                    searchTerm: nil,
+                    parentId: view.id,
+                    filterName: "IncludeItemTypes",
+                    filterValue: "Audio",
+                    startIndex: 0,
+                    limit: perViewLimit,
+                    sortBy: sortBy,
+                    sortOrder: sortOrder
+                )
+                songs.append(contentsOf: response.items.filter(\.isAudio))
+            } catch {
+                lastError = error
+            }
+        }
+
+        if songs.isEmpty, let lastError {
+            throw lastError
+        }
+
+        let unique = uniqueSongs(songs)
+        return Array(sortSampleSongs(unique, sortBy: sortBy, sortOrder: sortOrder).prefix(limit))
+    }
+
+    private func sortSampleSongs(
+        _ songs: [EmbyAudioItem],
+        sortBy: String,
+        sortOrder: String
+    ) -> [EmbyAudioItem] {
+        let descending = sortOrder.localizedCaseInsensitiveCompare("Descending") == .orderedSame
+
+        switch sortBy.lowercased() {
+        case "datecreated":
+            return songs.sorted {
+                let left = $0.dateCreated ?? .distantPast
+                let right = $1.dateCreated ?? .distantPast
+                return descending ? left > right : left < right
+            }
+        case "playcount":
+            return songs.sorted {
+                let left = $0.userData?.playCount ?? 0
+                let right = $1.userData?.playCount ?? 0
+                if left != right {
+                    return descending ? left > right : left < right
+                }
+                let leftDate = $0.userData?.lastPlayedDate ?? .distantPast
+                let rightDate = $1.userData?.lastPlayedDate ?? .distantPast
+                return descending ? leftDate > rightDate : leftDate < rightDate
+            }
+        default:
+            return songs
+        }
+    }
+
     private func fetchSongPage(
         session embySession: EmbySession,
         searchTerm: String?,
@@ -304,7 +450,9 @@ struct EmbyClient {
         filterName: String?,
         filterValue: String?,
         startIndex: Int,
-        limit: Int
+        limit: Int,
+        sortBy: String,
+        sortOrder: String
     ) async throws -> EmbyItemsResponse {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Items"),
@@ -313,8 +461,8 @@ struct EmbyClient {
         var queryItems = [
             URLQueryItem(name: "Recursive", value: "true"),
             URLQueryItem(name: "Fields", value: itemFields),
-            URLQueryItem(name: "SortBy", value: "SortName"),
-            URLQueryItem(name: "SortOrder", value: "Ascending"),
+            URLQueryItem(name: "SortBy", value: sortBy),
+            URLQueryItem(name: "SortOrder", value: sortOrder),
             URLQueryItem(name: "StartIndex", value: "\(startIndex)"),
             URLQueryItem(name: "Limit", value: "\(limit)")
         ]
@@ -373,20 +521,6 @@ struct EmbyClient {
         } while totalRecordCount.map { playlists.count < $0 } ?? true
 
         return playlists
-    }
-
-    private func fetchPlaylistSongs(playlistId: String, session embySession: EmbySession) async throws -> [EmbyAudioItem] {
-        do {
-            return try await fetchPlaylistSongsFromPlaylistEndpoint(playlistId: playlistId, session: embySession)
-        } catch {
-            return try await fetchSongs(
-                session: embySession,
-                searchTerm: nil,
-                parentId: playlistId,
-                filterName: "IncludeItemTypes",
-                filterValue: "Audio"
-            )
-        }
     }
 
     private func fetchPlaylistSongsFromPlaylistEndpoint(

@@ -10,6 +10,7 @@ final class AppStore: ObservableObject {
     @Published var isLoading = false
     @Published var isSearching = false
     @Published private(set) var hasLibraryCache = false
+    @Published private(set) var hasLoadedInitialContent = false
     @Published var errorMessage: String?
     @Published var libraryStatus = "Not connected"
     @Published var favoriteSongIds: Set<String> = []
@@ -55,7 +56,7 @@ final class AppStore: ObservableObject {
 
     private let client = EmbyClient()
     private let snapshotStore = LibrarySnapshotStore()
-    private let libraryCacheRefreshInterval: TimeInterval = 6 * 60 * 60
+    private let initialHomeSnapshotStore = InitialHomeContentSnapshotStore()
     private let sessionKey = "EmbySession"
     private let favoritesKey = "FavoriteSongIds"
     private let recentKey = "RecentSongIds"
@@ -67,6 +68,7 @@ final class AppStore: ObservableObject {
     private let highRefreshRateKey = "PrefersHighRefreshRate"
     private var activeSearchToken: UUID?
     private var libraryCacheSavedAt: Date?
+    private var initialHomeContentSavedAt: Date?
     private var dailyRecommendationDay: Int?
 
     weak var player: PlayerController? {
@@ -77,6 +79,14 @@ final class AppStore: ObservableObject {
 
     var lastPlayedSong: EmbyAudioItem? {
         recentSongs.first
+    }
+
+    var hasHomeContent: Bool {
+        !songs.isEmpty || !playlists.isEmpty
+    }
+
+    var hasBrowseContent: Bool {
+        !dailyRecommendedSongs.isEmpty || !recentlyAddedSongs.isEmpty || !mostPlayedSongs.isEmpty
     }
 
     var favoriteSongs: [EmbyAudioItem] {
@@ -141,28 +151,102 @@ final class AppStore: ObservableObject {
             let session = try await client.authenticate(server: server, username: username, password: password)
             self.session = session
             self.persist(session)
-            let songs = try await client.fetchSongs(session: session)
-            let playlists = (try? await client.fetchPlaylists(session: session)) ?? []
-            self.songs = songs
-            self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
-            self.hasLibraryCache = !songs.isEmpty
-            self.libraryCacheSavedAt = Date()
-            self.saveLibrarySnapshot()
-            self.updateLibraryStatus()
+            try await self.fetchAndApplyInitialHomeContent(session: session)
         }
+
+        if session != nil {
+            Task {
+                await refreshLibrary()
+            }
+        }
+    }
+
+    private func fetchAndApplyInitialHomeContent(session: EmbySession) async throws {
+        let content = try await client.fetchInitialHomeContent(session: session)
+        applyInitialHomeContent(content)
+    }
+
+    private func loadInitialHomeContent(session: EmbySession) async {
+        await perform {
+            try await self.fetchAndApplyInitialHomeContent(session: session)
+        }
+    }
+
+    private func applyInitialHomeContent(
+        _ content: InitialHomeContent,
+        savedAt: Date = Date(),
+        savesSnapshot: Bool = true
+    ) {
+        playlists = content.playlists
+        recentlyAddedSongs = content.recentlyAddedSongs
+        mostPlayedSongs = content.mostPlayedSongs.isEmpty ? content.recentlyAddedSongs : content.mostPlayedSongs
+
+        let day = currentRecommendationDay()
+        let dailySeed = firstNonEmptySongList(
+            content.dailySeedSongs,
+            content.recentlyAddedSongs,
+            content.mostPlayedSongs
+        )
+        dailyRecommendationDay = day
+        dailyRecommendedSongs = dailyRecommendation(from: dailySeed, day: day, limit: 50)
+        hasLoadedInitialContent = true
+        initialHomeContentSavedAt = savedAt
+        libraryStatus = "Loaded home content."
+
+        if savesSnapshot {
+            initialHomeSnapshotStore.save(content)
+        }
+    }
+
+    private func firstNonEmptySongList(_ candidates: [EmbyAudioItem]...) -> [EmbyAudioItem] {
+        candidates.first { !$0.isEmpty } ?? []
+    }
+
+    func loadPlaylistSongsIfNeeded(playlistId: String) async throws -> [EmbyAudioItem] {
+        guard let session,
+              let index = playlists.firstIndex(where: { $0.id == playlistId }) else {
+            return []
+        }
+
+        let playlist = playlists[index]
+        guard !playlist.hasCompleteSongList else {
+            return playlist.songs
+        }
+
+        let songs = try await client.fetchPlaylistSongs(playlistId: playlistId, session: session)
+        let updatedPlaylist = MusicPlaylist(
+            id: playlist.id,
+            name: playlist.name,
+            description: "\(songs.count) 首歌曲",
+            songs: songs,
+            songCount: songs.count
+        )
+        var updatedPlaylists = playlists
+        updatedPlaylists[index] = updatedPlaylist
+        playlists = updatedPlaylists
+        return songs
+    }
+
+    private func applyFullLibrary(songs: [EmbyAudioItem], playlists: [MusicPlaylist]) {
+        self.songs = songs
+        self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
+        self.hasLibraryCache = !songs.isEmpty
+        self.hasLoadedInitialContent = true
+        self.libraryCacheSavedAt = Date()
+        self.saveLibrarySnapshot()
+        self.updateLibraryStatus()
+    }
+
+    private func fetchAndApplyFullLibrary(session: EmbySession) async throws {
+        let songs = try await client.fetchSongs(session: session)
+        let playlists = (try? await client.fetchPlaylists(session: session)) ?? []
+        applyFullLibrary(songs: songs, playlists: playlists)
     }
 
     func refreshLibrary() async {
         guard let session else { return }
         await perform {
-            let songs = try await client.fetchSongs(session: session)
-            let playlists = (try? await client.fetchPlaylists(session: session)) ?? []
-            self.songs = songs
-            self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
-            self.hasLibraryCache = !songs.isEmpty
-            self.libraryCacheSavedAt = Date()
-            self.saveLibrarySnapshot()
-            self.updateLibraryStatus()
+            try await self.fetchAndApplyFullLibrary(session: session)
         }
     }
 
@@ -236,11 +320,14 @@ final class AppStore: ObservableObject {
         recentlyAddedSongs = []
         mostPlayedSongs = []
         hasLibraryCache = false
+        hasLoadedInitialContent = false
         libraryCacheSavedAt = nil
+        initialHomeContentSavedAt = nil
         errorMessage = nil
         libraryStatus = "Not connected"
         UserDefaults.standard.removeObject(forKey: sessionKey)
         snapshotStore.clear()
+        initialHomeSnapshotStore.clear()
         ArtworkImageCache.shared.clear()
         ArtworkDiskCache.clear()
         PlaybackAudioCache.clearAll()
@@ -249,12 +336,15 @@ final class AppStore: ObservableObject {
 
     func clearCaches() {
         snapshotStore.clear()
+        initialHomeSnapshotStore.clear()
         ArtworkImageCache.shared.clear()
         ArtworkDiskCache.clear()
         PlaybackAudioCache.clearAll()
         URLCache.shared.removeAllCachedResponses()
         hasLibraryCache = false
+        hasLoadedInitialContent = hasHomeContent || hasBrowseContent
         libraryCacheSavedAt = nil
+        initialHomeContentSavedAt = hasLoadedInitialContent ? Date() : nil
         libraryStatus = songs.isEmpty ? "Cache cleared." : "Cache cleared. Current library remains in memory."
     }
 
@@ -331,22 +421,26 @@ final class AppStore: ObservableObject {
         session = restored
 
         if restoreLibrarySnapshot() {
-            if shouldRefreshCachedLibrary() {
-                Task {
-                    await refreshLibrary()
-                }
+            return
+        }
+
+        if restoreInitialHomeSnapshot() {
+            Task {
+                await refreshLibraryIfNeededForToday()
             }
             return
         }
 
         Task {
-            await refreshLibrary()
+            await loadInitialHomeContent(session: restored)
+            await refreshLibraryIfNeededForToday()
         }
     }
 
     private func restoreLibrarySnapshot() -> Bool {
         guard let snapshot = snapshotStore.load(),
-              !snapshot.songs.isEmpty else {
+              !snapshot.songs.isEmpty,
+              Calendar.current.isDateInToday(snapshot.savedAt) else {
             hasLibraryCache = false
             return false
         }
@@ -354,6 +448,7 @@ final class AppStore: ObservableObject {
         songs = snapshot.songs
         playlists = snapshot.playlists.isEmpty ? snapshot.songs.generatedPlaylists : snapshot.playlists
         hasLibraryCache = true
+        hasLoadedInitialContent = true
         libraryCacheSavedAt = snapshot.savedAt
         libraryStatus = "Loaded \(snapshot.songs.count) songs from cache."
         return true
@@ -361,7 +456,23 @@ final class AppStore: ObservableObject {
 
     private func shouldRefreshCachedLibrary() -> Bool {
         guard let libraryCacheSavedAt else { return true }
-        return Date().timeIntervalSince(libraryCacheSavedAt) >= libraryCacheRefreshInterval
+        return !Calendar.current.isDateInToday(libraryCacheSavedAt)
+    }
+
+    private func refreshLibraryIfNeededForToday() async {
+        guard shouldRefreshCachedLibrary() else { return }
+        await refreshLibrary()
+    }
+
+    private func restoreInitialHomeSnapshot() -> Bool {
+        guard let snapshot = initialHomeSnapshotStore.load(),
+              Calendar.current.isDateInToday(snapshot.savedAt) else {
+            return false
+        }
+
+        applyInitialHomeContent(snapshot.content, savedAt: snapshot.savedAt, savesSnapshot: false)
+        libraryStatus = "Loaded home content from cache."
+        return true
     }
 
     private func saveLibrarySnapshot() {
@@ -497,6 +608,67 @@ private struct LibrarySnapshotStore {
             try data.write(to: snapshotURL, options: [.atomic])
         } catch {
             print("[LibrarySnapshotStore] Failed to save snapshot: \(error.localizedDescription)")
+        }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: snapshotURL)
+    }
+
+    private var snapshotURL: URL {
+        applicationSupportDirectory.appendingPathComponent(fileName)
+    }
+
+    private var applicationSupportDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("MusicEmby", isDirectory: true)
+    }
+}
+
+private struct InitialHomeContentSnapshot: Codable {
+    let version: Int
+    let savedAt: Date
+    let content: InitialHomeContent
+}
+
+private struct InitialHomeContentSnapshotStore {
+    private let version = 1
+    private let fileName = "initial-home-snapshot.json"
+
+    func load() -> InitialHomeContentSnapshot? {
+        let url = snapshotURL
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let snapshot = try? decoder.decode(InitialHomeContentSnapshot.self, from: data),
+              snapshot.version == version else {
+            return nil
+        }
+        return snapshot
+    }
+
+    func save(_ content: InitialHomeContent) {
+        let snapshot = InitialHomeContentSnapshot(
+            version: version,
+            savedAt: Date(),
+            content: content
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        do {
+            let directory = applicationSupportDirectory
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try encoder.encode(snapshot)
+            try data.write(to: snapshotURL, options: [.atomic])
+        } catch {
+            print("[InitialHomeContentSnapshotStore] Failed to save snapshot: \(error.localizedDescription)")
         }
     }
 
