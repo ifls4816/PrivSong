@@ -2,21 +2,16 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var isSignOutConfirmationPresented = false
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Emby") {
-                    connectionRows
+                Section("资料库") {
+                    libraryRows
                 }
 
                 Section("播放与启动") {
                     playbackRows
-                }
-
-                Section("资料库") {
-                    libraryRows
                 }
 
                 Section("高级") {
@@ -29,37 +24,22 @@ struct SettingsView: View {
             .safeAreaPadding(.bottom, 112)
             .mainPageToolbar("设置")
             .navigationBarBackButtonHidden(true)
-            .confirmationDialog("断开 Emby 连接？", isPresented: $isSignOutConfirmationPresented, titleVisibility: .visible) {
-                Button("断开连接", role: .destructive) {
-                    store.signOut()
-                }
-
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("断开后会清除本地资料库快照和封面缓存，需要重新连接 Emby。")
-            }
-        }
-    }
-
-    private var connectionRows: some View {
-        Group {
-            SettingsValueRow(
-                title: store.session == nil ? "未连接" : "Emby 已连接",
-                value: store.session?.username ?? "登录后同步音乐资料库",
-                icon: store.session == nil ? "wifi.slash" : "externaldrive.connected.to.line.below",
-                tint: store.session == nil ? .secondary : .musicRed,
-                showsProgress: store.isLoading
-            )
-            if let session = store.session {
-                SettingsInfoRow(title: "服务器", value: session.serverURL.absoluteString)
-                SettingsInfoRow(title: "用户", value: session.username)
-                SettingsInfoRow(title: "状态", value: store.localizedLibraryStatus)
-            }
         }
     }
 
     private var libraryRows: some View {
         Group {
+            NavigationLink {
+                EditLibrarySettingsView()
+            } label: {
+                SettingsValueRow(
+                    title: "编辑资料库",
+                    value: librarySummary,
+                    icon: "music.note.list",
+                    tint: .blue
+                )
+            }
+
             Button {
                 Task { await store.refreshLibrary() }
             } label: {
@@ -75,14 +55,11 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
 
-            Button {
-                isSignOutConfirmationPresented = true
-            } label: {
-                SettingsActionRow(title: "断开连接", icon: "rectangle.portrait.and.arrow.right", tint: .red)
-            }
-            .buttonStyle(.plain)
-            .disabled(store.session == nil)
         }
+    }
+
+    private var librarySummary: String {
+        store.songs.isEmpty ? "暂无歌曲" : "\(store.songs.count) 首歌曲"
     }
 
     private var playbackRows: some View {
@@ -106,7 +83,7 @@ struct SettingsView: View {
             )
 
             SettingsToggleRow(
-                title: "屏幕常亮",
+                title: "播放页屏幕常亮",
                 icon: "sun.max",
                 tint: .orange,
                 isOn: $store.keepsScreenAwakeOnPlayerPage
@@ -123,6 +100,118 @@ struct SettingsView: View {
                 isOn: $store.prefersHighRefreshRate
             )
         }
+    }
+}
+
+private struct EditLibrarySettingsView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var server = ""
+    @State private var username = ""
+    @State private var password = ""
+    @State private var isSignOutConfirmationPresented = false
+
+    private var canSubmitConnectionChanges: Bool {
+        !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !password.isEmpty &&
+            !store.isLoading
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("服务器", text: $server)
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .autocorrectionDisabled()
+
+                TextField("用户", text: $username)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                SecureField("密码", text: $password)
+            } header: {
+                Text("连接信息")
+            } footer: {
+                Text("修改连接信息需要重新输入密码并重新连接 Emby。")
+            }
+
+            Section {
+                Button {
+                    Task {
+                        await store.signIn(server: server, username: username, password: password)
+                        if store.errorMessage == nil {
+                            password = ""
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Spacer()
+                        if store.isLoading {
+                            ProgressView()
+                        } else {
+                            Text("保存并重新连接")
+                                .fontWeight(.semibold)
+                        }
+                        Spacer()
+                    }
+                }
+                .disabled(!canSubmitConnectionChanges)
+            }
+
+            if let errorMessage = store.errorMessage {
+                Section {
+                    Text(errorMessage)
+                        .foregroundStyle(.red)
+                }
+            }
+
+            Section("当前资料库") {
+                SettingsInfoRow(title: "歌曲", value: "\(store.songs.count) 首")
+                SettingsInfoRow(title: "专辑", value: "\(store.albums.count) 张")
+                SettingsInfoRow(title: "艺术家", value: "\(store.artists.count) 位")
+                SettingsInfoRow(title: "状态", value: store.localizedLibraryStatus)
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    isSignOutConfirmationPresented = true
+                } label: {
+                    SettingsActionRow(title: "断开连接", icon: "rectangle.portrait.and.arrow.right", tint: .red)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.session == nil)
+                .confirmationDialog("断开 Emby 连接？", isPresented: $isSignOutConfirmationPresented, titleVisibility: .visible) {
+                    Button("断开连接", role: .destructive) {
+                        store.signOut()
+                        password = ""
+                    }
+
+                    Button("取消", role: .cancel) {}
+                } message: {
+                    Text("断开后会清除本地资料库快照和封面缓存，需要重新连接 Emby。")
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.musicPageBackground.ignoresSafeArea())
+        .navigationTitle("编辑资料库")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: loadConnectionFields)
+        .onChange(of: store.session) { _, _ in
+            loadConnectionFields()
+        }
+    }
+
+    private func loadConnectionFields() {
+        guard let session = store.session else {
+            server = ""
+            username = ""
+            return
+        }
+        server = session.serverURL.absoluteString
+        username = session.username
     }
 }
 
