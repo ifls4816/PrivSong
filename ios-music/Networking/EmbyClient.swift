@@ -2,6 +2,7 @@ import Foundation
 
 struct InitialHomeContent: Codable {
     let playlists: [MusicPlaylist]
+    let audiobookEpisodes: [EmbyAudioItem]
     let dailySeedSongs: [EmbyAudioItem]
     let recentlyAddedSongs: [EmbyAudioItem]
     let mostPlayedSongs: [EmbyAudioItem]
@@ -11,7 +12,7 @@ struct EmbyClient {
     private let session: URLSession
     private let jsonDecoder: JSONDecoder
     private let deviceIdKey = "EmbyDeviceId"
-    private let itemFields = "Album,AlbumId,AlbumArtist,AlbumPrimaryImageTag,Artists,Bitrate,Container,DateCreated,ImageTags,MediaSources,MediaType,PrimaryImageItemId,PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,UserData"
+    private let itemFields = "Album,AlbumId,AlbumArtist,AlbumPrimaryImageTag,Artists,Bitrate,Container,DateCreated,ImageTags,IndexNumber,MediaSources,MediaType,ParentId,ParentIndexNumber,PrimaryImageItemId,PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,SortName,UserData"
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -39,14 +40,17 @@ struct EmbyClient {
     }
 
     func fetchSongs(session embySession: EmbySession, searchTerm: String? = nil) async throws -> [EmbyAudioItem] {
-        let musicViews = try await fetchMusicViews(session: embySession)
+        let views = try await fetchViews(session: embySession)
+        let musicViews = views.filter(\.isMusicLibrary)
+        guard !musicViews.isEmpty else { return [] }
+
         let scopedSongs = try await fetchSongsFromViews(
             musicViews,
             session: embySession,
             searchTerm: searchTerm
         )
         if !scopedSongs.isEmpty {
-            return scopedSongs
+            return scopedSongs.filter { !$0.isAudiobookAudio }
         }
 
         let walkedSongs = try await fetchSongsByWalkingDirectories(
@@ -55,7 +59,7 @@ struct EmbyClient {
             searchTerm: searchTerm
         )
         if !walkedSongs.isEmpty {
-            return walkedSongs
+            return walkedSongs.filter { !$0.isAudiobookAudio }
         }
 
         let primary = try await fetchSongs(
@@ -66,7 +70,7 @@ struct EmbyClient {
             filterValue: "Audio"
         )
         if !primary.isEmpty {
-            return primary
+            return primary.filter { !$0.isAudiobookAudio }
         }
 
         let mediaTypeMatches = try await fetchSongs(
@@ -77,7 +81,7 @@ struct EmbyClient {
             filterValue: "Audio"
         )
         if !mediaTypeMatches.isEmpty {
-            return mediaTypeMatches
+            return mediaTypeMatches.filter { !$0.isAudiobookAudio }
         }
 
         let visibleItems = try await fetchSongs(
@@ -87,13 +91,19 @@ struct EmbyClient {
             filterName: nil,
             filterValue: nil
         )
-        return visibleItems.filter(\.isAudio)
+        return visibleItems.filter { $0.isAudio && !$0.isAudiobookAudio }
     }
 
     func fetchInitialHomeContent(session embySession: EmbySession) async throws -> InitialHomeContent {
-        let musicViews = try await fetchMusicViews(session: embySession)
+        let views = try await fetchViews(session: embySession)
+        let musicViews = views.filter(\.isMusicLibrary)
+        let audiobookViews = views.filter(\.isAudiobookLibrary)
+        guard !musicViews.isEmpty || !audiobookViews.isEmpty else {
+            throw EmbyError.noPlayableLibrary(views.map { "\($0.name)(\($0.collectionType ?? "unknown"))" })
+        }
 
         async let playlists = fetchPlaylistSummaries(session: embySession)
+        async let audiobookEpisodes = fetchAudiobookEpisodes(from: audiobookViews, session: embySession)
         async let dailySeedSongs = fetchSongSample(
             from: musicViews,
             session: embySession,
@@ -118,10 +128,16 @@ struct EmbyClient {
 
         return InitialHomeContent(
             playlists: (try? await playlists) ?? [],
+            audiobookEpisodes: (try? await audiobookEpisodes) ?? [],
             dailySeedSongs: (try? await dailySeedSongs) ?? [],
             recentlyAddedSongs: (try? await recentlyAddedSongs) ?? [],
             mostPlayedSongs: (try? await mostPlayedSongs) ?? []
         )
+    }
+
+    func fetchAudiobookEpisodes(session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+        let views = try await fetchViews(session: embySession)
+        return try await fetchAudiobookEpisodes(from: views.filter(\.isAudiobookLibrary), session: embySession)
     }
 
     func fetchPlaylists(session embySession: EmbySession) async throws -> [MusicPlaylist] {
@@ -174,15 +190,6 @@ struct EmbyClient {
         }
     }
 
-    private func fetchMusicViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
-        let views = try await fetchViews(session: embySession)
-        let musicViews = views.filter(\.isMusicLibrary)
-        guard !musicViews.isEmpty else {
-            throw EmbyError.noMusicLibrary(views.map { "\($0.name)(\($0.collectionType ?? "unknown"))" })
-        }
-        return musicViews
-    }
-
     private func fetchViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Views"),
@@ -203,7 +210,8 @@ struct EmbyClient {
     private func fetchSongsFromViews(
         _ views: [EmbyLibraryView],
         session embySession: EmbySession,
-        searchTerm: String?
+        searchTerm: String?,
+        includeItemTypes: String = "Audio"
     ) async throws -> [EmbyAudioItem] {
         var songs: [EmbyAudioItem] = []
         for view in views {
@@ -212,7 +220,7 @@ struct EmbyClient {
                 searchTerm: searchTerm,
                 parentId: view.id,
                 filterName: "IncludeItemTypes",
-                filterValue: "Audio"
+                filterValue: includeItemTypes
             )
             if !primary.isEmpty {
                 songs.append(contentsOf: primary)
@@ -242,6 +250,30 @@ struct EmbyClient {
         }
 
         return uniqueSongs(songs)
+    }
+
+    private func fetchAudiobookEpisodes(
+        from views: [EmbyLibraryView],
+        session embySession: EmbySession
+    ) async throws -> [EmbyAudioItem] {
+        guard !views.isEmpty else { return [] }
+
+        let scopedEpisodes = try await fetchSongsFromViews(
+            views,
+            session: embySession,
+            searchTerm: nil,
+            includeItemTypes: "Audio,AudioBook"
+        )
+        if !scopedEpisodes.isEmpty {
+            return scopedEpisodes
+        }
+
+        let walkedEpisodes = try await fetchSongsByWalkingDirectories(
+            views,
+            session: embySession,
+            searchTerm: nil
+        )
+        return walkedEpisodes
     }
 
     private func fetchSongsByWalkingDirectories(
@@ -399,7 +431,7 @@ struct EmbyClient {
                     sortBy: sortBy,
                     sortOrder: sortOrder
                 )
-                songs.append(contentsOf: response.items.filter(\.isAudio))
+                songs.append(contentsOf: response.items.filter { $0.isAudio && !$0.isAudiobookAudio })
             } catch {
                 lastError = error
             }
@@ -883,7 +915,7 @@ enum EmbyError: LocalizedError {
     case invalidResponse
     case server(statusCode: Int)
     case decoding(String)
-    case noMusicLibrary([String])
+    case noPlayableLibrary([String])
 
     var errorDescription: String? {
         switch self {
@@ -895,11 +927,11 @@ enum EmbyError: LocalizedError {
             return "Emby 请求失败，状态码 \(statusCode)。"
         case .decoding(let message):
             return "Emby 返回的数据无法解析：\(message)"
-        case .noMusicLibrary(let libraries):
+        case .noPlayableLibrary(let libraries):
             if libraries.isEmpty {
                 return "当前 Emby 用户没有可见媒体库。"
             }
-            return "当前 Emby 用户没有可见音乐库。可见媒体库：\(libraries.joined(separator: ", "))。"
+            return "当前 Emby 用户没有可见音乐或有声书库。可见媒体库：\(libraries.joined(separator: ", "))。"
         }
     }
 }

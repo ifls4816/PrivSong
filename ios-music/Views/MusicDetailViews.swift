@@ -259,6 +259,117 @@ struct ArtistDetailView: View {
     }
 }
 
+struct AudiobookDetailView: View {
+    @EnvironmentObject private var store: AppStore
+    private let pageSize = 32
+
+    let audiobook: Audiobook
+
+    @State private var visibleCount = 32
+    @State private var isLoadingNextPage = false
+
+    private var visibleEpisodes: [EmbyAudioItem] {
+        Array(audiobook.episodes.prefix(min(visibleCount, audiobook.episodes.count)))
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                header
+                episodeList
+
+                if visibleCount < audiobook.episodes.count {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.vertical, 8)
+                }
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 18)
+            .padding(.bottom, 130)
+        }
+        .scrollContentBackground(.hidden)
+        .background(Color.musicPageBackground.ignoresSafeArea())
+        .navigationTitle(audiobook.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            visibleCount = min(max(visibleCount, pageSize), audiobook.episodes.count)
+        }
+        .onChange(of: audiobook.episodes.count) { _, count in
+            visibleCount = min(pageSize, count)
+        }
+    }
+
+    private var header: some View {
+        VStack(spacing: 14) {
+            ArtworkView(
+                url: audiobook.representativeEpisode.flatMap { store.imageURL(for: $0, size: 420) },
+                cornerRadius: 12
+            )
+            .frame(width: 218, height: 218)
+            .shadow(color: .black.opacity(0.18), radius: 18, y: 10)
+
+            VStack(spacing: 5) {
+                Text(audiobook.title)
+                    .font(.title2.bold())
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                Text("\(audiobook.author) · \(audiobook.episodeCount) 集")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.musicRed)
+                    .lineLimit(1)
+                if let currentIndex = store.currentEpisodeIndex(for: audiobook) {
+                    Text("听到第 \(currentIndex + 1) 集")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            AudiobookPlaybackButtons(
+                isDisabled: audiobook.episodes.isEmpty,
+                play: { store.playAudiobook(audiobook) },
+                restart: { store.restartAudiobook(audiobook) }
+            )
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var episodeList: some View {
+        LazyVStack(spacing: 0) {
+            ForEach(Array(visibleEpisodes.enumerated()), id: \.element.id) { index, episode in
+                AudiobookEpisodeRow(
+                    episode: episode,
+                    episodeNumber: index + 1,
+                    audiobook: audiobook
+                )
+                .onAppear {
+                    loadNextPageIfNeeded(appearingIndex: index)
+                }
+
+                if index < visibleEpisodes.count - 1 {
+                    Divider()
+                        .padding(.leading, 56)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func loadNextPageIfNeeded(appearingIndex index: Int) {
+        let preloadThreshold = max(visibleEpisodes.count - 12, 0)
+        guard index >= preloadThreshold else { return }
+        guard visibleCount < audiobook.episodes.count, !isLoadingNextPage else { return }
+
+        isLoadingNextPage = true
+        visibleCount = min(visibleCount + pageSize, audiobook.episodes.count)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            isLoadingNextPage = false
+        }
+    }
+}
+
 private struct MusicCollectionDetailView: View {
     @EnvironmentObject private var store: AppStore
     private let pageSize = 32
@@ -395,6 +506,91 @@ private struct CollectionPlaybackButtons: View {
             .buttonStyle(.bordered)
             .disabled(isDisabled)
         }
+    }
+}
+
+private struct AudiobookPlaybackButtons: View {
+    let isDisabled: Bool
+    let play: () -> Void
+    let restart: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: play) {
+                HStack(spacing: 7) {
+                    Image(systemName: "play.fill")
+                    Text("继续播放")
+                }
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isDisabled)
+
+            Button(action: restart) {
+                HStack(spacing: 7) {
+                    Image(systemName: "gobackward")
+                    Text("从头播放")
+                }
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isDisabled)
+        }
+    }
+}
+
+private struct AudiobookEpisodeRow: View {
+    @EnvironmentObject private var store: AppStore
+    let episode: EmbyAudioItem
+    let episodeNumber: Int
+    let audiobook: Audiobook
+
+    var body: some View {
+        Button {
+            store.playAudiobookEpisode(episode, in: audiobook)
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.musicRed.opacity(store.isCurrentAudiobookEpisode(episode) ? 0.18 : 0.10))
+                    Image(systemName: store.isCurrentAudiobookEpisode(episode) ? "waveform" : "book.pages")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Color.musicRed)
+                }
+                .frame(width: 44, height: 44)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(episode.name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+                        .foregroundStyle(.primary)
+
+                    HStack(spacing: 7) {
+                        Text("第 \(episodeNumber) 集")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let progressText = store.audiobookProgressText(for: episode) {
+                            Text(progressText)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(Color.musicRed)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Text(episode.duration.musicDurationText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }
 

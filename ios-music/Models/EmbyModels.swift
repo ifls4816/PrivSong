@@ -185,6 +185,16 @@ struct EmbyLibraryView: Identifiable, Decodable, Hashable {
             name.localizedCaseInsensitiveContains("music") ||
             name.localizedCaseInsensitiveContains("音乐")
     }
+
+    var isAudiobookLibrary: Bool {
+        let normalizedType = collectionType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalizedType == "books" ||
+            normalizedType == "audiobooks" ||
+            name.localizedCaseInsensitiveContains("audiobook") ||
+            name.localizedCaseInsensitiveContains("audio book") ||
+            name.localizedCaseInsensitiveContains("有声书") ||
+            name.localizedCaseInsensitiveContains("听书")
+    }
 }
 
 struct EmbyAudioItem: Identifiable, Codable, Hashable {
@@ -195,6 +205,7 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
     let albumPrimaryImageTag: String?
     let artists: [String]?
     let albumArtist: String?
+    let parentId: String?
     let primaryImageItemId: String?
     let type: String?
     let mediaType: String?
@@ -203,6 +214,9 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
     let mediaSources: [EmbyMediaSource]?
     let isFolder: Bool?
     let runTimeTicks: Int64?
+    let indexNumber: Int?
+    let parentIndexNumber: Int?
+    let sortName: String?
     let productionYear: Int?
     let imageTags: [String: String]?
     let dateCreated: Date?
@@ -216,6 +230,7 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         case albumPrimaryImageTag = "AlbumPrimaryImageTag"
         case artists = "Artists"
         case albumArtist = "AlbumArtist"
+        case parentId = "ParentId"
         case primaryImageItemId = "PrimaryImageItemId"
         case type = "Type"
         case mediaType = "MediaType"
@@ -224,6 +239,9 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         case mediaSources = "MediaSources"
         case isFolder = "IsFolder"
         case runTimeTicks = "RunTimeTicks"
+        case indexNumber = "IndexNumber"
+        case parentIndexNumber = "ParentIndexNumber"
+        case sortName = "SortName"
         case productionYear = "ProductionYear"
         case imageTags = "ImageTags"
         case dateCreated = "DateCreated"
@@ -239,6 +257,7 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         albumPrimaryImageTag = try container.decodeIfPresent(String.self, forKey: .albumPrimaryImageTag)
         artists = container.decodeStringArrayIfPresent(forKey: .artists)
         albumArtist = try container.decodeIfPresent(String.self, forKey: .albumArtist)
+        parentId = try container.decodeIfPresent(String.self, forKey: .parentId)
         primaryImageItemId = try container.decodeIfPresent(String.self, forKey: .primaryImageItemId)
         type = try container.decodeIfPresent(String.self, forKey: .type)
         mediaType = try container.decodeIfPresent(String.self, forKey: .mediaType)
@@ -247,6 +266,9 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         mediaSources = try container.decodeIfPresent([EmbyMediaSource].self, forKey: .mediaSources)
         isFolder = try container.decodeIfPresent(Bool.self, forKey: .isFolder)
         runTimeTicks = container.decodeInt64IfPresent(forKey: .runTimeTicks)
+        indexNumber = container.decodeIntIfPresent(forKey: .indexNumber)
+        parentIndexNumber = container.decodeIntIfPresent(forKey: .parentIndexNumber)
+        sortName = try container.decodeIfPresent(String.self, forKey: .sortName)
         productionYear = try container.decodeIfPresent(Int.self, forKey: .productionYear)
         imageTags = try container.decodeIfPresent([String: String].self, forKey: .imageTags)
         dateCreated = container.decodeEmbyDateIfPresent(forKey: .dateCreated)
@@ -274,7 +296,12 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
 
     var isAudio: Bool {
         type?.localizedCaseInsensitiveCompare("Audio") == .orderedSame ||
+            type?.localizedCaseInsensitiveCompare("AudioBook") == .orderedSame ||
             mediaType?.localizedCaseInsensitiveCompare("Audio") == .orderedSame
+    }
+
+    var isAudiobookAudio: Bool {
+        type?.localizedCaseInsensitiveCompare("AudioBook") == .orderedSame
     }
 
     var canContainAudio: Bool {
@@ -420,16 +447,30 @@ struct EmbyMediaStream: Codable, Hashable {
 struct EmbyUserData: Codable, Hashable {
     let playCount: Int?
     let lastPlayedDate: Date?
+    let playbackPositionTicks: Int64?
+    let playedPercentage: Double?
+    let played: Bool?
 
     enum CodingKeys: String, CodingKey {
         case playCount = "PlayCount"
         case lastPlayedDate = "LastPlayedDate"
+        case playbackPositionTicks = "PlaybackPositionTicks"
+        case playedPercentage = "PlayedPercentage"
+        case played = "Played"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         playCount = container.decodeIntIfPresent(forKey: .playCount)
         lastPlayedDate = container.decodeEmbyDateIfPresent(forKey: .lastPlayedDate)
+        playbackPositionTicks = container.decodeInt64IfPresent(forKey: .playbackPositionTicks)
+        playedPercentage = container.decodeDoubleIfPresent(forKey: .playedPercentage)
+        played = try container.decodeIfPresent(Bool.self, forKey: .played)
+    }
+
+    var playbackPosition: TimeInterval {
+        guard let playbackPositionTicks else { return 0 }
+        return TimeInterval(playbackPositionTicks) / 10_000_000
     }
 }
 
@@ -452,6 +493,16 @@ struct MusicArtist: Identifiable, Hashable {
 
     var albums: [MusicAlbum] { songs.musicAlbums }
     var representativeSong: EmbyAudioItem? { songs.first }
+}
+
+struct Audiobook: Identifiable, Codable, Hashable {
+    let id: String
+    let title: String
+    let author: String
+    let episodes: [EmbyAudioItem]
+
+    var representativeEpisode: EmbyAudioItem? { episodes.first }
+    var episodeCount: Int { episodes.count }
 }
 
 struct IndexedSection<Item: Identifiable>: Identifiable {
@@ -575,6 +626,55 @@ extension Array where Element == EmbyAudioItem {
         ].filter { !$0.songs.isEmpty }
     }
 
+    var audiobooks: [Audiobook] {
+        let grouped = Dictionary(grouping: self) { episode in
+            episode.audiobookGroupId
+        }
+
+        return grouped.map { groupId, episodes in
+            let sortedEpisodes = episodes.sorted(by: Self.audiobookEpisodeSort)
+            let first = sortedEpisodes.first
+            return Audiobook(
+                id: groupId,
+                title: first?.audiobookTitle ?? "未知有声书",
+                author: first?.audiobookAuthor ?? "未知作者",
+                episodes: sortedEpisodes
+            )
+        }
+        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    private static func audiobookEpisodeSort(_ left: EmbyAudioItem, _ right: EmbyAudioItem) -> Bool {
+        let leftParentIndex = left.parentIndexNumber ?? Int.max
+        let rightParentIndex = right.parentIndexNumber ?? Int.max
+        if leftParentIndex != rightParentIndex {
+            return leftParentIndex < rightParentIndex
+        }
+
+        let leftIndex = left.indexNumber ?? Int.max
+        let rightIndex = right.indexNumber ?? Int.max
+        if leftIndex != rightIndex {
+            return leftIndex < rightIndex
+        }
+
+        let leftSortName = left.sortName ?? left.name
+        let rightSortName = right.sortName ?? right.name
+        return leftSortName.localizedStandardCompare(rightSortName) == .orderedAscending
+    }
+}
+
+private extension EmbyAudioItem {
+    var audiobookGroupId: String {
+        firstNonEmpty(albumId, album, parentId, primaryImageItemId) ?? id
+    }
+
+    var audiobookTitle: String {
+        firstNonEmpty(album, name) ?? "未知有声书"
+    }
+
+    var audiobookAuthor: String {
+        firstNonEmpty(albumArtist, artists?.joined(separator: ", ")) ?? "未知作者"
+    }
 }
 
 private extension KeyedDecodingContainer {
@@ -604,6 +704,19 @@ private extension KeyedDecodingContainer {
         }
         if let value = try? decodeIfPresent(String.self, forKey: key) {
             return Int(value)
+        }
+        return nil
+    }
+
+    func decodeDoubleIfPresent(forKey key: Key) -> Double? {
+        if let value = try? decodeIfPresent(Double.self, forKey: key) {
+            return value
+        }
+        if let value = try? decodeIfPresent(Int.self, forKey: key) {
+            return Double(value)
+        }
+        if let value = try? decodeIfPresent(String.self, forKey: key) {
+            return Double(value)
         }
         return nil
     }

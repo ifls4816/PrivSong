@@ -14,7 +14,7 @@ struct ListenNowView: View {
     }
 
     private var showsLibraryCategorySkeleton: Bool {
-        store.hasLoadedInitialContent && store.songs.isEmpty && store.isLoading
+        store.hasLoadedInitialContent && !store.hasLibraryCategoryContent && store.isLoading
     }
 
     private var showsPlaylistSkeleton: Bool {
@@ -36,7 +36,7 @@ struct ListenNowView: View {
                     } else {
                         if showsLibraryCategorySkeleton {
                             LibraryCategorySkeletonSection()
-                        } else if !store.songs.isEmpty {
+                        } else if store.hasLibraryCategoryContent {
                             libraryCategorySection
                         }
 
@@ -69,6 +69,12 @@ struct ListenNowView: View {
                         AlbumDetailView(album: album)
                     } else {
                         ContentUnavailableView("专辑不可用", systemImage: "square.stack")
+                    }
+                case .audiobook(let id):
+                    if let audiobook = store.audiobooks.first(where: { $0.id == id }) {
+                        AudiobookDetailView(audiobook: audiobook)
+                    } else {
+                        ContentUnavailableView("有声书不可用", systemImage: "book.closed")
                     }
                 }
             }
@@ -123,13 +129,13 @@ struct ListenNowView: View {
                 .buttonStyle(.plain)
 
                 NavigationLink {
-                    AlbumLibraryView()
+                    AudiobookLibraryView()
                 } label: {
                     LibraryCategoryCard(
-                        title: "专辑",
-                        subtitle: "\(store.albums.count) 张",
-                        icon: "square.stack",
-                        color: Color(red: 0.12, green: 0.42, blue: 0.90)
+                        title: "有声书",
+                        subtitle: "\(store.audiobooks.count) 本",
+                        icon: "book.closed.fill",
+                        color: Color(red: 0.12, green: 0.55, blue: 0.38)
                     )
                 }
                 .buttonStyle(.plain)
@@ -200,6 +206,7 @@ enum HomeRoute: Hashable {
     case playlist(String)
     case artist(String)
     case album(String)
+    case audiobook(String)
 }
 
 struct HomePlaylistRow: View {
@@ -504,7 +511,7 @@ private struct LibraryCategoryCard: View {
 private struct LibraryCategorySkeletonSection: View {
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-            ForEach(0..<4, id: \.self) { _ in
+            ForEach(0..<5, id: \.self) { _ in
                 LibraryCategorySkeletonCard()
             }
         }

@@ -28,6 +28,8 @@ final class PlayerController: ObservableObject {
     @Published var isShuffleEnabled = false
     @Published var repeatMode: RepeatMode = .none
 
+    var onPlaybackPositionChanged: ((EmbyAudioItem, TimeInterval, TimeInterval, Bool) -> Void)?
+
     private let engine = AVPlayer()
     private let audioSession = AudioSessionCoordinator.shared
     private let nowPlaying = NowPlayingCoordinator.shared
@@ -81,7 +83,7 @@ final class PlayerController: ObservableObject {
         configureNetworkPathMonitor()
     }
 
-    func play(song: EmbyAudioItem, in songs: [EmbyAudioItem], session: EmbySession) {
+    func play(song: EmbyAudioItem, in songs: [EmbyAudioItem], session: EmbySession, startPosition: TimeInterval = 0) {
         guard !isSwitchingTracks else { return }
 
         self.session = session
@@ -95,7 +97,7 @@ final class PlayerController: ObservableObject {
         }
 
         syncQueueSnapshots()
-        start(song: song, session: session, autoplay: true)
+        start(song: song, session: session, autoplay: true, startPosition: startPosition)
     }
 
     func togglePlayPause() {
@@ -289,12 +291,18 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func start(song: EmbyAudioItem, session: EmbySession, autoplay: Bool) {
+    private func start(
+        song: EmbyAudioItem,
+        session: EmbySession,
+        autoplay: Bool,
+        startPosition: TimeInterval = 0
+    ) {
         reportPlaybackStoppedIfNeeded(position: elapsed)
         audioCacheTask?.cancel()
+        let initialPosition = max(0, min(startPosition, song.duration > 0 ? max(song.duration - 1, 0) : startPosition))
         isSwitchingTracks = true
         currentSong = song
-        elapsed = 0
+        elapsed = initialPosition
         duration = song.duration
         isPlaying = autoplay
         currentArtwork = nil
@@ -329,13 +337,13 @@ final class PlayerController: ObservableObject {
         let cachedURL = allowsLocalCachePlayback ? PlaybackAudioCache.cachedFileURL(for: cacheKey) : nil
         let initialURL = cachedURL ?? streamCandidates.first
         currentPlaybackReportMethod = playbackReportMethod(for: streamOptions, isUsingLocalFile: cachedURL != nil)
-        replaceCurrentItem(with: initialURL, autoplay: autoplay, candidateIndex: 0)
+        replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
         if allowsLocalCachePlayback {
             cacheCurrentSong(from: streamStartOffset == 0 ? streamCandidates.first : nil, cacheKey: cacheKey)
         }
         loadArtwork(for: song, session: session)
         loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
-        reportPlaybackStarted(position: 0)
+        reportPlaybackStarted(position: initialPosition)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
     }
@@ -863,6 +871,7 @@ final class PlayerController: ObservableObject {
         let playMethod = currentPlaybackReportMethod
         let clampedPosition = max(0, position)
         lastPlaybackProgressReport = Date()
+        notifyPlaybackPosition(position: clampedPosition, isFinished: false)
 
         playbackReportTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -897,6 +906,7 @@ final class PlayerController: ObservableObject {
         let playMethod = currentPlaybackReportMethod
         let clampedPosition = max(0, min(position ?? elapsed, max(duration, currentSong.duration)))
         let paused = isPaused ?? !isPlaying
+        notifyPlaybackPosition(position: clampedPosition, isFinished: false)
 
         playbackReportTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -923,6 +933,8 @@ final class PlayerController: ObservableObject {
         let playSessionId = currentPlaySessionId
         let playMethod = currentPlaybackReportMethod
         let clampedPosition = max(0, min(position ?? elapsed, max(duration, currentSong.duration)))
+        let isFinished = duration > 0 && clampedPosition >= max(duration - 10, duration * 0.98)
+        notifyPlaybackPosition(position: clampedPosition, isFinished: isFinished)
         self.currentPlaySessionId = nil
         lastPlaybackProgressReport = .distantPast
 
@@ -940,6 +952,11 @@ final class PlayerController: ObservableObject {
                 print("[Player] Failed to report Emby playback stop: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func notifyPlaybackPosition(position: TimeInterval, isFinished: Bool) {
+        guard let currentSong else { return }
+        onPlaybackPositionChanged?(currentSong, position, max(duration, currentSong.duration), isFinished)
     }
 
     private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {

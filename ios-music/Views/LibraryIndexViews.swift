@@ -48,6 +48,30 @@ struct AlbumLibraryView: View {
     }
 }
 
+struct AudiobookLibraryView: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var selectedAudiobook: Audiobook?
+
+    var body: some View {
+        IndexedLibraryView(
+            title: "有声书",
+            emptyTitle: "暂无有声书",
+            emptyIcon: "book.closed",
+            sections: store.audiobookSections
+        ) { audiobook in
+            Button {
+                selectedAudiobook = audiobook
+            } label: {
+                AudiobookIndexRow(audiobook: audiobook)
+            }
+            .buttonStyle(.plain)
+        }
+        .navigationDestination(item: $selectedAudiobook) { audiobook in
+            AudiobookDetailView(audiobook: audiobook)
+        }
+    }
+}
+
 private struct IndexedLibraryView<Item: Identifiable, Row: View>: View {
     let title: String
     let emptyTitle: String
@@ -179,6 +203,42 @@ private struct AlbumIndexRow: View {
                     .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary.opacity(0.84))
                     .monospacedDigit()
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Color.musicRed)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct AudiobookIndexRow: View {
+    @EnvironmentObject private var store: AppStore
+    let audiobook: Audiobook
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ArtworkView(url: audiobook.representativeEpisode.flatMap { store.imageURL(for: $0, size: 160) }, cornerRadius: 12)
+                .frame(width: 58, height: 58)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(audiobook.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                Text(audiobook.author)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(store.audiobookListSubtitle(for: audiobook))
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(Color.musicRed)
+                    .lineLimit(1)
             }
 
             Spacer(minLength: 8)

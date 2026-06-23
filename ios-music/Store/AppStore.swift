@@ -36,12 +36,18 @@ final class AppStore: ObservableObject {
         didSet { UserDefaults.standard.set(prefersHighRefreshRate, forKey: highRefreshRateKey) }
     }
 
-    // Cached derived data — recomputed only when songs change
+    // Cached derived data — recomputed only when source media changes
     @Published private(set) var albums: [MusicAlbum] = []
     @Published private(set) var artists: [MusicArtist] = []
     @Published private(set) var albumSections: [IndexedSection<MusicAlbum>] = []
     @Published private(set) var artistSections: [IndexedSection<MusicArtist>] = []
     @Published private(set) var playlists: [MusicPlaylist] = []
+    @Published private(set) var audiobookEpisodes: [EmbyAudioItem] = [] {
+        didSet { recomputeAudiobooks() }
+    }
+    @Published private(set) var audiobooks: [Audiobook] = []
+    @Published private(set) var audiobookSections: [IndexedSection<Audiobook>] = []
+    @Published private(set) var audiobookProgress: [String: AudiobookPlaybackProgress] = [:]
     @Published private(set) var recentSongs: [EmbyAudioItem] = []
     @Published private(set) var dailyRecommendedSongs: [EmbyAudioItem] = []
     @Published private(set) var recentlyAddedSongs: [EmbyAudioItem] = []
@@ -50,6 +56,7 @@ final class AppStore: ObservableObject {
     private let client = EmbyClient()
     private let snapshotStore = LibrarySnapshotStore()
     private let initialHomeSnapshotStore = InitialHomeContentSnapshotStore()
+    private let audiobookProgressStore = AudiobookProgressStore()
     private let sessionKey = "EmbySession"
     private let favoritesKey = "FavoriteSongIds"
     private let recentKey = "RecentSongIds"
@@ -61,10 +68,20 @@ final class AppStore: ObservableObject {
     private var activeSearchToken: UUID?
     private var libraryCacheSavedAt: Date?
     private var dailyRecommendationDay: Int?
+    private var audiobookEpisodeBookIds: [String: String] = [:]
+    private var lastAudiobookProgressSave = Date.distantPast
 
     weak var player: PlayerController? {
         didSet {
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
+            player?.onPlaybackPositionChanged = { [weak self] item, position, duration, isFinished in
+                self?.recordAudiobookPlayback(
+                    item: item,
+                    position: position,
+                    duration: duration,
+                    isFinished: isFinished
+                )
+            }
         }
     }
 
@@ -73,7 +90,11 @@ final class AppStore: ObservableObject {
     }
 
     var hasHomeContent: Bool {
-        !songs.isEmpty || !playlists.isEmpty
+        !songs.isEmpty || !playlists.isEmpty || !audiobooks.isEmpty
+    }
+
+    var hasLibraryCategoryContent: Bool {
+        !songs.isEmpty || !audiobooks.isEmpty
     }
 
     var hasBrowseContent: Bool {
@@ -108,19 +129,54 @@ final class AppStore: ObservableObject {
         if libraryStatus == "Connected, but Emby returned 0 audio items." {
             return "已连接，但 Emby 未返回音频内容"
         }
+        if let counts = loadedCounts(
+            from: libraryStatus,
+            middle: " songs and ",
+            suffix: " audiobooks."
+        ) {
+            return "已加载 \(counts.left) 首歌曲和 \(counts.right) 本有声书"
+        }
+        if let counts = loadedCounts(
+            from: libraryStatus,
+            middle: " songs and ",
+            suffix: " audiobooks from cache."
+        ) {
+            return "已从缓存加载 \(counts.left) 首歌曲和 \(counts.right) 本有声书"
+        }
         if let count = loadedSongCount(from: libraryStatus, suffix: " songs.") {
             return "已加载 \(count) 首歌曲"
         }
         if let count = loadedSongCount(from: libraryStatus, suffix: " songs from cache.") {
             return "已从缓存加载 \(count) 首歌曲"
         }
+        if let count = loadedSongCount(from: libraryStatus, suffix: " audiobooks.") {
+            return "已加载 \(count) 本有声书"
+        }
+        if let count = loadedSongCount(from: libraryStatus, suffix: " audiobooks from cache.") {
+            return "已从缓存加载 \(count) 本有声书"
+        }
         return libraryStatus
     }
 
-    func play(song: EmbyAudioItem, in songs: [EmbyAudioItem]) {
+    func play(song: EmbyAudioItem, in songs: [EmbyAudioItem], startPosition: TimeInterval = 0) {
         guard let session else { return }
         registerPlayback(song: song)
-        player?.play(song: song, in: songs, session: session)
+        player?.play(song: song, in: songs, session: session, startPosition: startPosition)
+    }
+
+    func playAudiobook(_ audiobook: Audiobook) {
+        guard let target = audiobookResumeTarget(for: audiobook) else { return }
+        play(song: target.episode, in: audiobook.episodes, startPosition: target.position)
+    }
+
+    func restartAudiobook(_ audiobook: Audiobook) {
+        guard let firstEpisode = audiobook.episodes.first else { return }
+        play(song: firstEpisode, in: audiobook.episodes, startPosition: 0)
+    }
+
+    func playAudiobookEpisode(_ episode: EmbyAudioItem, in audiobook: Audiobook) {
+        let position = audiobookResumePosition(for: episode)
+        play(song: episode, in: audiobook.episodes, startPosition: position)
     }
 
     func playNext(_ song: EmbyAudioItem) {
@@ -168,6 +224,7 @@ final class AppStore: ObservableObject {
         savesSnapshot: Bool = true
     ) {
         playlists = content.playlists
+        audiobookEpisodes = content.audiobookEpisodes
         recentlyAddedSongs = content.recentlyAddedSongs
         mostPlayedSongs = content.mostPlayedSongs.isEmpty ? content.recentlyAddedSongs : content.mostPlayedSongs
 
@@ -216,9 +273,14 @@ final class AppStore: ObservableObject {
         return songs
     }
 
-    private func applyFullLibrary(songs: [EmbyAudioItem], playlists: [MusicPlaylist]) {
+    private func applyFullLibrary(
+        songs: [EmbyAudioItem],
+        playlists: [MusicPlaylist],
+        audiobookEpisodes: [EmbyAudioItem]
+    ) {
         self.songs = songs
         self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
+        self.audiobookEpisodes = audiobookEpisodes
         self.hasLoadedInitialContent = true
         self.libraryCacheSavedAt = Date()
         self.saveLibrarySnapshot()
@@ -228,7 +290,8 @@ final class AppStore: ObservableObject {
     private func fetchAndApplyFullLibrary(session: EmbySession) async throws {
         let songs = try await client.fetchSongs(session: session)
         let playlists = (try? await client.fetchPlaylists(session: session)) ?? []
-        applyFullLibrary(songs: songs, playlists: playlists)
+        let audiobookEpisodes = (try? await client.fetchAudiobookEpisodes(session: session)) ?? []
+        applyFullLibrary(songs: songs, playlists: playlists, audiobookEpisodes: audiobookEpisodes)
     }
 
     func refreshLibrary() async {
@@ -278,6 +341,35 @@ final class AppStore: ObservableObject {
         return client.imageURL(for: song, session: session, size: size)
     }
 
+    func currentEpisodeIndex(for audiobook: Audiobook) -> Int? {
+        if let currentSong = player?.currentSong,
+           let index = audiobook.episodes.firstIndex(where: { $0.id == currentSong.id }) {
+            return index
+        }
+
+        return latestRecordedEpisodeIndex(for: audiobook)
+    }
+
+    func audiobookListSubtitle(for audiobook: Audiobook) -> String {
+        if let index = currentEpisodeIndex(for: audiobook) {
+            return "听到第 \(index + 1)/\(audiobook.episodeCount) 集"
+        }
+        return "\(audiobook.episodeCount) 集"
+    }
+
+    func audiobookProgressText(for episode: EmbyAudioItem) -> String? {
+        guard let progress = audiobookMergedProgress(for: episode) else { return nil }
+        if progress.isFinished {
+            return "已听完"
+        }
+        guard progress.position > 5 else { return nil }
+        return "上次 \(progress.position.musicDurationText)"
+    }
+
+    func isCurrentAudiobookEpisode(_ episode: EmbyAudioItem) -> Bool {
+        player?.currentSong?.id == episode.id
+    }
+
     func registerPlayback(song: EmbyAudioItem) {
         recentSongIds.removeAll { $0 == song.id }
         recentSongIds.insert(song.id, at: 0)
@@ -299,10 +391,152 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.set(Array(favoriteSongIds), forKey: favoritesKey)
     }
 
+    private func audiobookResumeTarget(for audiobook: Audiobook) -> (episode: EmbyAudioItem, position: TimeInterval)? {
+        let episodes = audiobook.episodes
+        guard !episodes.isEmpty else { return nil }
+
+        let entries = audiobookProgressEntries(for: audiobook)
+        if let active = entries
+            .filter({ !$0.progress.isFinished })
+            .max(by: { $0.progress.updatedAt < $1.progress.updatedAt }) {
+            let episode = episodes[active.index]
+            return (episode, audiobookResumePosition(for: episode))
+        }
+
+        if let lastFinishedIndex = entries
+            .filter({ $0.progress.isFinished })
+            .map(\.index)
+            .max(),
+           episodes.indices.contains(lastFinishedIndex + 1) {
+            return (episodes[lastFinishedIndex + 1], 0)
+        }
+
+        return (episodes[0], 0)
+    }
+
+    private func latestRecordedEpisodeIndex(for audiobook: Audiobook) -> Int? {
+        let entries = audiobookProgressEntries(for: audiobook)
+        if let active = entries
+            .filter({ !$0.progress.isFinished })
+            .max(by: { $0.progress.updatedAt < $1.progress.updatedAt }) {
+            return active.index
+        }
+
+        if let lastFinishedIndex = entries
+            .filter({ $0.progress.isFinished })
+            .map(\.index)
+            .max() {
+            return min(lastFinishedIndex + 1, max(audiobook.episodeCount - 1, 0))
+        }
+
+        return nil
+    }
+
+    private func audiobookProgressEntries(
+        for audiobook: Audiobook
+    ) -> [(index: Int, progress: AudiobookPlaybackProgress)] {
+        audiobook.episodes.enumerated().compactMap { index, episode in
+            guard let progress = audiobookMergedProgress(for: episode) else { return nil }
+            return (index, progress)
+        }
+    }
+
+    private func audiobookResumePosition(for episode: EmbyAudioItem) -> TimeInterval {
+        guard let progress = audiobookMergedProgress(for: episode),
+              !progress.isFinished else {
+            return 0
+        }
+
+        let duration = max(progress.duration, episode.duration)
+        guard progress.position > 5 else { return 0 }
+        if duration > 0, progress.position >= max(duration - 30, duration * 0.98) {
+            return 0
+        }
+        return max(0, min(progress.position, duration > 0 ? duration : progress.position))
+    }
+
+    private func audiobookMergedProgress(for episode: EmbyAudioItem) -> AudiobookPlaybackProgress? {
+        if let localProgress = audiobookProgress[episode.id] {
+            return localProgress
+        }
+
+        let serverPosition = episode.userData?.playbackPosition ?? 0
+        let serverPlayed = episode.userData?.played == true
+        guard serverPosition > 1 || serverPlayed else { return nil }
+
+        let duration = episode.duration
+        return AudiobookPlaybackProgress(
+            position: serverPlayed ? duration : serverPosition,
+            duration: duration,
+            updatedAt: .distantPast,
+            isFinished: serverPlayed
+        )
+    }
+
+    private func recordAudiobookPlayback(
+        item: EmbyAudioItem,
+        position: TimeInterval,
+        duration: TimeInterval,
+        isFinished: Bool
+    ) {
+        guard audiobookEpisodeBookIds[item.id] != nil else { return }
+
+        let effectiveDuration = max(duration, item.duration)
+        let clampedPosition = max(0, min(position, effectiveDuration > 0 ? effectiveDuration : position))
+        let finished = isFinished ||
+            (effectiveDuration > 0 && clampedPosition >= max(effectiveDuration - 10, effectiveDuration * 0.98))
+        let progress = AudiobookPlaybackProgress(
+            position: finished ? effectiveDuration : clampedPosition,
+            duration: effectiveDuration,
+            updatedAt: Date(),
+            isFinished: finished
+        )
+
+        var updatedProgress = audiobookProgress
+        updatedProgress[item.id] = progress
+        audiobookProgress = updatedProgress
+        saveAudiobookProgressIfNeeded(force: finished)
+    }
+
+    private func mergeServerAudiobookProgress(from episodes: [EmbyAudioItem]) {
+        var updatedProgress = audiobookProgress
+        var hasChanges = false
+
+        for episode in episodes where updatedProgress[episode.id] == nil {
+            let serverPosition = episode.userData?.playbackPosition ?? 0
+            let serverPlayed = episode.userData?.played == true
+            guard serverPosition > 1 || serverPlayed else { continue }
+
+            updatedProgress[episode.id] = AudiobookPlaybackProgress(
+                position: serverPlayed ? episode.duration : serverPosition,
+                duration: episode.duration,
+                updatedAt: .distantPast,
+                isFinished: serverPlayed
+            )
+            hasChanges = true
+        }
+
+        guard hasChanges else { return }
+        audiobookProgress = updatedProgress
+        audiobookProgressStore.save(updatedProgress)
+    }
+
+    private func saveAudiobookProgressIfNeeded(force: Bool = false) {
+        let now = Date()
+        guard force || now.timeIntervalSince(lastAudiobookProgressSave) >= 4 else { return }
+        lastAudiobookProgressSave = now
+        audiobookProgressStore.save(audiobookProgress)
+    }
+
     func signOut() {
         session = nil
         songs = []
         playlists = []
+        audiobookEpisodes = []
+        audiobooks = []
+        audiobookSections = []
+        audiobookProgress = [:]
+        audiobookEpisodeBookIds = [:]
         searchResults = []
         dailyRecommendedSongs = []
         recentlyAddedSongs = []
@@ -314,6 +548,7 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.removeObject(forKey: sessionKey)
         snapshotStore.clear()
         initialHomeSnapshotStore.clear()
+        audiobookProgressStore.clear()
         ArtworkImageCache.shared.clear()
         ArtworkDiskCache.clear()
         PlaybackAudioCache.clearAll()
@@ -329,7 +564,9 @@ final class AppStore: ObservableObject {
         URLCache.shared.removeAllCachedResponses()
         hasLoadedInitialContent = hasHomeContent || hasBrowseContent
         libraryCacheSavedAt = nil
-        libraryStatus = songs.isEmpty ? "Cache cleared." : "Cache cleared. Current library remains in memory."
+        libraryStatus = songs.isEmpty && audiobookEpisodes.isEmpty
+            ? "Cache cleared."
+            : "Cache cleared. Current library remains in memory."
     }
 
     func refreshDailyRecommendationsIfNeeded() {
@@ -339,10 +576,14 @@ final class AppStore: ObservableObject {
     }
 
     private func updateLibraryStatus() {
-        if songs.isEmpty {
+        if songs.isEmpty, audiobooks.isEmpty {
             libraryStatus = "Connected, but Emby returned 0 audio items."
-        } else {
+        } else if songs.isEmpty {
+            libraryStatus = "Loaded \(audiobooks.count) audiobooks."
+        } else if audiobooks.isEmpty {
             libraryStatus = "Loaded \(songs.count) songs."
+        } else {
+            libraryStatus = "Loaded \(songs.count) songs and \(audiobooks.count) audiobooks."
         }
     }
 
@@ -351,6 +592,20 @@ final class AppStore: ObservableObject {
         let start = status.index(status.startIndex, offsetBy: "Loaded ".count)
         let end = status.index(status.endIndex, offsetBy: -suffix.count)
         return Int(status[start..<end])
+    }
+
+    private func loadedCounts(from status: String, middle: String, suffix: String) -> (left: Int, right: Int)? {
+        guard status.hasPrefix("Loaded "), status.hasSuffix(suffix) else { return nil }
+        let start = status.index(status.startIndex, offsetBy: "Loaded ".count)
+        let end = status.index(status.endIndex, offsetBy: -suffix.count)
+        let body = String(status[start..<end])
+        let parts = body.components(separatedBy: middle)
+        guard parts.count == 2,
+              let left = Int(parts[0]),
+              let right = Int(parts[1]) else {
+            return nil
+        }
+        return (left, right)
     }
 
     private func perform(_ operation: () async throws -> Void) async {
@@ -364,7 +619,7 @@ final class AppStore: ObservableObject {
             // Cancellations are expected for superseded async UI work.
         } catch {
             errorMessage = error.localizedDescription
-            if songs.isEmpty {
+            if songs.isEmpty, audiobookEpisodes.isEmpty {
                 libraryStatus = error.localizedDescription
             }
         }
@@ -378,7 +633,7 @@ final class AppStore: ObservableObject {
 
     private func recomputeDerivedData() {
         guard !songs.isEmpty else {
-            albums = []; artists = []; albumSections = []; artistSections = []; playlists = []; recentSongs = []
+            albums = []; artists = []; albumSections = []; artistSections = []; recentSongs = []
             dailyRecommendedSongs = []; recentlyAddedSongs = []; mostPlayedSongs = []
             return
         }
@@ -395,6 +650,19 @@ final class AppStore: ObservableObject {
         if playlists.isEmpty {
             playlists = songs.generatedPlaylists
         }
+    }
+
+    private func recomputeAudiobooks() {
+        audiobooks = audiobookEpisodes.audiobooks
+        audiobookSections = PinyinIndexer.sections(for: audiobooks, title: \.title)
+        var episodeBookIds: [String: String] = [:]
+        for audiobook in audiobooks {
+            for episode in audiobook.episodes {
+                episodeBookIds[episode.id] = audiobook.id
+            }
+        }
+        audiobookEpisodeBookIds = episodeBookIds
+        mergeServerAudiobookProgress(from: audiobookEpisodes)
     }
 
     private func restoreSession() {
@@ -423,17 +691,30 @@ final class AppStore: ObservableObject {
 
     private func restoreLibrarySnapshot() -> Bool {
         guard let snapshot = snapshotStore.load(),
-              !snapshot.songs.isEmpty,
+              (!snapshot.songs.isEmpty || !snapshot.audiobookEpisodes.isEmpty),
               Calendar.current.isDateInToday(snapshot.savedAt) else {
             return false
         }
 
         songs = snapshot.songs
         playlists = snapshot.playlists.isEmpty ? snapshot.songs.generatedPlaylists : snapshot.playlists
+        audiobookEpisodes = snapshot.audiobookEpisodes
         hasLoadedInitialContent = true
         libraryCacheSavedAt = snapshot.savedAt
-        libraryStatus = "Loaded \(snapshot.songs.count) songs from cache."
+        updateLibraryStatusFromCache()
         return true
+    }
+
+    private func updateLibraryStatusFromCache() {
+        if songs.isEmpty, audiobooks.isEmpty {
+            libraryStatus = "Loaded 0 songs from cache."
+        } else if songs.isEmpty {
+            libraryStatus = "Loaded \(audiobooks.count) audiobooks from cache."
+        } else if audiobooks.isEmpty {
+            libraryStatus = "Loaded \(songs.count) songs from cache."
+        } else {
+            libraryStatus = "Loaded \(songs.count) songs and \(audiobooks.count) audiobooks from cache."
+        }
     }
 
     private func shouldRefreshCachedLibrary() -> Bool {
@@ -458,8 +739,8 @@ final class AppStore: ObservableObject {
     }
 
     private func saveLibrarySnapshot() {
-        guard !songs.isEmpty else { return }
-        snapshotStore.save(songs: songs, playlists: playlists)
+        guard !songs.isEmpty || !audiobookEpisodes.isEmpty else { return }
+        snapshotStore.save(songs: songs, playlists: playlists, audiobookEpisodes: audiobookEpisodes)
     }
 
     private func restoreLocalState() {
@@ -473,6 +754,7 @@ final class AppStore: ObservableObject {
            let quality = OnlinePlaybackQuality(rawValue: rawValue) {
             wifiOnlineQuality = quality
         }
+        audiobookProgress = audiobookProgressStore.load()
         startsOnBrowse = UserDefaults.standard.bool(forKey: startsOnBrowseKey)
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)
         prefersHighRefreshRate = UserDefaults.standard.bool(forKey: highRefreshRateKey)
@@ -542,10 +824,11 @@ private struct LibrarySnapshot: Codable {
     let savedAt: Date
     let songs: [EmbyAudioItem]
     let playlists: [MusicPlaylist]
+    let audiobookEpisodes: [EmbyAudioItem]
 }
 
 private struct LibrarySnapshotStore {
-    private let version = 1
+    private let version = 2
     private let fileName = "library-snapshot.json"
 
     func load() -> LibrarySnapshot? {
@@ -564,12 +847,13 @@ private struct LibrarySnapshotStore {
         return snapshot
     }
 
-    func save(songs: [EmbyAudioItem], playlists: [MusicPlaylist]) {
+    func save(songs: [EmbyAudioItem], playlists: [MusicPlaylist], audiobookEpisodes: [EmbyAudioItem]) {
         let snapshot = LibrarySnapshot(
             version: version,
             savedAt: Date(),
             songs: songs,
-            playlists: playlists
+            playlists: playlists,
+            audiobookEpisodes: audiobookEpisodes
         )
 
         let encoder = JSONEncoder()
@@ -607,7 +891,7 @@ private struct InitialHomeContentSnapshot: Codable {
 }
 
 private struct InitialHomeContentSnapshotStore {
-    private let version = 1
+    private let version = 2
     private let fileName = "initial-home-snapshot.json"
 
     func load() -> InitialHomeContentSnapshot? {
@@ -658,5 +942,67 @@ private struct InitialHomeContentSnapshotStore {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base.appendingPathComponent("MusicEmby", isDirectory: true)
+    }
+}
+
+struct AudiobookPlaybackProgress: Codable, Hashable {
+    let position: TimeInterval
+    let duration: TimeInterval
+    let updatedAt: Date
+    let isFinished: Bool
+}
+
+private struct AudiobookProgressStore {
+    private let version = 1
+    private let fileName = "audiobook-progress.json"
+
+    func load() -> [String: AudiobookPlaybackProgress] {
+        let url = progressURL
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else {
+            return [:]
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let snapshot = try? decoder.decode(Snapshot.self, from: data),
+              snapshot.version == version else {
+            return [:]
+        }
+        return snapshot.progress
+    }
+
+    func save(_ progress: [String: AudiobookPlaybackProgress]) {
+        let snapshot = Snapshot(version: version, progress: progress)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        do {
+            let directory = applicationSupportDirectory
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try encoder.encode(snapshot)
+            try data.write(to: progressURL, options: [.atomic])
+        } catch {
+            print("[AudiobookProgressStore] Failed to save progress: \(error.localizedDescription)")
+        }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: progressURL)
+    }
+
+    private var progressURL: URL {
+        applicationSupportDirectory.appendingPathComponent(fileName)
+    }
+
+    private var applicationSupportDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("MusicEmby", isDirectory: true)
+    }
+
+    private struct Snapshot: Codable {
+        let version: Int
+        let progress: [String: AudiobookPlaybackProgress]
     }
 }
