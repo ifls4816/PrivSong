@@ -12,9 +12,10 @@ struct ArtworkView: View {
         self.url = url
         self.cornerRadius = cornerRadius
 
-        let cachedImage = url.flatMap { ArtworkImageCache.shared.image(for: $0) }
+        let exactImage = url.flatMap { ArtworkImageCache.shared.image(for: $0) }
+        let cachedImage = exactImage ?? url.flatMap { ArtworkImageCache.shared.fallbackImage(for: $0) }
         _image = State(initialValue: cachedImage)
-        _displayedURL = State(initialValue: cachedImage == nil ? nil : url)
+        _displayedURL = State(initialValue: exactImage == nil ? nil : url)
     }
 
     var body: some View {
@@ -76,6 +77,18 @@ struct ArtworkView: View {
             return
         }
 
+        if let fallback = ArtworkImageCache.shared.fallbackImage(for: url) {
+            withoutAnimation {
+                image = fallback
+                displayedURL = nil
+            }
+        } else if displayedURL != url {
+            withoutAnimation {
+                image = nil
+                displayedURL = nil
+            }
+        }
+
         if let diskData = await ArtworkDiskCache.data(for: url),
            let cached = UIImage(data: diskData) {
             ArtworkImageCache.shared.insert(cached, for: url)
@@ -84,13 +97,6 @@ struct ArtworkView: View {
                 displayedURL = url
             }
             return
-        }
-
-        if displayedURL != url {
-            withoutAnimation {
-                image = nil
-                displayedURL = nil
-            }
         }
 
         do {
@@ -120,23 +126,43 @@ final class ArtworkImageCache {
     static let shared = ArtworkImageCache()
 
     private let cache = NSCache<NSURL, UIImage>()
+    private let normalizedCache = NSCache<NSString, UIImage>()
 
     private init() {
         cache.countLimit = 300
         cache.totalCostLimit = 80 * 1024 * 1024
+        normalizedCache.countLimit = 300
+        normalizedCache.totalCostLimit = 80 * 1024 * 1024
     }
 
     func image(for url: URL) -> UIImage? {
         cache.object(forKey: url as NSURL)
     }
 
+    func fallbackImage(for url: URL) -> UIImage? {
+        normalizedCache.object(forKey: normalizedCacheKey(for: url) as NSString)
+    }
+
     func insert(_ image: UIImage, for url: URL) {
         let pixelCost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
         cache.setObject(image, forKey: url as NSURL, cost: pixelCost)
+        normalizedCache.setObject(image, forKey: normalizedCacheKey(for: url) as NSString, cost: pixelCost)
     }
 
     func clear() {
         cache.removeAllObjects()
+        normalizedCache.removeAllObjects()
+    }
+
+    private func normalizedCacheKey(for url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        let sizeKeys = Set(["maxheight", "maxwidth", "quality"])
+        components.queryItems = components.queryItems?.filter { item in
+            !sizeKeys.contains(item.name.lowercased())
+        }
+        return components.url?.absoluteString ?? url.absoluteString
     }
 }
 
