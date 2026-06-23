@@ -3,8 +3,8 @@ import UIKit
 
 @main
 struct MusicEmbyApp: App {
-    @StateObject private var store = AppStore()
-    @StateObject private var player = PlayerController()
+    @StateObject private var store = SharedAppEnvironment.shared.store
+    @StateObject private var player = SharedAppEnvironment.shared.player
 
     init() {
         // Keep enough shared response cache for artwork and player backdrop color extraction.
@@ -27,6 +27,20 @@ struct MusicEmbyApp: App {
                     store.player = player
                 }
         }
+    }
+}
+
+@MainActor
+final class SharedAppEnvironment {
+    static let shared = SharedAppEnvironment()
+
+    let store: AppStore
+    let player: PlayerController
+
+    private init() {
+        store = AppStore()
+        player = PlayerController()
+        store.player = player
     }
 }
 

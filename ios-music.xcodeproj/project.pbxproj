@@ -25,6 +25,8 @@
 		1A000001000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010D /* Assets.xcassets */; };
 		1A000001000000000000000F /* MainPageChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010F /* MainPageChrome.swift */; };
 		1A0000010000000000000014 /* LibraryIndexViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000114 /* LibraryIndexViews.swift */; };
+		1A0000010000000000000015 /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000115 /* CarPlaySceneDelegate.swift */; };
+		1A0000010000000000000016 /* CarPlayCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000116 /* CarPlayCoordinator.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +50,9 @@
 		1A000001000000000000010E /* ios-music.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ios-music.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A000001000000000000010F /* MainPageChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainPageChrome.swift; sourceTree = "<group>"; };
 		1A0000010000000000000114 /* LibraryIndexViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryIndexViews.swift; sourceTree = "<group>"; };
+		1A0000010000000000000115 /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
+		1A0000010000000000000116 /* CarPlayCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayCoordinator.swift; sourceTree = "<group>"; };
+		1A0000010000000000000117 /* ios-music.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ios-music.entitlements"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -74,9 +79,11 @@
 			children = (
 				1A0000010000000000000101 /* MusicEmbyApp.swift */,
 				1A0000010000000000000113 /* Info.plist */,
+				1A0000010000000000000117 /* ios-music.entitlements */,
 				1A0000010000000000000303 /* Models */,
 				1A0000010000000000000304 /* Networking */,
 				1A0000010000000000000305 /* Playback */,
+				1A000001000000000000030A /* CarPlay */,
 				1A0000010000000000000306 /* Store */,
 				1A0000010000000000000307 /* Views */,
 				1A000001000000000000010D /* Assets.xcassets */,
@@ -109,6 +116,15 @@
 				1A0000010000000000000112 /* RemoteCommandCoordinator.swift */,
 			);
 			path = Playback;
+			sourceTree = "<group>";
+		};
+		1A000001000000000000030A /* CarPlay */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000010000000000000115 /* CarPlaySceneDelegate.swift */,
+				1A0000010000000000000116 /* CarPlayCoordinator.swift */,
+			);
+			path = CarPlay;
 			sourceTree = "<group>";
 		};
 		1A0000010000000000000306 /* Store */ = {
@@ -230,6 +246,8 @@
 				1A000001000000000000000C /* ArtworkView.swift in Sources */,
 				1A000001000000000000000F /* MainPageChrome.swift in Sources */,
 				1A0000010000000000000014 /* LibraryIndexViews.swift in Sources */,
+				1A0000010000000000000015 /* CarPlaySceneDelegate.swift in Sources */,
+				1A0000010000000000000016 /* CarPlayCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -359,6 +377,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "ios-music/ios-music.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
@@ -384,6 +403,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "ios-music/ios-music.entitlements";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
