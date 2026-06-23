@@ -41,15 +41,6 @@ final class NowPlayingCoordinator: @unchecked Sendable {
         infoCenter.playbackState = isPlaying ? .playing : .paused
     }
 
-    func updatePlaybackState(elapsed: TimeInterval, duration: TimeInterval, isPlaying: Bool) {
-        guard var info = infoCenter.nowPlayingInfo else { return }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = max(elapsed, 0)
-        info[MPMediaItemPropertyPlaybackDuration] = max(duration, 0)
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        infoCenter.nowPlayingInfo = info
-        infoCenter.playbackState = isPlaying ? .playing : .paused
-    }
-
     func clear() {
         infoCenter.nowPlayingInfo = nil
         infoCenter.playbackState = .stopped

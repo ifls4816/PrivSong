@@ -27,7 +27,6 @@ final class PlayerController: ObservableObject {
     @Published private(set) var sleepTimerEndDate: Date?
     @Published var isShuffleEnabled = false
     @Published var repeatMode: RepeatMode = .none
-    @Published private(set) var volume = 1.0
 
     private let engine = AVPlayer()
     private let audioSession = AudioSessionCoordinator.shared
@@ -73,7 +72,6 @@ final class PlayerController: ObservableObject {
     private var playbackReportTask: Task<Void, Never>?
 
     init() {
-        engine.volume = Float(volume)
         engine.automaticallyWaitsToMinimizeStalling = true
 
         audioSession.configureForPlayback()
@@ -221,12 +219,6 @@ final class PlayerController: ObservableObject {
             repeatMode = .none
         }
         syncRemoteCommandAvailability()
-    }
-
-    func setVolume(_ value: Double) {
-        let clamped = min(max(value, 0), 1)
-        volume = clamped
-        engine.volume = Float(clamped)
     }
 
     func setSleepTimer(after duration: TimeInterval) {
@@ -405,7 +397,6 @@ final class PlayerController: ObservableObject {
 
     private func beginPlaybackIfNeeded(autoplay: Bool) {
         guard autoplay else { return }
-        engine.volume = Float(volume)
         engine.play()
         isPlaying = true
     }
@@ -413,7 +404,6 @@ final class PlayerController: ObservableObject {
     private func resume() {
         guard currentSong != nil else { return }
         audioSession.activate()
-        engine.volume = Float(volume)
         engine.play()
         isPlaying = true
         syncNowPlaying(force: true)

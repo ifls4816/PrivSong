@@ -627,10 +627,6 @@ struct EmbyClient {
         )
     }
 
-    func streamURL(for item: EmbyAudioItem, session embySession: EmbySession) -> URL {
-        playbackURLCandidates(for: item, session: embySession).first ?? embySession.serverURL
-    }
-
     func reportPlaybackStarted(
         item: EmbyAudioItem,
         session embySession: EmbySession,

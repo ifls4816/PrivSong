@@ -311,7 +311,6 @@ private struct SettingsValueRow: View {
     let value: String
     let icon: String
     let tint: Color
-    var showsProgress = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -319,15 +318,10 @@ private struct SettingsValueRow: View {
             Text(title)
                 .foregroundStyle(.primary)
             Spacer(minLength: 12)
-            if showsProgress {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Text(value)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+            Text(value)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 }

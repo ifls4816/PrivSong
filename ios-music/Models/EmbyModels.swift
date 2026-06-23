@@ -56,14 +56,8 @@ enum OnlinePlaybackQuality: String, CaseIterable, Codable, Identifiable, Hashabl
     }
 }
 
-enum AudioTranscodeFormat: String, CaseIterable, Codable, Identifiable, Hashable {
+enum AudioTranscodeFormat: String, Hashable {
     case aac
-
-    var id: String { rawValue }
-
-    var title: String {
-        rawValue.uppercased()
-    }
 
     var codec: String {
         "aac"
@@ -529,10 +523,6 @@ struct MusicPlaylist: Identifiable, Codable, Hashable {
         self.songCount = songCount
     }
 
-    var totalDuration: TimeInterval {
-        songs.reduce(0) { $0 + $1.duration }
-    }
-
     var displaySongCount: Int {
         songCount ?? songs.count
     }
@@ -647,20 +637,6 @@ extension TimeInterval {
         return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
     }
 
-    var playlistDurationText: String {
-        guard isFinite, self > 0 else { return "0分钟" }
-        let totalMinutes = max(1, Int((self / 60).rounded()))
-        let hours = totalMinutes / 60
-        let minutes = totalMinutes % 60
-
-        if hours > 0, minutes > 0 {
-            return "\(hours)小时\(minutes)分钟"
-        }
-        if hours > 0 {
-            return "\(hours)小时"
-        }
-        return "\(minutes)分钟"
-    }
 }
 
 private extension Int {

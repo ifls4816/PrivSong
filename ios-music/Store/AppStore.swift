@@ -9,7 +9,6 @@ final class AppStore: ObservableObject {
     @Published var searchResults: [EmbyAudioItem] = []
     @Published var isLoading = false
     @Published var isSearching = false
-    @Published private(set) var hasLibraryCache = false
     @Published private(set) var hasLoadedInitialContent = false
     @Published var errorMessage: String?
     @Published var libraryStatus = "Not connected"
@@ -24,12 +23,6 @@ final class AppStore: ObservableObject {
     @Published var wifiOnlineQuality: OnlinePlaybackQuality = .lossless {
         didSet {
             UserDefaults.standard.set(wifiOnlineQuality.rawValue, forKey: wifiOnlineQualityKey)
-            player?.setPlaybackQualityPreferences(playbackQualityPreferences)
-        }
-    }
-    @Published var audioTranscodeFormat: AudioTranscodeFormat = .aac {
-        didSet {
-            UserDefaults.standard.set(audioTranscodeFormat.rawValue, forKey: audioTranscodeFormatKey)
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
         }
     }
@@ -62,13 +55,11 @@ final class AppStore: ObservableObject {
     private let recentKey = "RecentSongIds"
     private let cellularOnlineQualityKey = "CellularOnlinePlaybackQuality"
     private let wifiOnlineQualityKey = "WiFiOnlinePlaybackQuality"
-    private let audioTranscodeFormatKey = "AudioTranscodeFormat"
     private let startsOnBrowseKey = "StartsOnBrowse"
     private let keepsScreenAwakeKey = "KeepsScreenAwakeOnPlayerPage"
     private let highRefreshRateKey = "PrefersHighRefreshRate"
     private var activeSearchToken: UUID?
     private var libraryCacheSavedAt: Date?
-    private var initialHomeContentSavedAt: Date?
     private var dailyRecommendationDay: Int?
 
     weak var player: PlayerController? {
@@ -96,8 +87,7 @@ final class AppStore: ObservableObject {
     var playbackQualityPreferences: PlaybackQualityPreferences {
         PlaybackQualityPreferences(
             cellularQuality: cellularOnlineQuality,
-            wifiQuality: wifiOnlineQuality,
-            transcodeFormat: audioTranscodeFormat
+            wifiQuality: wifiOnlineQuality
         )
     }
 
@@ -190,7 +180,6 @@ final class AppStore: ObservableObject {
         dailyRecommendationDay = day
         dailyRecommendedSongs = dailyRecommendation(from: dailySeed, day: day, limit: 50)
         hasLoadedInitialContent = true
-        initialHomeContentSavedAt = savedAt
         libraryStatus = "Loaded home content."
 
         if savesSnapshot {
@@ -230,7 +219,6 @@ final class AppStore: ObservableObject {
     private func applyFullLibrary(songs: [EmbyAudioItem], playlists: [MusicPlaylist]) {
         self.songs = songs
         self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
-        self.hasLibraryCache = !songs.isEmpty
         self.hasLoadedInitialContent = true
         self.libraryCacheSavedAt = Date()
         self.saveLibrarySnapshot()
@@ -319,10 +307,8 @@ final class AppStore: ObservableObject {
         dailyRecommendedSongs = []
         recentlyAddedSongs = []
         mostPlayedSongs = []
-        hasLibraryCache = false
         hasLoadedInitialContent = false
         libraryCacheSavedAt = nil
-        initialHomeContentSavedAt = nil
         errorMessage = nil
         libraryStatus = "Not connected"
         UserDefaults.standard.removeObject(forKey: sessionKey)
@@ -341,10 +327,8 @@ final class AppStore: ObservableObject {
         ArtworkDiskCache.clear()
         PlaybackAudioCache.clearAll()
         URLCache.shared.removeAllCachedResponses()
-        hasLibraryCache = false
         hasLoadedInitialContent = hasHomeContent || hasBrowseContent
         libraryCacheSavedAt = nil
-        initialHomeContentSavedAt = hasLoadedInitialContent ? Date() : nil
         libraryStatus = songs.isEmpty ? "Cache cleared." : "Cache cleared. Current library remains in memory."
     }
 
@@ -441,13 +425,11 @@ final class AppStore: ObservableObject {
         guard let snapshot = snapshotStore.load(),
               !snapshot.songs.isEmpty,
               Calendar.current.isDateInToday(snapshot.savedAt) else {
-            hasLibraryCache = false
             return false
         }
 
         songs = snapshot.songs
         playlists = snapshot.playlists.isEmpty ? snapshot.songs.generatedPlaylists : snapshot.playlists
-        hasLibraryCache = true
         hasLoadedInitialContent = true
         libraryCacheSavedAt = snapshot.savedAt
         libraryStatus = "Loaded \(snapshot.songs.count) songs from cache."
@@ -490,14 +472,6 @@ final class AppStore: ObservableObject {
         if let rawValue = UserDefaults.standard.string(forKey: wifiOnlineQualityKey),
            let quality = OnlinePlaybackQuality(rawValue: rawValue) {
             wifiOnlineQuality = quality
-        }
-        if let rawValue = UserDefaults.standard.string(forKey: audioTranscodeFormatKey) {
-            if let format = AudioTranscodeFormat(rawValue: rawValue) {
-                audioTranscodeFormat = format
-            } else {
-                UserDefaults.standard.set(AudioTranscodeFormat.aac.rawValue, forKey: audioTranscodeFormatKey)
-                audioTranscodeFormat = .aac
-            }
         }
         startsOnBrowse = UserDefaults.standard.bool(forKey: startsOnBrowseKey)
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)

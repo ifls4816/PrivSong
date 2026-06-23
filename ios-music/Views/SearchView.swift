@@ -213,9 +213,11 @@ private struct SearchArtworkRow: View {
             Spacer()
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.musicRed)
         }
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
 
@@ -244,8 +246,10 @@ private struct SearchPlainRow: View {
             Spacer()
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.bold))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.musicRed)
         }
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
     }
 }
