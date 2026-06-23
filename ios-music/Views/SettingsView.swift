@@ -177,9 +177,13 @@ private struct EditLibrarySettingsView: View {
                 Button(role: .destructive) {
                     isSignOutConfirmationPresented = true
                 } label: {
-                    SettingsActionRow(title: "断开连接", icon: "rectangle.portrait.and.arrow.right", tint: .red)
+                    HStack {
+                        Spacer()
+                        Text("断开连接")
+                            .fontWeight(.semibold)
+                        Spacer()
+                    }
                 }
-                .buttonStyle(.plain)
                 .disabled(store.session == nil)
                 .confirmationDialog("断开 Emby 连接？", isPresented: $isSignOutConfirmationPresented, titleVisibility: .visible) {
                     Button("断开连接", role: .destructive) {
@@ -387,47 +391,261 @@ struct SignInView: View {
     @State private var username = ""
     @State private var password = ""
 
+    private var canConnect: Bool {
+        !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !password.isEmpty &&
+            !store.isLoading
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    TextField("服务器地址", text: $server)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                    TextField("用户名", text: $username)
-                        .textInputAutocapitalization(.never)
-                    SecureField("密码", text: $password)
-                } footer: {
-                    Text("示例：http://192.168.1.10:8096")
-                }
+            ZStack {
+                SignInBackground()
 
-                if let error = store.errorMessage {
-                    Section {
-                        Text(error)
+                ScrollView {
+                    VStack(spacing: 24) {
+                        SignInHeader()
+
+                        VStack(spacing: 0) {
+                            SignInInputRow(
+                                title: "服务器",
+                                placeholder: "http://192.168.1.10:8096",
+                                icon: "server.rack",
+                                tint: .blue,
+                                kind: .server,
+                                text: $server
+                            )
+
+                            Divider()
+                                .padding(.leading, 68)
+
+                            SignInInputRow(
+                                title: "用户",
+                                placeholder: "Emby 用户名",
+                                icon: "person.fill",
+                                tint: .musicRed,
+                                kind: .username,
+                                text: $username
+                            )
+
+                            Divider()
+                                .padding(.leading, 68)
+
+                            SignInInputRow(
+                                title: "密码",
+                                placeholder: "Emby 密码",
+                                icon: "lock.fill",
+                                tint: .orange,
+                                kind: .password,
+                                text: $password
+                            )
+                        }
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+                        }
+                        .shadow(color: .black.opacity(0.08), radius: 22, y: 14)
+
+                        if let error = store.errorMessage {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 15, weight: .semibold))
+                                Text(error)
+                                    .font(.subheadline)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                             .foregroundStyle(.red)
-                    }
-                }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                            .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
 
-                Section {
-                    Button {
-                        Task { await store.signIn(server: server, username: username, password: password) }
-                    } label: {
-                        HStack {
-                            Spacer()
-                            if store.isLoading {
-                                ProgressView()
-                            } else {
-                                Text("连接")
+                        Button {
+                            Task { await store.signIn(server: server, username: username, password: password) }
+                        } label: {
+                            HStack(spacing: 10) {
+                                if store.isLoading {
+                                    ProgressView()
+                                        .tint(.white)
+                                }
+
+                                Text(store.isLoading ? "连接中..." : "连接 Emby")
+                                    .font(.headline)
                                     .fontWeight(.semibold)
                             }
-                            Spacer()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 54)
+                            .foregroundStyle(canConnect || store.isLoading ? .white : .secondary)
+                            .background(
+                                canConnect || store.isLoading ? Color.musicRed : Color.secondary.opacity(0.16),
+                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            )
                         }
+                        .buttonStyle(.plain)
+                        .disabled(!canConnect)
+
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "lock.shield.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(Color.musicRed)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("支持局域网地址或 HTTPS 域名")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.primary)
+                                Text("连接成功后会自动同步资料库，并优先使用本地缓存启动。")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 4)
                     }
-                    .disabled(server.isEmpty || username.isEmpty || password.isEmpty || store.isLoading)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 34)
+                    .padding(.bottom, 40)
                 }
+                .scrollDismissesKeyboard(.interactively)
             }
             .navigationTitle("连接 Emby")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(.hidden, for: .navigationBar)
         }
         .presentationBackground(.regularMaterial)
+    }
+}
+
+private struct SignInBackground: View {
+    var body: some View {
+        ZStack {
+            Color.musicPageBackground
+
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [
+                        Color.musicRed.opacity(0.28),
+                        Color(red: 1.0, green: 0.38, blue: 0.30).opacity(0.14),
+                        .clear
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .frame(height: 340)
+
+                Spacer(minLength: 0)
+
+                LinearGradient(
+                    colors: [
+                        .clear,
+                        Color(red: 0.04, green: 0.08, blue: 0.12).opacity(0.12)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 220)
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+private struct SignInHeader: View {
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color.musicRed,
+                                Color(red: 1.0, green: 0.42, blue: 0.34)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 96, height: 96)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 30, style: .continuous)
+                            .strokeBorder(.white.opacity(0.22), lineWidth: 1)
+                    }
+                    .shadow(color: Color.musicRed.opacity(0.24), radius: 22, y: 14)
+
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 42, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(spacing: 8) {
+                Text("连接 Emby")
+                    .font(.system(size: 32, weight: .bold))
+                    .foregroundStyle(.primary)
+
+                Text("登录后同步音乐资料库，并在本机保留缓存。")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private enum SignInInputKind {
+    case server
+    case username
+    case password
+}
+
+private struct SignInInputRow: View {
+    let title: String
+    let placeholder: String
+    let icon: String
+    let tint: Color
+    let kind: SignInInputKind
+    @Binding var text: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(tint, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                inputField
+                    .font(.body.weight(.medium))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+    }
+
+    @ViewBuilder
+    private var inputField: some View {
+        switch kind {
+        case .server:
+            TextField(placeholder, text: $text)
+                .keyboardType(.URL)
+                .submitLabel(.next)
+        case .username:
+            TextField(placeholder, text: $text)
+                .textContentType(.username)
+                .submitLabel(.next)
+        case .password:
+            SecureField(placeholder, text: $text)
+                .textContentType(.password)
+                .submitLabel(.done)
+        }
     }
 }

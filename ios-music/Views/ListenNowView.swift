@@ -232,20 +232,21 @@ struct PlaylistArtworkGrid: View {
             let tile = (min(size.width, size.height) - 2) / 2
 
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.musicRed.opacity(0.14))
-
-                VStack(spacing: 2) {
-                    HStack(spacing: 2) {
-                        artworkTile(at: 0, size: tile)
-                        artworkTile(at: 1, size: tile)
+                if songs.isEmpty {
+                    ArtworkView(url: nil, cornerRadius: 12)
+                } else {
+                    VStack(spacing: 2) {
+                        HStack(spacing: 2) {
+                            artworkTile(at: 0, size: tile)
+                            artworkTile(at: 1, size: tile)
+                        }
+                        HStack(spacing: 2) {
+                            artworkTile(at: 2, size: tile)
+                            artworkTile(at: 3, size: tile)
+                        }
                     }
-                    HStack(spacing: 2) {
-                        artworkTile(at: 2, size: tile)
-                        artworkTile(at: 3, size: tile)
-                    }
+                    .frame(width: tile * 2 + 2, height: tile * 2 + 2)
                 }
-                .frame(width: tile * 2 + 2, height: tile * 2 + 2)
             }
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
@@ -257,13 +258,8 @@ struct PlaylistArtworkGrid: View {
             ArtworkView(url: store.imageURL(for: songs[index], size: 160), cornerRadius: 3)
                 .frame(width: size, height: size)
         } else {
-            ZStack {
-                Color.secondary.opacity(0.12)
-                Image(systemName: "music.note")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(width: size, height: size)
+            ArtworkView(url: nil, cornerRadius: 3)
+                .frame(width: size, height: size)
         }
     }
 }
