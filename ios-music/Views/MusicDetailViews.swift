@@ -221,7 +221,7 @@ struct AlbumDetailView: View {
         MusicCollectionDetailView(
             title: album.title,
             subtitle: album.artist,
-            artworkURL: album.representativeSong.flatMap { store.imageURL(for: $0) },
+            artworkURL: album.representativeSong.flatMap { store.imageURL(for: $0, size: 420) },
             songs: album.songs,
             play: play
         )
@@ -243,7 +243,7 @@ struct ArtistDetailView: View {
         MusicCollectionDetailView(
             title: artist.name,
             subtitle: "\(artist.songs.count) 首歌曲",
-            artworkURL: artist.representativeSong.flatMap { store.imageURL(for: $0) },
+            artworkURL: artist.representativeSong.flatMap { store.imageURL(for: $0, size: 420) },
             songs: artist.songs,
             play: play
         )
@@ -259,13 +259,15 @@ struct ArtistDetailView: View {
 
 private struct MusicCollectionDetailView: View {
     @EnvironmentObject private var store: AppStore
+    private let pageSize = 32
+
     let title: String
     let subtitle: String
     let artworkURL: URL?
     let songs: [EmbyAudioItem]
     let play: (EmbyAudioItem?) -> Void
 
-    @State private var visibleCount = 80
+    @State private var visibleCount = 32
     @State private var isLoadingNextPage = false
 
     private var visibleSongs: [EmbyAudioItem] {
@@ -291,10 +293,10 @@ private struct MusicCollectionDetailView: View {
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
         .onAppear {
-            visibleCount = min(max(visibleCount, 80), songs.count)
+            visibleCount = min(max(visibleCount, pageSize), songs.count)
         }
         .onChange(of: songs.count) { _, count in
-            visibleCount = min(80, count)
+            visibleCount = min(pageSize, count)
         }
     }
 
@@ -358,7 +360,7 @@ private struct MusicCollectionDetailView: View {
         guard visibleCount < songs.count, !isLoadingNextPage else { return }
 
         isLoadingNextPage = true
-        visibleCount = min(visibleCount + 80, songs.count)
+        visibleCount = min(visibleCount + pageSize, songs.count)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             isLoadingNextPage = false
         }
@@ -399,10 +401,6 @@ struct SongRowsCard: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
-        }
+        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }

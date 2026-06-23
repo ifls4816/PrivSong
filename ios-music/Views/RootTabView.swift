@@ -5,55 +5,44 @@ struct RootTabView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
     @State private var isPlayerExpanded = false
-    @State private var playerCollapseProgress = 0.0
     @State private var selectedTab: AppTab = .home
     @State private var pendingHomeRoute: HomeRoute?
 
     var body: some View {
-        ZStack {
-            tabs
-
-            if isPlayerExpanded, player.currentSong != nil || store.lastPlayedSong != nil {
+        tabs
+            .sheet(isPresented: $isPlayerExpanded) {
                 NowPlayingView(
-                    collapseProgress: $playerCollapseProgress,
                     onOpenAlbum: openAlbum,
                     onOpenArtist: openArtist
                 ) {
-                    // Dismiss without animation — NowPlayingView handles its own fly-out
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        playerCollapseProgress = 1
-                        isPlayerExpanded = false
-                    }
+                    isPlayerExpanded = false
                 }
-                .ignoresSafeArea()
-                .zIndex(20)
-                .transition(.identity)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+                .presentationBackground(.regularMaterial)
             }
-        }
-        .overlay {
-            if store.session == nil {
-                SignInView()
-                    .transition(.opacity)
+            .overlay {
+                if store.session == nil {
+                    SignInView()
+                        .transition(.opacity)
+                }
             }
-        }
-        .overlay {
-            if store.session != nil, !store.hasLibraryCache, store.songs.isEmpty, store.isLoading {
-                LaunchLoadingView(status: store.libraryStatus)
-                    .transition(.opacity)
+            .overlay {
+                if store.session != nil, !store.hasLibraryCache, store.songs.isEmpty, store.isLoading {
+                    LaunchLoadingView(status: store.libraryStatus)
+                        .transition(.opacity)
+                }
             }
-        }
-        .onAppear {
-            selectedTab = store.startsOnBrowse ? .browse : .home
-        }
-        .overlay {
-            if store.prefersHighRefreshRate {
-                HighRefreshRateView()
-                    .frame(width: 0, height: 0)
-                    .allowsHitTesting(false)
+            .onAppear {
+                selectedTab = store.startsOnBrowse ? .browse : .home
             }
-        }
+            .overlay {
+                if store.prefersHighRefreshRate {
+                    HighRefreshRateView()
+                        .frame(width: 0, height: 0)
+                        .allowsHitTesting(false)
+                }
+            }
     }
 
     @ViewBuilder
@@ -62,10 +51,7 @@ struct RootTabView: View {
             .tabViewBottomAccessory {
                 MiniPlayerView(visibility: miniPlayerVisibility) {
                     guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
-                    withAnimation(.easeOut(duration: 0.28)) {
-                        playerCollapseProgress = 0
-                        isPlayerExpanded = true
-                    }
+                    isPlayerExpanded = true
                 }
             }
     }
@@ -93,8 +79,7 @@ struct RootTabView: View {
     }
 
     private var miniPlayerVisibility: Double {
-        guard isPlayerExpanded else { return 1 }
-        return min(max((playerCollapseProgress - 0.42) / 0.42, 0), 1)
+        isPlayerExpanded ? 0 : 1
     }
 
     private func openAlbum(for song: EmbyAudioItem) {
@@ -116,7 +101,6 @@ struct RootTabView: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) {
             isPlayerExpanded = false
-            playerCollapseProgress = 1
             selectedTab = .home
         }
         DispatchQueue.main.async {

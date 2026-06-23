@@ -42,6 +42,7 @@ final class PlayerController: ObservableObject {
     private var lastNowPlayingSync = Date.distantPast
     private var shouldResumeAfterInterruption = false
     private var isSwitchingTracks = false
+    private var isFadingToPause = false
     private var pendingSeekTarget: TimeInterval?
     private var suppressTimeUpdatesUntil = Date.distantPast
 
@@ -87,7 +88,9 @@ final class PlayerController: ObservableObject {
     }
 
     func togglePlayPause() {
-        if engine.timeControlStatus == .playing {
+        if isFadingToPause {
+            resume()
+        } else if isPlaying || engine.timeControlStatus == .playing {
             pause()
         } else {
             resume()
@@ -100,6 +103,7 @@ final class PlayerController: ObservableObject {
             fadeTask?.cancel()
             engine.volume = Float(volume)
             isSwitchingTracks = false
+            isFadingToPause = false
         }
     }
 
@@ -197,7 +201,9 @@ final class PlayerController: ObservableObject {
     func setVolume(_ value: Double) {
         let clamped = min(max(value, 0), 1)
         volume = clamped
-        engine.volume = Float(clamped)
+        if !isFadingToPause {
+            engine.volume = Float(clamped)
+        }
     }
 
     func setSleepTimer(after duration: TimeInterval) {
@@ -229,6 +235,7 @@ final class PlayerController: ObservableObject {
     }
 
     private func start(song: EmbyAudioItem, session: EmbySession, autoplay: Bool) {
+        isFadingToPause = false
         isSwitchingTracks = true
         currentSong = song
         elapsed = 0
@@ -261,6 +268,7 @@ final class PlayerController: ObservableObject {
             return
         }
 
+        isFadingToPause = false
         isSwitchingTracks = true
         fadeTask?.cancel()
         fadeTask = Task { @MainActor [weak self] in
@@ -320,22 +328,31 @@ final class PlayerController: ObservableObject {
     private func resume() {
         guard currentSong != nil else { return }
         audioSession.activate()
-        if playbackFadesEnabled {
+        let wasFadingToPause = isFadingToPause
+        isFadingToPause = false
+        fadeTask?.cancel()
+
+        if playbackFadesEnabled, !wasFadingToPause {
             engine.volume = 0
         }
         engine.play()
         isPlaying = true
         if playbackFadesEnabled {
-            fadeEngineVolume(to: volume, duration: 0.8)
+            fadeEngineVolume(to: volume, duration: wasFadingToPause ? 0.35 : 0.8)
         }
         syncNowPlaying(force: true)
     }
 
     private func pause() {
         if playbackFadesEnabled, isPlaying {
+            isFadingToPause = true
+            isPlaying = false
+            syncNowPlaying(force: true)
             fadeEngineVolume(to: 0, duration: 0.45, pauseWhenFinished: true)
             return
         }
+        fadeTask?.cancel()
+        isFadingToPause = false
         engine.pause()
         isPlaying = false
         syncNowPlaying(force: true)
@@ -422,6 +439,7 @@ final class PlayerController: ObservableObject {
                 self.engine.pause()
                 self.engine.volume = Float(self.volume)
                 self.isPlaying = false
+                self.isFadingToPause = false
                 self.syncNowPlaying(force: true)
             }
         }
@@ -649,7 +667,7 @@ final class PlayerController: ObservableObject {
         } else if playbackStatusText == "正在缓冲" || playbackStatusText == "正在连接" {
             playbackStatusText = nil
         }
-        if isPlaying != playing {
+        if !isFadingToPause, isPlaying != playing {
             isPlaying = playing
         }
         syncNowPlaying(force: forceNowPlaying)

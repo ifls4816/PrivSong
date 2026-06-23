@@ -33,6 +33,8 @@ final class AppStore: ObservableObject {
     // Cached derived data — recomputed only when songs change
     @Published private(set) var albums: [MusicAlbum] = []
     @Published private(set) var artists: [MusicArtist] = []
+    @Published private(set) var albumSections: [IndexedSection<MusicAlbum>] = []
+    @Published private(set) var artistSections: [IndexedSection<MusicArtist>] = []
     @Published private(set) var playlists: [MusicPlaylist] = []
     @Published private(set) var recentSongs: [EmbyAudioItem] = []
     @Published private(set) var dailyRecommendedSongs: [EmbyAudioItem] = []
@@ -274,12 +276,14 @@ final class AppStore: ObservableObject {
 
     private func recomputeDerivedData() {
         guard !songs.isEmpty else {
-            albums = []; artists = []; playlists = []; recentSongs = []
+            albums = []; artists = []; albumSections = []; artistSections = []; playlists = []; recentSongs = []
             dailyRecommendedSongs = []; recentlyAddedSongs = []; mostPlayedSongs = []
             return
         }
         albums = songs.musicAlbums
         artists = songs.musicArtists
+        albumSections = PinyinIndexer.sections(for: albums, title: \.title)
+        artistSections = PinyinIndexer.sections(for: artists, title: \.name)
         let byId = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
         let ordered = recentSongIds.compactMap { byId[$0] }
         recentSongs = ordered.isEmpty ? Array(songs.prefix(20)) : ordered
@@ -388,11 +392,20 @@ final class AppStore: ObservableObject {
     }
 
     private func deterministicScore(for id: String, day: Int) -> UInt64 {
-        var hash = UInt64(day &* 1_103_515_245)
+        var hash: UInt64 = 14_695_981_039_346_656_037
         for scalar in id.unicodeScalars {
-            hash = hash &* 1_099_511_628_211 &+ UInt64(scalar.value)
+            hash ^= UInt64(scalar.value)
+            hash &*= 1_099_511_628_211
         }
-        return hash
+        hash ^= UInt64(bitPattern: Int64(day)) &* 0x9E37_79B9_7F4A_7C15
+        return avalanche(hash)
+    }
+
+    private func avalanche(_ value: UInt64) -> UInt64 {
+        var hash = value
+        hash = (hash ^ (hash >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        hash = (hash ^ (hash >> 27)) &* 0x94D0_49BB_1331_11EB
+        return hash ^ (hash >> 31)
     }
 }
 

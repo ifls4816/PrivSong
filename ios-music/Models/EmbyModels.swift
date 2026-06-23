@@ -321,6 +321,54 @@ struct MusicArtist: Identifiable, Hashable {
     var representativeSong: EmbyAudioItem? { songs.first }
 }
 
+struct IndexedSection<Item: Identifiable>: Identifiable {
+    let title: String
+    let items: [Item]
+
+    var id: String { title }
+}
+
+enum PinyinIndexer {
+    static func sections<Item>(for items: [Item], title: KeyPath<Item, String>) -> [IndexedSection<Item>] where Item: Identifiable {
+        let grouped = Dictionary(grouping: items) { item in
+            indexTitle(for: item[keyPath: title])
+        }
+
+        return grouped.keys
+            .sorted(by: sectionSort)
+            .compactMap { key in
+                guard let values = grouped[key] else { return nil }
+                let sorted = values.sorted {
+                    $0[keyPath: title].localizedCaseInsensitiveCompare($1[keyPath: title]) == .orderedAscending
+                }
+                return IndexedSection(title: key, items: sorted)
+            }
+    }
+
+    private static func indexTitle(for value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "#" }
+
+        let mutable = NSMutableString(string: trimmed) as CFMutableString
+        CFStringTransform(mutable, nil, kCFStringTransformToLatin, false)
+        CFStringTransform(mutable, nil, kCFStringTransformStripCombiningMarks, false)
+
+        let latin = String(mutable).uppercased()
+        guard let scalar = latin.unicodeScalars.first,
+              CharacterSet.uppercaseLetters.contains(scalar) else {
+            return "#"
+        }
+
+        return String(Character(scalar))
+    }
+
+    private static func sectionSort(_ left: String, _ right: String) -> Bool {
+        if left == "#" { return false }
+        if right == "#" { return true }
+        return left < right
+    }
+}
+
 struct MusicPlaylist: Identifiable, Codable, Hashable {
     let id: String
     let name: String

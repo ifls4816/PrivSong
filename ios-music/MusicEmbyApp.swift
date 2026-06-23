@@ -13,6 +13,8 @@ struct MusicEmbyApp: App {
             diskCapacity: 200 * 1024 * 1024,
             diskPath: nil
         )
+        UISlider.appearance().minimumTrackTintColor = .musicRed
+        UISlider.appearance().thumbTintColor = .musicSliderThumb
     }
 
     var body: some Scene {
@@ -29,18 +31,24 @@ struct MusicEmbyApp: App {
 }
 
 extension Color {
-    static let musicRed = Color(red: 1.0, green: 0.11, blue: 0.18)
+    static let musicRed = Color(uiColor: .musicRed)
     static let musicPageBackground = Color(uiColor: UIColor { traits in
         if traits.userInterfaceStyle == .dark {
-            return UIColor(red: 0.045, green: 0.047, blue: 0.058, alpha: 1)
+            return UIColor.systemGroupedBackground
         }
-        return UIColor(red: 0.955, green: 0.965, blue: 0.985, alpha: 1)
+        return UIColor(red: 0.949, green: 0.949, blue: 0.969, alpha: 1)
+    })
+    static let musicCardBackground = Color(uiColor: UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            return UIColor.secondarySystemGroupedBackground
+        }
+        return UIColor.white
     })
     static let musicBrowseAccentBackground = Color(uiColor: UIColor { traits in
         if traits.userInterfaceStyle == .dark {
-            return UIColor(red: 0.075, green: 0.095, blue: 0.125, alpha: 1)
+            return UIColor.secondarySystemGroupedBackground
         }
-        return UIColor(red: 0.88, green: 0.94, blue: 1.0, alpha: 1)
+        return UIColor.white
     })
     static let musicMiniPlayerBackground = Color(uiColor: UIColor { traits in
         if traits.userInterfaceStyle == .dark {
@@ -50,8 +58,18 @@ extension Color {
     })
     static let musicSeparatorStroke = Color(uiColor: UIColor { traits in
         if traits.userInterfaceStyle == .dark {
-            return UIColor(white: 1, alpha: 0.16)
+            return UIColor.separator.withAlphaComponent(0.45)
         }
-        return UIColor(white: 1, alpha: 0.54)
+        return UIColor.separator.withAlphaComponent(0.18)
     })
+}
+
+extension UIColor {
+    static let musicRed = UIColor(red: 1.0, green: 0.11, blue: 0.18, alpha: 1)
+    static let musicSliderThumb = UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            return UIColor(white: 0.92, alpha: 1)
+        }
+        return UIColor.white
+    }
 }

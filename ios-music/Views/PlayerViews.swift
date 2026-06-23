@@ -1,5 +1,6 @@
 import MediaPlayer
 import SwiftUI
+import UIKit
 
 struct MiniPlayerView: View {
     @Environment(\.tabViewBottomAccessoryPlacement) private var accessoryPlacement
@@ -121,7 +122,6 @@ struct MiniPlayerView: View {
 struct NowPlayingView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
-    @Binding var collapseProgress: Double
     let onOpenAlbum: (EmbyAudioItem) -> Void
     let onOpenArtist: (EmbyAudioItem) -> Void
     let onDismiss: () -> Void
@@ -130,25 +130,23 @@ struct NowPlayingView: View {
     @State private var scrubProgress = 0.0
     @State private var isScrubbing = false
 
-    // Smooth dismiss: single @State, no GestureState snap-back
-    @State private var dragOffset: CGFloat = 0
-    @State private var isDismissing = false
-    @State private var screenHeight: CGFloat = 0
-    @State private var isSleepTimerDialogPresented = false
-    @State private var sleepTimerRemainingSnapshot: String?
+    @State private var selectedSleepTimerTitle: String?
     @State private var revealPlayerControls = false
-    @State private var isPresented = false
 
-    private var cornerRadius: CGFloat {
-        dragOffset > 0 && !isDismissing ? 28 : (isPresented ? 0 : 28)
-    }
+    private let sleepTimerOptions: [(title: String, duration: TimeInterval)] = [
+        ("8小时", 8 * 60 * 60),
+        ("6小时", 6 * 60 * 60),
+        ("5小时", 5 * 60 * 60),
+        ("4小时", 4 * 60 * 60),
+        ("3小时", 3 * 60 * 60),
+        ("2小时", 2 * 60 * 60),
+        ("60分钟", 60 * 60),
+        ("30分钟", 30 * 60),
+        ("15分钟", 15 * 60)
+    ]
 
     private var controlsRevealProgress: Double {
         revealPlayerControls ? 1 : 0
-    }
-
-    private var presentationOffset: CGFloat {
-        isPresented ? 0 : max(screenHeight * 0.72, 420)
     }
 
     private func liveProgress(for song: EmbyAudioItem) -> Double {
@@ -174,44 +172,21 @@ struct NowPlayingView: View {
     var body: some View {
         if let song = player.currentSong ?? store.lastPlayedSong {
             GeometryReader { proxy in
-                let size = proxy.size
-                let topInset = max(proxy.safeAreaInsets.top, 44)
+                let size = sanitizedPageSize(proxy.size)
                 ZStack {
-                    PlayerBackdrop(imageURL: store.imageURL(for: song), size: size)
+                    PlayerPageBackground(imageURL: store.imageURL(for: song))
 
                     VStack(spacing: 0) {
-                        grabber(topInset: topInset)
-                            .opacity(controlsRevealProgress)
-
                         nowPlayingPage(song: song, size: size)
                             .frame(width: size.width)
                     }
                     .frame(width: size.width, height: size.height, alignment: .top)
                 }
                 .frame(width: size.width, height: size.height)
-                .onAppear { screenHeight = size.height }
             }
-            .clipShape(
-                UnevenRoundedRectangle(
-                    cornerRadii: .init(
-                        topLeading: cornerRadius,
-                        bottomLeading: 0,
-                        bottomTrailing: 0,
-                        topTrailing: cornerRadius
-                    ),
-                    style: .continuous
-                )
-            )
-            .offset(y: dragOffset + presentationOffset)
-            .ignoresSafeArea()
-            .gesture(isDismissing ? nil : dragGesture)
             .onAppear {
-                isPresented = false
                 revealPlayerControls = false
                 UIApplication.shared.isIdleTimerDisabled = store.keepsScreenAwakeOnPlayerPage
-                withAnimation(.easeOut(duration: 0.28)) {
-                    isPresented = true
-                }
                 withAnimation(.easeOut(duration: 0.22).delay(0.12)) {
                     revealPlayerControls = true
                 }
@@ -219,7 +194,6 @@ struct NowPlayingView: View {
             .onDisappear {
                 UIApplication.shared.isIdleTimerDisabled = false
                 revealPlayerControls = false
-                isPresented = false
             }
             .onReceive(NotificationCenter.default.publisher(for: .lyricsTapped)) { _ in
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
@@ -237,54 +211,11 @@ struct NowPlayingView: View {
         }
     }
 
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
-            .onChanged { value in
-                guard value.translation.height > 0,
-                      abs(value.translation.height) > abs(value.translation.width) else { return }
-                var transaction = Transaction()
-                transaction.disablesAnimations = true
-                withTransaction(transaction) {
-                    dragOffset = value.translation.height
-                    collapseProgress = min(max(Double(value.translation.height / 320), 0), 1)
-                }
-            }
-            .onEnded { value in
-                let shouldDismiss = value.translation.height > 120 ||
-                                    value.predictedEndTranslation.height > 240
-                if shouldDismiss {
-                    withAnimation(.interpolatingSpring(stiffness: 240, damping: 28)) {
-                        isDismissing = true
-                        revealPlayerControls = false
-                        isPresented = true
-                        dragOffset = screenHeight + 40
-                        collapseProgress = 1
-                    }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
-                        dragOffset = 0
-                        isDismissing = false
-                        onDismiss()
-                    }
-                } else {
-                    withAnimation(.interpolatingSpring(stiffness: 400, damping: 32)) {
-                        dragOffset = 0
-                        collapseProgress = 0
-                    }
-                }
-            }
-    }
-
-    private func grabber(topInset: CGFloat) -> some View {
-        Capsule()
-            .fill(.white.opacity(0.34))
-            .frame(width: 46, height: 5)
-            .padding(.top, topInset + 18)
-            .padding(.bottom, 6)
-    }
-
     private func nowPlayingPage(song: EmbyAudioItem, size: CGSize) -> some View {
-        let contentWidth = min(size.width - 48, 352)
-        let compactHeight = size.height < 760
+        let pageWidth = safeDimension(size.width)
+        let pageHeight = safeDimension(size.height)
+        let contentWidth = min(max(pageWidth - 48, 1), 352)
+        let compactHeight = pageHeight < 760
         let artworkSize = min(contentWidth * (compactHeight ? 0.82 : 0.90), compactHeight ? 276 : 332)
         let upperHeight = min(artworkSize + (compactHeight ? 26 : 34), compactHeight ? 304 : 366)
         let topOffset: CGFloat = compactHeight ? 34 : 42
@@ -310,7 +241,7 @@ struct NowPlayingView: View {
             GeometryReader { lowerProxy in
                 lowerControls(
                     contentWidth: contentWidth,
-                    screenWidth: size.width,
+                    screenWidth: pageWidth,
                     height: lowerProxy.size.height,
                     compactHeight: compactHeight,
                     song: song
@@ -320,12 +251,15 @@ struct NowPlayingView: View {
             .opacity(controlsProgress)
             .offset(y: controlsProgress == 1 ? 0 : 18)
         }
-        .frame(width: size.width)
+        .frame(width: pageWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .padding(.top, 4)
     }
 
     private func lowerControls(contentWidth: CGFloat, screenWidth: CGFloat, height: CGFloat, compactHeight: Bool, song: EmbyAudioItem) -> some View {
+        let contentWidth = safeDimension(contentWidth)
+        let screenWidth = safeDimension(screenWidth)
+        let height = safeDimension(height)
         let topGap = min(max(height * 0.045, compactHeight ? 8 : 12), compactHeight ? 18 : 24)
         let middleGap = min(max(height * 0.045, compactHeight ? 8 : 12), compactHeight ? 18 : 24)
         let lowerGap = min(max(height * 0.035, compactHeight ? 6 : 10), compactHeight ? 14 : 20)
@@ -350,6 +284,15 @@ struct NowPlayingView: View {
                 .frame(height: compactHeight ? 60 : 68, alignment: .top)
         }
         .frame(width: screenWidth, height: height, alignment: .bottom)
+    }
+
+    private func sanitizedPageSize(_ size: CGSize) -> CGSize {
+        CGSize(width: safeDimension(size.width), height: safeDimension(size.height))
+    }
+
+    private func safeDimension(_ value: CGFloat) -> CGFloat {
+        guard value.isFinite, value > 0 else { return 1 }
+        return value
     }
 
     @ViewBuilder
@@ -379,10 +322,9 @@ struct NowPlayingView: View {
                 } label: {
                     Text(song.name)
                         .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
-                        .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
@@ -392,9 +334,8 @@ struct NowPlayingView: View {
                 } label: {
                     Text(song.artistLine)
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.78))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                        .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
@@ -407,10 +348,10 @@ struct NowPlayingView: View {
                 Image(systemName: store.isFavorite(song) ? "star.fill" : "star")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 34, height: 34)
-                    .background(.white.opacity(0.16), in: Circle())
+                    .background(Color.primary.opacity(0.08), in: Circle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.white.opacity(0.78))
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -429,7 +370,7 @@ struct NowPlayingView: View {
                     player.seek(to: scrubProgress)
                 }
             }
-            .tint(.white)
+            .tint(Color.musicRed)
             .disabled(player.currentSong == nil)
 
             HStack {
@@ -442,7 +383,7 @@ struct NowPlayingView: View {
                     .monospacedDigit()
             }
             .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.white.opacity(0.48))
+            .foregroundStyle(.secondary)
         }
     }
 
@@ -469,7 +410,7 @@ struct NowPlayingView: View {
                     if player.isBuffering || player.isSeeking {
                         ProgressView()
                             .controlSize(.regular)
-                            .tint(.white)
+                            .tint(Color.musicRed)
                     } else {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 45, weight: .semibold))
@@ -489,7 +430,7 @@ struct NowPlayingView: View {
             .opacity(player.currentSong == nil ? 0.42 : 1)
         }
         .frame(width: width)
-        .foregroundStyle(.white)
+        .foregroundStyle(.primary)
     }
 
     private func playbackModeControls(width: CGFloat) -> some View {
@@ -500,7 +441,7 @@ struct NowPlayingView: View {
                 Image(systemName: "shuffle")
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 38, height: 30)
-                    .foregroundStyle(player.isShuffleEnabled ? .white : .white.opacity(0.42))
+                    .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
             }
             .buttonStyle(.plain)
 
@@ -510,7 +451,7 @@ struct NowPlayingView: View {
                 Image(systemName: player.repeatMode.iconName)
                     .font(.system(size: 17, weight: .semibold))
                     .frame(width: 38, height: 30)
-                    .foregroundStyle(player.repeatMode == .none ? .white.opacity(0.42) : .white)
+                    .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
             }
             .buttonStyle(.plain)
         }
@@ -526,7 +467,7 @@ struct NowPlayingView: View {
             Image(systemName: "speaker.wave.2.fill")
                 .font(.system(size: 12, weight: .semibold))
         }
-        .foregroundStyle(.white.opacity(0.66))
+        .foregroundStyle(.secondary)
     }
 
     private func bottomBar(width: CGFloat) -> some View {
@@ -539,61 +480,56 @@ struct NowPlayingView: View {
     }
 
     private var sleepTimerButton: some View {
-        Button {
-            sleepTimerRemainingSnapshot = player.sleepTimerEndDate.map { sleepTimerRemainingText(until: $0, from: Date()) }
-            isSleepTimerDialogPresented = true
+        Menu {
+            if let sleepTimerRemainingText {
+                Section {
+                    Text("剩余 \(sleepTimerRemainingText)")
+                }
+            }
+
+            Section("睡眠播放") {
+                Picker("睡眠播放", selection: sleepTimerSelection) {
+                    ForEach(sleepTimerOptions, id: \.title) { option in
+                        Text(option.title)
+                            .tag(option.title)
+                    }
+                }
+            }
+
+            if player.sleepTimerEndDate != nil {
+                Section {
+                    Button("关闭睡眠播放", role: .destructive) {
+                        player.cancelSleepTimer()
+                        selectedSleepTimerTitle = nil
+                    }
+                }
+            }
         } label: {
             Image(systemName: "moon.zzz")
                 .font(.system(size: 18, weight: .semibold))
                 .frame(width: 34, height: 28)
-                .foregroundStyle(player.sleepTimerEndDate == nil ? .white.opacity(0.42) : .white.opacity(0.92))
+                .foregroundStyle(player.sleepTimerEndDate == nil ? .secondary : Color.musicRed)
         }
         .buttonStyle(.plain)
-        .confirmationDialog("睡眠播放", isPresented: $isSleepTimerDialogPresented, titleVisibility: .visible) {
-            Button("15分钟") {
-                setSleepTimer(after: 15 * 60, snapshot: "15分钟")
-            }
-
-            Button("30分钟") {
-                setSleepTimer(after: 30 * 60, snapshot: "30分钟")
-            }
-
-            Button("60分钟") {
-                setSleepTimer(after: 60 * 60, snapshot: "60分钟")
-            }
-
-            Button("2小时") {
-                setSleepTimer(after: 2 * 60 * 60, snapshot: "2小时")
-            }
-
-            Button("3小时") {
-                setSleepTimer(after: 3 * 60 * 60, snapshot: "3小时")
-            }
-
-            Button("4小时") {
-                setSleepTimer(after: 4 * 60 * 60, snapshot: "4小时")
-            }
-
-            if player.sleepTimerEndDate != nil {
-                Button("关闭睡眠播放", role: .destructive) {
-                    player.cancelSleepTimer()
-                    sleepTimerRemainingSnapshot = nil
-                }
-            }
-
-            Button("取消", role: .cancel) {}
-        } message: {
-            if let sleepTimerRemainingSnapshot {
-                Text("剩余 \(sleepTimerRemainingSnapshot)")
-            } else {
-                Text("选择自动停止播放的时间")
-            }
-        }
     }
 
-    private func setSleepTimer(after duration: TimeInterval, snapshot: String) {
+    private var sleepTimerSelection: Binding<String> {
+        Binding(
+            get: { selectedSleepTimerTitle ?? "" },
+            set: { title in
+                guard let option = sleepTimerOptions.first(where: { $0.title == title }) else { return }
+                setSleepTimer(after: option.duration, title: option.title)
+            }
+        )
+    }
+
+    private var sleepTimerRemainingText: String? {
+        player.sleepTimerEndDate.map { sleepTimerRemainingText(until: $0, from: Date()) }
+    }
+
+    private func setSleepTimer(after duration: TimeInterval, title: String) {
         player.setSleepTimer(after: duration)
-        sleepTimerRemainingSnapshot = snapshot
+        selectedSleepTimerTitle = title
     }
 
     private func sleepTimerRemainingText(until endDate: Date, from referenceDate: Date) -> String {
@@ -626,7 +562,7 @@ struct NowPlayingView: View {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .semibold))
                 .frame(width: 34, height: 28)
-                .foregroundStyle(mode == target ? .white.opacity(0.92) : .white.opacity(0.42))
+                .foregroundStyle(mode == target ? Color.musicRed : .secondary)
         }
         .buttonStyle(.plain)
     }
@@ -645,77 +581,208 @@ private struct SystemVolumeSlider: UIViewRepresentable {
     }
 
     private func style(_ view: MPVolumeView) {
-        view.tintColor = UIColor.white.withAlphaComponent(0.86)
+        view.tintColor = .musicRed
         for subview in view.subviews {
             guard let slider = subview as? UISlider else {
                 subview.isHidden = true
                 subview.isUserInteractionEnabled = false
                 continue
             }
-            slider.minimumTrackTintColor = UIColor.white.withAlphaComponent(0.86)
-            slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.16)
-            slider.thumbTintColor = .white
+            slider.minimumTrackTintColor = .musicRed
+            slider.maximumTrackTintColor = UIColor.secondaryLabel.withAlphaComponent(0.24)
+            slider.thumbTintColor = .musicSliderThumb
         }
     }
 }
 
-struct PlayerBackdrop: View {
-    let imageURL: URL?
-    let size: CGSize
+private struct PlayerPageBackground: View {
+    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var gradientTop = BackdropPalette.fallback.top
-    @State private var gradientMid = BackdropPalette.fallback.mid
-    @State private var gradientBottom = BackdropPalette.fallback.bottom
+    let imageURL: URL?
+
+    @State private var palette = BackdropPalette.fallback
+    @State private var loadedImageURL: URL?
 
     var body: some View {
+        let isDark = colorScheme == .dark
+
         ZStack {
-            LinearGradient(
-                stops: [
-                    .init(color: gradientTop, location: 0),
-                    .init(color: gradientMid, location: 0.35),
-                    .init(color: gradientBottom, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
+            Color.musicPageBackground
 
-            // Subtle warm directional highlight
-            RadialGradient(
+            LinearGradient(
                 colors: [
-                    gradientTop.opacity(0.18),
-                    .clear
+                    palette.top.swiftUIColor.opacity(isDark ? 0.48 : 0.42),
+                    palette.middle.swiftUIColor.opacity(isDark ? 0.30 : 0.22),
+                    Color.musicPageBackground.opacity(isDark ? 0.72 : 0.92),
+                    palette.bottom.swiftUIColor.opacity(isDark ? 0.20 : 0.28)
                 ],
-                center: .topLeading,
-                startRadius: 0,
-                endRadius: size.height * 0.9
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
+            .blur(radius: 18)
+            .saturation(0.92)
 
-            // Bottom fade to pure black
-            LinearGradient(
-                colors: [.clear, .black.opacity(0.22)],
-                startPoint: .init(x: 0.5, y: 0.7),
-                endPoint: .bottom
-            )
+            Color.musicPageBackground.opacity(isDark ? 0.32 : 0.16)
         }
-        .animation(.easeInOut(duration: 0.6), value: gradientTop)
-        .frame(width: size.width, height: size.height)
-        .clipped()
         .ignoresSafeArea()
+        .animation(.easeInOut(duration: 0.35), value: palette)
         .task(id: imageURL) {
-            await loadColors(from: imageURL)
+            await updatePalette(for: imageURL)
         }
     }
 
     @MainActor
-    private func loadColors(from url: URL?) async {
-        let palette = await ColorExtractor.backdropPalette(for: url)
-        guard !Task.isCancelled else { return }
+    private func updatePalette(for imageURL: URL?) async {
+        guard loadedImageURL != imageURL else { return }
+        loadedImageURL = imageURL
 
-        withAnimation(.easeInOut(duration: 0.45)) {
-            gradientTop = palette.top
-            gradientMid = palette.mid
-            gradientBottom = palette.bottom
+        guard let imageURL else {
+            palette = .fallback
+            return
         }
+
+        let extractedPalette = await ColorExtractor.palette(for: imageURL)
+        guard loadedImageURL == imageURL else { return }
+        palette = extractedPalette ?? .fallback
+    }
+}
+
+private struct BackdropPalette: Equatable, Sendable {
+    let top: PaletteColor
+    let middle: PaletteColor
+    let bottom: PaletteColor
+
+    static let fallback = BackdropPalette(
+        top: PaletteColor(red: 0.96, green: 0.18, blue: 0.22),
+        middle: PaletteColor(red: 0.26, green: 0.36, blue: 0.58),
+        bottom: PaletteColor(red: 0.96, green: 0.97, blue: 0.99)
+    )
+}
+
+private struct PaletteColor: Equatable, Sendable {
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    var swiftUIColor: Color {
+        Color(red: red, green: green, blue: blue)
+    }
+}
+
+private enum ColorExtractor {
+    static func palette(for imageURL: URL) async -> BackdropPalette? {
+        let request = URLRequest(url: imageURL)
+
+        if let cachedResponse = URLCache.shared.cachedResponse(for: request),
+           let palette = await palette(from: cachedResponse.data) {
+            return palette
+        }
+
+        if let diskData = ArtworkDiskCache.dataSync(for: imageURL),
+           let palette = await palette(from: diskData) {
+            return palette
+        }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(for: request)
+            await ArtworkDiskCache.insert(data, for: imageURL)
+            return await palette(from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func palette(from data: Data) async -> BackdropPalette? {
+        await Task.detached(priority: .utility) {
+            guard
+                let image = UIImage(data: data),
+                let cgImage = image.cgImage
+            else {
+                return nil
+            }
+
+            return makePalette(from: cgImage)
+        }.value
+    }
+
+    private static func makePalette(from cgImage: CGImage) -> BackdropPalette? {
+        let side = 22
+        let bytesPerPixel = 4
+        let bytesPerRow = side * bytesPerPixel
+        var pixels = [UInt8](repeating: 0, count: side * side * bytesPerPixel)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+
+        guard let context = CGContext(
+            data: &pixels,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+
+        context.interpolationQuality = .medium
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
+
+        var samples: [PaletteSample] = []
+        samples.reserveCapacity(side * side)
+
+        for index in stride(from: 0, to: pixels.count, by: bytesPerPixel) {
+            let alpha = Double(pixels[index + 3]) / 255
+            guard alpha > 0.7 else { continue }
+
+            let red = Double(pixels[index]) / 255
+            let green = Double(pixels[index + 1]) / 255
+            let blue = Double(pixels[index + 2]) / 255
+            let brightness = max(red, green, blue)
+            let saturation = saturation(red: red, green: green, blue: blue)
+            guard brightness > 0.10, brightness < 0.96 else { continue }
+
+            samples.append(PaletteSample(red: red, green: green, blue: blue, saturation: saturation, brightness: brightness))
+        }
+
+        guard !samples.isEmpty else { return nil }
+
+        let vibrant = samples.max { lhs, rhs in
+            lhs.saturation * 0.72 + lhs.brightness * 0.28 < rhs.saturation * 0.72 + rhs.brightness * 0.28
+        } ?? samples[0]
+
+        let calm = samples.min { lhs, rhs in
+            abs(lhs.brightness - 0.58) + lhs.saturation * 0.2 < abs(rhs.brightness - 0.58) + rhs.saturation * 0.2
+        } ?? vibrant
+
+        return BackdropPalette(
+            top: vibrant.mixed(withWhite: 0.18),
+            middle: calm.mixed(withWhite: 0.38),
+            bottom: vibrant.mixed(withWhite: 0.72)
+        )
+    }
+
+    private static func saturation(red: Double, green: Double, blue: Double) -> Double {
+        let maximum = max(red, green, blue)
+        let minimum = min(red, green, blue)
+        guard maximum > 0 else { return 0 }
+        return (maximum - minimum) / maximum
+    }
+}
+
+private struct PaletteSample {
+    let red: Double
+    let green: Double
+    let blue: Double
+    let saturation: Double
+    let brightness: Double
+
+    func mixed(withWhite amount: Double) -> PaletteColor {
+        let clampedAmount = min(max(amount, 0), 1)
+        return PaletteColor(
+            red: red + (1 - red) * clampedAmount,
+            green: green + (1 - green) * clampedAmount,
+            blue: blue + (1 - blue) * clampedAmount
+        )
     }
 }
 
@@ -748,7 +815,7 @@ struct LyricsPanelView: View {
                                 .font(.system(size: activeLyricIndex == index ? 24 : 19, weight: .bold))
                                 .lineSpacing(2)
                                 .multilineTextAlignment(.leading)
-                                .foregroundStyle(activeLyricIndex == index ? .white : .white.opacity(0.38))
+                                .foregroundStyle(activeLyricIndex == index ? .primary : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                         }
@@ -760,6 +827,21 @@ struct LyricsPanelView: View {
                 .padding(.vertical, 12)
             }
             .scrollIndicators(.hidden)
+            .onAppear {
+                DispatchQueue.main.async {
+                    scrollToActiveLyric(using: proxy, animated: false)
+                }
+            }
+            .onChange(of: song.id) { _, _ in
+                DispatchQueue.main.async {
+                    scrollToActiveLyric(using: proxy, animated: false)
+                }
+            }
+            .onChange(of: lyricsScrollVersion) { _, _ in
+                DispatchQueue.main.async {
+                    scrollToActiveLyric(using: proxy, animated: false)
+                }
+            }
             .onChange(of: activeLyricId) { _, id in
                 guard let id else { return }
                 withAnimation(.easeInOut(duration: 0.28)) {
@@ -799,6 +881,21 @@ struct LyricsPanelView: View {
         guard lines.indices.contains(activeLyricIndex) else { return nil }
         return lines[activeLyricIndex].id
     }
+
+    private var lyricsScrollVersion: String {
+        "\(song.id)-\(lines.count)-\(lines.first?.id ?? Int.min)-\(lines.last?.id ?? Int.min)"
+    }
+
+    private func scrollToActiveLyric(using proxy: ScrollViewProxy, animated: Bool) {
+        guard let activeLyricId else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.28)) {
+                proxy.scrollTo(activeLyricId, anchor: .center)
+            }
+        } else {
+            proxy.scrollTo(activeLyricId, anchor: .center)
+        }
+    }
 }
 
 struct QueuePlayerView: View {
@@ -811,14 +908,14 @@ struct QueuePlayerView: View {
             HStack(spacing: 12) {
                 Text("接下来播放")
                     .font(.headline.weight(.semibold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                 Spacer()
                 Button {
                     player.toggleShuffle()
                 } label: {
                     Image(systemName: "shuffle")
                         .frame(width: 32, height: 30)
-                        .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .white.opacity(0.75))
+                        .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
                 }
                 .buttonStyle(.plain)
 
@@ -827,7 +924,7 @@ struct QueuePlayerView: View {
                 } label: {
                     Image(systemName: player.repeatMode.iconName)
                         .frame(width: 32, height: 30)
-                        .foregroundStyle(player.repeatMode == .none ? .white.opacity(0.55) : Color.musicRed)
+                        .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
                 }
                 .buttonStyle(.plain)
 
@@ -836,7 +933,7 @@ struct QueuePlayerView: View {
                 } label: {
                     Image(systemName: "trash")
                         .frame(width: 32, height: 30)
-                        .foregroundStyle(player.upcomingQueueSnapshot.isEmpty ? .white.opacity(0.24) : .white.opacity(0.75))
+                        .foregroundStyle(player.upcomingQueueSnapshot.isEmpty ? Color.secondary.opacity(0.35) : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .disabled(player.upcomingQueueSnapshot.isEmpty)
@@ -848,14 +945,14 @@ struct QueuePlayerView: View {
                 } label: {
                     Image(systemName: isReordering ? "checkmark" : "arrow.up.arrow.down")
                         .frame(width: 32, height: 30)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
             }
 
             if player.upcomingQueueSnapshot.isEmpty {
                 ContentUnavailableView("没有待播放歌曲", systemImage: "music.note.list")
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.secondary)
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
@@ -879,11 +976,11 @@ struct QueuePlayerView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(song.name)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(song.artistLine)
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.58))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -907,15 +1004,15 @@ struct QueuePlayerView: View {
                     .disabled(index >= player.upcomingQueueSnapshot.count - 1)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.white.opacity(0.86))
+                .foregroundStyle(.secondary)
             } else {
                 Button {
                     player.removeUpcomingQueueItem(at: index)
                 } label: {
-                    Image(systemName: "minus.circle")
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 30, height: 30)
-                        .foregroundStyle(.white.opacity(0.62))
+                        Image(systemName: "minus.circle")
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
             }
@@ -937,160 +1034,4 @@ private enum PlayerMode {
 
 extension Notification.Name {
     static let lyricsTapped = Notification.Name("LyricsPlayerViewTapped")
-}
-
-// MARK: - Color Extraction (album art → backdrop gradient)
-
-private struct BackdropPalette: Sendable, Equatable {
-    let hue: Double
-    let saturation: Double
-    let topBrightness: Double
-    let midBrightness: Double
-    let bottomBrightness: Double
-
-    var top: Color {
-        Color(hue: hue, saturation: min(saturation * 1.08, 0.9), brightness: topBrightness)
-    }
-
-    var mid: Color {
-        Color(hue: hue, saturation: min(saturation * 0.94, 0.82), brightness: midBrightness)
-    }
-
-    var bottom: Color {
-        Color(hue: hue, saturation: min(saturation * 0.72, 0.68), brightness: bottomBrightness)
-    }
-
-    static let fallback = BackdropPalette(
-        hue: 0.58,
-        saturation: 0.34,
-        topBrightness: 0.32,
-        midBrightness: 0.20,
-        bottomBrightness: 0.10
-    )
-}
-
-private enum ColorExtractor {
-    static func backdropPalette(for url: URL?) async -> BackdropPalette {
-        await Task.detached(priority: .utility) {
-            guard let url else { return BackdropPalette.fallback }
-
-            if let cachedResponse = URLCache.shared.cachedResponse(for: URLRequest(url: url)),
-               let palette = backdropPalette(from: cachedResponse.data) {
-                return palette
-            }
-
-            if let data = ArtworkDiskCache.dataSync(for: url),
-               let palette = backdropPalette(from: data) {
-                return palette
-            }
-
-            do {
-                let (data, _) = try await URLSession.shared.data(from: url)
-                await ArtworkDiskCache.insert(data, for: url)
-                return backdropPalette(from: data) ?? BackdropPalette.fallback
-            } catch {
-                return BackdropPalette.fallback
-            }
-        }.value
-    }
-
-    private static func backdropPalette(from data: Data) -> BackdropPalette? {
-        guard let image = UIImage(data: data) else { return nil }
-        return backdropPalette(from: image)
-    }
-
-    private static func backdropPalette(from image: UIImage) -> BackdropPalette {
-        let pixels = samplePixels(from: image, targetWidth: 24)
-        guard !pixels.isEmpty else { return .fallback }
-
-        var weighted: [(h: Double, s: Double, v: Double, w: Double)] = []
-        for p in pixels {
-            guard p.v > 0.08 && p.v < 0.96 else { continue }
-            let saturationWeight = pow(max(p.s, 0.02), 1.45)
-            let brightnessWeight = 1 - min(abs(p.v - 0.56) / 0.56, 1)
-            let w = saturationWeight * 0.78 + brightnessWeight * 0.22
-            weighted.append((p.h, p.s, p.v, w))
-        }
-        if weighted.isEmpty {
-            for p in pixels where p.v > 0.03 {
-                weighted.append((p.h, p.s, p.v, 1))
-            }
-        }
-        guard !weighted.isEmpty else { return .fallback }
-
-        let selected = Array(weighted.sorted { $0.w > $1.w }.prefix(max(12, weighted.count / 4)))
-        let total = selected.reduce(0) { $0 + $1.w }
-        let h = circularMeanHue(selected)
-        let s = selected.reduce(0) { $0 + $1.s * $1.w } / total
-        let v = selected.reduce(0) { $0 + $1.v * $1.w } / total
-        let liftedBrightness = min(max(v, 0.32), 0.68)
-
-        return BackdropPalette(
-            hue: h,
-            saturation: min(max(s * 1.32 + 0.10, 0.30), 0.86),
-            topBrightness: min(liftedBrightness * 0.72 + 0.22, 0.62),
-            midBrightness: min(liftedBrightness * 0.48 + 0.15, 0.42),
-            bottomBrightness: min(liftedBrightness * 0.30 + 0.08, 0.28)
-        )
-    }
-
-    private static func circularMeanHue(_ weighted: [(h: Double, s: Double, v: Double, w: Double)]) -> Double {
-        let x = weighted.reduce(0.0) { result, value in
-            result + cos(value.h * 2 * Double.pi) * value.w
-        }
-        let y = weighted.reduce(0.0) { result, value in
-            result + sin(value.h * 2 * Double.pi) * value.w
-        }
-        let hue = atan2(y, x) / (2 * Double.pi)
-        return hue < 0 ? hue + 1 : hue
-    }
-
-    private static func samplePixels(from image: UIImage, targetWidth: Int) -> [(h: Double, s: Double, v: Double)] {
-        guard let cg = image.cgImage else { return [] }
-        let scale = CGFloat(targetWidth) / CGFloat(cg.width)
-        let h = Int(CGFloat(cg.height) * scale)
-        guard h > 0 else { return [] }
-        let bytesPerPixel = 4
-        var raw = [UInt8](repeating: 0, count: targetWidth * h * bytesPerPixel)
-        guard let ctx = CGContext(
-            data: &raw, width: targetWidth, height: h,
-            bitsPerComponent: 8, bytesPerRow: targetWidth * bytesPerPixel,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return [] }
-        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: targetWidth, height: h))
-        var result: [(h: Double, s: Double, v: Double)] = []
-        for y in 0..<h {
-            for x in 0..<targetWidth {
-                let o = (y * targetWidth + x) * bytesPerPixel
-                let r = Double(raw[o]) / 255
-                let g = Double(raw[o + 1]) / 255
-                let b = Double(raw[o + 2]) / 255
-                result.append(rgbToHSV(r: r, g: g, b: b))
-            }
-        }
-        return result
-    }
-
-    private static func rgbToHSV(r: Double, g: Double, b: Double) -> (h: Double, s: Double, v: Double) {
-        let maxValue = max(r, g, b)
-        let minValue = min(r, g, b)
-        let delta = maxValue - minValue
-
-        let saturation = maxValue == 0 ? 0 : delta / maxValue
-        guard delta > 0 else {
-            return (0, saturation, maxValue)
-        }
-
-        let hue: Double
-        if maxValue == r {
-            hue = ((g - b) / delta).truncatingRemainder(dividingBy: 6) / 6
-        } else if maxValue == g {
-            hue = (((b - r) / delta) + 2) / 6
-        } else {
-            hue = (((r - g) / delta) + 4) / 6
-        }
-
-        return (hue < 0 ? hue + 1 : hue, saturation, maxValue)
-    }
 }

@@ -33,18 +33,7 @@ struct ListenNowView: View {
                 .padding(.bottom, 130)
             }
             .scrollContentBackground(.hidden)
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color.musicPageBackground,
-                        Color.musicRed.opacity(0.08),
-                        Color.musicPageBackground
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            )
+            .background(Color.musicPageBackground.ignoresSafeArea())
             .mainPageToolbar("主页")
             .navigationDestination(for: HomeRoute.self) { route in
                 switch route {
@@ -160,11 +149,7 @@ struct ListenNowView: View {
                     }
                 }
             }
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
-            }
+            .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .frame(maxWidth: .infinity)
 
             if visiblePlaylistCount < store.playlists.count {
@@ -305,18 +290,7 @@ struct BrowseView: View {
                 .padding(.bottom, 130)
             }
             .scrollContentBackground(.hidden)
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color.musicPageBackground,
-                        Color.musicBrowseAccentBackground,
-                        Color.musicPageBackground
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
-            )
+            .background(Color.musicPageBackground.ignoresSafeArea())
             .mainPageToolbar("发现")
             .onAppear {
                 store.refreshDailyRecommendationsIfNeeded()
@@ -446,11 +420,7 @@ private struct LibraryCategoryCard: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
-        }
+        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 

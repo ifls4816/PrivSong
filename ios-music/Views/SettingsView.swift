@@ -6,29 +6,27 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    connectionCard
-                    preferencesCard
-                    actionsCard
+            Form {
+                Section("Emby") {
+                    connectionRows
                 }
-                .padding(.horizontal, 18)
-                .padding(.top, 14)
-                .padding(.bottom, 130)
+
+                Section("播放与启动") {
+                    playbackRows
+                }
+
+                Section("资料库") {
+                    libraryRows
+                }
+
+                Section("高级") {
+                    advancedRows
+                }
             }
+            .formStyle(.grouped)
             .scrollContentBackground(.hidden)
-            .background(
-                LinearGradient(
-                    colors: [
-                        Color.musicPageBackground,
-                        Color.musicRed.opacity(0.06),
-                        Color.musicPageBackground
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
-            )
+            .background(Color.musicPageBackground.ignoresSafeArea())
+            .safeAreaPadding(.bottom, 112)
             .mainPageToolbar("设置")
             .navigationBarBackButtonHidden(true)
             .confirmationDialog("断开 Emby 连接？", isPresented: $isSignOutConfirmationPresented, titleVisibility: .visible) {
@@ -43,134 +41,83 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 14) {
-                Image(systemName: store.session == nil ? "wifi.slash" : "externaldrive.connected.to.line.below")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 54, height: 54)
-                    .background(store.session == nil ? Color.secondary : Color.musicRed, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(store.session == nil ? "未连接" : "Emby 已连接")
-                        .font(.title3.weight(.bold))
-                    Text(store.session?.username ?? "登录后同步音乐资料库")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 8)
-
-                if store.isLoading {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-            }
-
+    private var connectionRows: some View {
+        Group {
+            SettingsValueRow(
+                title: store.session == nil ? "未连接" : "Emby 已连接",
+                value: store.session?.username ?? "登录后同步音乐资料库",
+                icon: store.session == nil ? "wifi.slash" : "externaldrive.connected.to.line.below",
+                tint: store.session == nil ? .secondary : .musicRed,
+                showsProgress: store.isLoading
+            )
             if let session = store.session {
-                VStack(spacing: 10) {
-                    SettingsInfoRow(title: "服务器", value: session.serverURL.absoluteString)
-                    SettingsInfoRow(title: "用户", value: session.username)
-                    SettingsInfoRow(title: "状态", value: store.localizedLibraryStatus)
-                }
+                SettingsInfoRow(title: "服务器", value: session.serverURL.absoluteString)
+                SettingsInfoRow(title: "用户", value: session.username)
+                SettingsInfoRow(title: "状态", value: store.localizedLibraryStatus)
             }
-        }
-        .padding(18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
         }
     }
 
-    private var actionsCard: some View {
-        VStack(spacing: 0) {
+    private var libraryRows: some View {
+        Group {
             Button {
                 Task { await store.refreshLibrary() }
             } label: {
-                SettingsActionRow(title: "刷新资料库", subtitle: "重新拉取 Emby 音乐数据", icon: "arrow.clockwise", tint: .musicRed)
+                SettingsActionRow(title: "刷新资料库", icon: "arrow.clockwise", tint: .musicRed, showsProgress: store.isLoading)
             }
             .buttonStyle(.plain)
             .disabled(store.session == nil || store.isLoading)
 
-            Divider()
-                .padding(.leading, 64)
-
             Button {
                 store.clearCaches()
             } label: {
-                SettingsActionRow(title: "清除缓存", subtitle: "删除本地资料库快照和封面缓存", icon: "trash", tint: .orange)
+                SettingsActionRow(title: "清除缓存", icon: "trash", tint: .orange)
             }
             .buttonStyle(.plain)
-
-            Divider()
-                .padding(.leading, 64)
 
             Button {
                 isSignOutConfirmationPresented = true
             } label: {
-                SettingsActionRow(title: "断开连接", subtitle: "退出当前 Emby 会话", icon: "rectangle.portrait.and.arrow.right", tint: .red)
+                SettingsActionRow(title: "断开连接", icon: "rectangle.portrait.and.arrow.right", tint: .red)
             }
             .buttonStyle(.plain)
             .disabled(store.session == nil)
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
+    }
+
+    private var playbackRows: some View {
+        Group {
+            SettingsToggleRow(
+                title: "淡入淡出",
+                icon: "waveform",
+                tint: .musicRed,
+                isOn: $store.isPlaybackFadeEnabled
+            )
+
+            SettingsToggleRow(
+                title: "发现页作为首页",
+                icon: "safari",
+                tint: .blue,
+                isOn: $store.startsOnBrowse
+            )
+
+            SettingsToggleRow(
+                title: "屏幕常亮",
+                icon: "sun.max",
+                tint: .orange,
+                isOn: $store.keepsScreenAwakeOnPlayerPage
+            )
         }
     }
 
-    private var preferencesCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("播放与启动")
-                .font(.system(size: 22, weight: .bold))
-
-            VStack(spacing: 0) {
-                SettingsToggleRow(
-                    title: "淡入淡出",
-                    subtitle: "播放、暂停和切歌时平滑过渡",
-                    icon: "waveform",
-                    isOn: $store.isPlaybackFadeEnabled
-                )
-
-                Divider()
-                    .padding(.leading, 64)
-
-                SettingsToggleRow(
-                    title: "发现页作为首页",
-                    subtitle: "下次打开应用时默认进入发现页",
-                    icon: "safari",
-                    isOn: $store.startsOnBrowse
-                )
-
-                Divider()
-                    .padding(.leading, 64)
-
-                SettingsToggleRow(
-                    title: "播放页保持屏幕常亮",
-                    subtitle: "展开播放页时不自动锁屏",
-                    icon: "sun.max",
-                    isOn: $store.keepsScreenAwakeOnPlayerPage
-                )
-
-                Divider()
-                    .padding(.leading, 64)
-
-                SettingsToggleRow(
-                    title: "120Hz 高刷新率",
-                    subtitle: "在支持 ProMotion 的设备上请求更高刷新率",
-                    icon: "speedometer",
-                    isOn: $store.prefersHighRefreshRate
-                )
-            }
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
-            }
+    private var advancedRows: some View {
+        Group {
+            SettingsToggleRow(
+                title: "120Hz 高刷新率",
+                icon: "speedometer",
+                tint: .purple,
+                isOn: $store.prefersHighRefreshRate
+            )
         }
     }
 }
@@ -180,14 +127,12 @@ private struct SettingsInfoRow: View {
     let value: String
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack {
             Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
             Spacer(minLength: 12)
             Text(value)
-                .font(.subheadline)
-                .foregroundStyle(.primary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .multilineTextAlignment(.trailing)
@@ -195,67 +140,82 @@ private struct SettingsInfoRow: View {
     }
 }
 
-private struct SettingsActionRow: View {
+private struct SettingsValueRow: View {
     let title: String
-    let subtitle: String
+    let value: String
     let icon: String
     let tint: Color
+    var showsProgress = false
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 17, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 38, height: 38)
-                .background(tint, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(subtitle)
-                    .font(.caption)
+            SettingsIcon(icon: icon, tint: tint)
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Text(value)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-
-            Spacer(minLength: 8)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+    }
+}
+
+private struct SettingsActionRow: View {
+    let title: String
+    let icon: String
+    let tint: Color
+    var showsProgress = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsIcon(icon: icon, tint: tint)
+            Text(title)
+                .foregroundStyle(tint == .red ? Color.red : Color.primary)
+            Spacer(minLength: 8)
+            if showsProgress {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
         .contentShape(Rectangle())
     }
 }
 
 private struct SettingsToggleRow: View {
     let title: String
-    let subtitle: String
     let icon: String
+    let tint: Color
     @Binding var isOn: Bool
 
     var body: some View {
         Toggle(isOn: $isOn) {
             HStack(spacing: 12) {
-                Image(systemName: icon)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 38, height: 38)
-                    .background(Color.musicRed, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.primary)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
+                SettingsIcon(icon: icon, tint: tint)
+                Text(title)
+                    .foregroundStyle(.primary)
             }
         }
         .toggleStyle(.switch)
         .tint(.musicRed)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+    }
+}
+
+private struct SettingsIcon: View {
+    let icon: String
+    let tint: Color
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 30, height: 30)
+            .background(tint, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 

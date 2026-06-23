@@ -186,11 +186,7 @@ private struct SearchResultSection<Content: View>: View {
                 content
             }
             .padding(.horizontal, 12)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(Color.musicSeparatorStroke, lineWidth: 0.8)
-            }
+            .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
     }
 }
