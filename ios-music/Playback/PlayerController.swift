@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import Network
 import UIKit
 
 struct LyricLine: Identifiable, Hashable, Sendable {
@@ -32,12 +33,20 @@ final class PlayerController: ObservableObject {
     private let nowPlaying = NowPlayingCoordinator.shared
     private let remoteCommands = RemoteCommandCoordinator.shared
     private let client = EmbyClient()
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "MusicEmby.NetworkPathMonitor")
+    private let audioCache = CurrentSongAudioCache()
 
     private var session: EmbySession?
     private var queue: [EmbyAudioItem] = []
     private var shuffledQueue: [EmbyAudioItem] = []
     private var streamCandidates: [URL] = []
     private var streamCandidateIndex = 0
+    private var currentStreamURL: URL?
+    private var streamStartOffset: TimeInterval = 0
+    private var currentNetworkKind: PlaybackNetworkKind = .wifi
+    private var playbackQualityPreferences = PlaybackQualityPreferences()
+    private var activeAudioCacheKey: PlaybackAudioCache.Key?
     private var currentArtwork: UIImage?
     private var lastNowPlayingSync = Date.distantPast
     private var shouldResumeAfterInterruption = false
@@ -58,6 +67,7 @@ final class PlayerController: ObservableObject {
     private var lyricsTask: Task<Void, Never>?
     private var fadeTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
+    private var audioCacheTask: Task<Void, Never>?
     private var playbackFadesEnabled = false
 
     init() {
@@ -68,6 +78,7 @@ final class PlayerController: ObservableObject {
         configureRemoteCommands()
         configurePlayerObservers()
         configureAudioSessionObservers()
+        configureNetworkPathMonitor()
     }
 
     func play(song: EmbyAudioItem, in songs: [EmbyAudioItem], session: EmbySession) {
@@ -105,6 +116,10 @@ final class PlayerController: ObservableObject {
             isSwitchingTracks = false
             isFadingToPause = false
         }
+    }
+
+    func setPlaybackQualityPreferences(_ preferences: PlaybackQualityPreferences) {
+        playbackQualityPreferences = preferences
     }
 
     func seek(to progress: Double) {
@@ -234,7 +249,41 @@ final class PlayerController: ObservableObject {
         isShuffleEnabled ? shuffledQueue : queue
     }
 
+    private func currentPlaybackStreamOptions() -> PlaybackStreamOptions {
+        PlaybackStreamOptions(
+            quality: playbackQualityPreferences.quality(for: currentNetworkKind),
+            transcodeFormat: playbackQualityPreferences.transcodeFormat,
+            networkKind: currentNetworkKind
+        )
+    }
+
+    private func configureNetworkPathMonitor() {
+        currentNetworkKind = pathMonitor.currentPath.playbackNetworkKind
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                self?.currentNetworkKind = path.playbackNetworkKind
+            }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
+    private func cacheCurrentSong(from sourceURL: URL?, cacheKey: PlaybackAudioCache.Key) {
+        audioCacheTask?.cancel()
+        guard let sourceURL, !sourceURL.isFileURL else { return }
+
+        let currentAudioCache = audioCache
+        audioCacheTask = Task {
+            do {
+                _ = try await currentAudioCache.cacheCurrentSong(from: sourceURL, key: cacheKey)
+            } catch is CancellationError {
+            } catch {
+                print("[Player] Failed to cache current song: \(error.localizedDescription)")
+            }
+        }
+    }
+
     private func start(song: EmbyAudioItem, session: EmbySession, autoplay: Bool) {
+        audioCacheTask?.cancel()
         isFadingToPause = false
         isSwitchingTracks = true
         currentSong = song
@@ -247,15 +296,23 @@ final class PlayerController: ObservableObject {
         playbackStatusText = "正在连接"
         isBuffering = true
         lastNowPlayingSync = .distantPast
+        currentStreamURL = nil
+        streamStartOffset = 0
 
-        streamCandidates = client.playbackURLCandidates(for: song, session: session)
+        let streamOptions = currentPlaybackStreamOptions()
+        let cacheKey = PlaybackAudioCache.Key(session: session, item: song, options: streamOptions)
+        activeAudioCacheKey = cacheKey
+        streamCandidates = client.playbackURLCandidates(for: song, session: session, options: streamOptions)
         streamCandidateIndex = 0
         syncQueueSnapshots()
 
         audioSession.activate()
-        replaceCurrentItem(with: streamCandidates.first, autoplay: autoplay)
+        let cachedURL = PlaybackAudioCache.cachedFileURL(for: cacheKey)
+        let initialURL = cachedURL ?? streamCandidates.first
+        replaceCurrentItem(with: initialURL, autoplay: autoplay, candidateIndex: 0)
+        cacheCurrentSong(from: streamStartOffset == 0 ? streamCandidates.first : nil, cacheKey: cacheKey)
         loadArtwork(for: song, session: session)
-        loadEmbeddedLyrics(from: streamCandidates.first)
+        loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
     }
@@ -292,7 +349,13 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func replaceCurrentItem(with url: URL?, autoplay: Bool) {
+    private func replaceCurrentItem(
+        with url: URL?,
+        autoplay: Bool,
+        startAt startTime: TimeInterval? = nil,
+        candidateIndex: Int? = nil,
+        usesFadeIn: Bool = true
+    ) {
         guard let url else {
             print("[Player] No playable Emby URL for current item.")
             isPlaying = false
@@ -303,26 +366,57 @@ final class PlayerController: ObservableObject {
             return
         }
 
+        if let candidateIndex {
+            streamCandidateIndex = candidateIndex
+        }
+        currentStreamURL = url
+
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
-        item.preferredForwardBufferDuration = 8
+        item.preferredForwardBufferDuration = url.isFileURL ? 0 : 45
+        item.canUseNetworkResourcesForLiveStreamingWhilePaused = !url.isFileURL
         observeStatus(of: item)
         observeBuffering(of: item)
 
         engine.replaceCurrentItem(with: item)
-        if autoplay {
-            if playbackFadesEnabled {
-                engine.volume = 0
-            } else {
-                engine.volume = Float(volume)
-            }
-            engine.play()
-            if playbackFadesEnabled {
-                fadeEngineVolume(to: volume, duration: 1.1)
-            }
-        }
 
-        isSwitchingTracks = false
+        if let startTime, startTime > 0 {
+            let clampedStartTime = max(0, startTime)
+            isSeeking = true
+            item.seek(
+                to: CMTime(seconds: itemTime(forAbsoluteTime: clampedStartTime), preferredTimescale: 600),
+                toleranceBefore: .zero,
+                toleranceAfter: .zero
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.elapsed = clampedStartTime
+                    self.pendingSeekTarget = clampedStartTime
+                    self.suppressTimeUpdatesUntil = Date().addingTimeInterval(0.8)
+                    self.isSeeking = false
+                    self.beginPlaybackIfNeeded(autoplay: autoplay, usesFadeIn: usesFadeIn)
+                    self.isSwitchingTracks = false
+                    self.syncNowPlaying(force: true)
+                }
+            }
+        } else {
+            beginPlaybackIfNeeded(autoplay: autoplay, usesFadeIn: usesFadeIn)
+            isSwitchingTracks = false
+        }
+    }
+
+    private func beginPlaybackIfNeeded(autoplay: Bool, usesFadeIn: Bool) {
+        guard autoplay else { return }
+        if playbackFadesEnabled, usesFadeIn {
+            engine.volume = 0
+        } else {
+            engine.volume = Float(volume)
+        }
+        engine.play()
+        isPlaying = true
+        if playbackFadesEnabled, usesFadeIn {
+            fadeEngineVolume(to: volume, duration: 1.1)
+        }
     }
 
     private func resume() {
@@ -360,7 +454,12 @@ final class PlayerController: ObservableObject {
 
     private func seek(toSeconds seconds: TimeInterval, shouldPlayAfterSeek: Bool) {
         let clamped = max(0, min(seconds, max(duration, 0)))
-        let targetTime = CMTime(seconds: clamped, preferredTimescale: 600)
+        guard currentStreamURL?.isFileURL == true else {
+            seekRemoteStream(to: clamped, shouldPlayAfterSeek: shouldPlayAfterSeek)
+            return
+        }
+
+        let targetTime = CMTime(seconds: itemTime(forAbsoluteTime: clamped), preferredTimescale: 600)
         isSeeking = true
         pendingSeekTarget = clamped
         suppressTimeUpdatesUntil = Date().addingTimeInterval(1.0)
@@ -380,6 +479,47 @@ final class PlayerController: ObservableObject {
                 self.syncNowPlaying(force: true)
             }
         }
+    }
+
+    private func seekRemoteStream(to seconds: TimeInterval, shouldPlayAfterSeek: Bool) {
+        guard let currentSong, let session else {
+            return
+        }
+
+        audioCacheTask?.cancel()
+        let clamped = max(0, min(seconds, max(duration, currentSong.duration)))
+        let streamOptions = currentPlaybackStreamOptions()
+        let candidates = client.playbackURLCandidates(
+            for: currentSong,
+            session: session,
+            options: streamOptions,
+            startTime: clamped
+        )
+
+        guard let firstCandidate = candidates.first else {
+            isSeeking = false
+            isBuffering = false
+            playbackStatusText = "播放失败"
+            syncNowPlaying(force: true)
+            return
+        }
+
+        streamCandidates = candidates
+        streamCandidateIndex = 0
+        streamStartOffset = clamped
+        isSeeking = true
+        pendingSeekTarget = clamped
+        suppressTimeUpdatesUntil = Date().addingTimeInterval(1.0)
+        elapsed = clamped
+        isBuffering = true
+        playbackStatusText = "正在跳转"
+        syncNowPlaying(force: true)
+        replaceCurrentItem(
+            with: firstCandidate,
+            autoplay: shouldPlayAfterSeek,
+            candidateIndex: 0,
+            usesFadeIn: false
+        )
     }
 
     private func playRelative(offset: Int, wrap: Bool) {
@@ -449,6 +589,28 @@ final class PlayerController: ObservableObject {
         let message = error?.localizedDescription ?? "unknown error"
         print("[Player] AVPlayerItem failed: \(message)")
 
+        if currentStreamURL?.isFileURL == true {
+            guard streamCandidates.indices.contains(streamCandidateIndex) else {
+                isPlaying = false
+                isBuffering = false
+                playbackStatusText = "播放失败"
+                isSwitchingTracks = false
+                syncNowPlaying(force: true)
+                return
+            }
+
+            playbackStatusText = "正在切换播放源"
+            isBuffering = true
+            replaceCurrentItem(
+                with: streamCandidates[streamCandidateIndex],
+                autoplay: true,
+                startAt: elapsed,
+                candidateIndex: streamCandidateIndex,
+                usesFadeIn: false
+            )
+            return
+        }
+
         let nextIndex = streamCandidateIndex + 1
         guard nextIndex < streamCandidates.count else {
             isPlaying = false
@@ -463,7 +625,16 @@ final class PlayerController: ObservableObject {
         playbackStatusText = "正在切换播放源"
         isBuffering = true
         print("[Player] Retrying with fallback stream URL \(nextIndex + 1)/\(streamCandidates.count)")
-        replaceCurrentItem(with: streamCandidates[nextIndex], autoplay: true)
+        replaceCurrentItem(
+            with: streamCandidates[nextIndex],
+            autoplay: true,
+            startAt: elapsed,
+            candidateIndex: nextIndex,
+            usesFadeIn: false
+        )
+        if streamStartOffset == 0, let activeAudioCacheKey {
+            cacheCurrentSong(from: streamCandidates[nextIndex], cacheKey: activeAudioCacheKey)
+        }
     }
 
     private func rebuildShuffledQueue(keeping current: EmbyAudioItem?) {
@@ -605,10 +776,19 @@ final class PlayerController: ObservableObject {
             Task { @MainActor in
                 switch observedItem.status {
                 case .readyToPlay:
-                    self?.duration = observedItem.duration.seconds.validDuration(fallback: self?.currentSong?.duration ?? 0)
-                    self?.isBuffering = false
-                    self?.playbackStatusText = nil
-                    self?.syncNowPlaying(force: true)
+                    guard let self else { return }
+                    self.duration = self.absoluteDuration(for: observedItem.duration.seconds)
+                    if self.isSeeking, let pendingSeekTarget = self.pendingSeekTarget {
+                        self.elapsed = pendingSeekTarget
+                        self.isSeeking = false
+                    }
+                    self.isBuffering = false
+                    if self.playbackStatusText == "正在跳转" ||
+                        self.playbackStatusText == "正在缓冲" ||
+                        self.playbackStatusText == "正在连接" {
+                        self.playbackStatusText = nil
+                    }
+                    self.syncNowPlaying(force: true)
                 case .failed:
                     self?.handleItemFailure(observedItem.error)
                 default:
@@ -639,7 +819,7 @@ final class PlayerController: ObservableObject {
     private func handlePeriodicTime(_ time: CMTime) {
         guard !isSeeking else { return }
 
-        let newElapsed = time.seconds.validDuration(fallback: 0)
+        let newElapsed = absoluteElapsed(forItemTime: time.seconds)
         if let pendingSeekTarget {
             if Date() < suppressTimeUpdatesUntil,
                abs(newElapsed - pendingSeekTarget) > 0.45 {
@@ -652,7 +832,7 @@ final class PlayerController: ObservableObject {
         if let itemDuration = engine.currentItem?.duration.seconds,
            itemDuration.isFinite,
            itemDuration > 0 {
-            duration = itemDuration
+            duration = absoluteDuration(for: itemDuration)
         }
 
         syncPlaybackStateFromEngine(forceNowPlaying: false)
@@ -672,6 +852,25 @@ final class PlayerController: ObservableObject {
         }
         syncNowPlaying(force: forceNowPlaying)
         syncRemoteCommandAvailability()
+    }
+
+    private func itemTime(forAbsoluteTime absoluteTime: TimeInterval) -> TimeInterval {
+        max(0, absoluteTime - streamStartOffset)
+    }
+
+    private func absoluteElapsed(forItemTime itemTime: TimeInterval) -> TimeInterval {
+        let absoluteTime = streamStartOffset + itemTime.validDuration(fallback: 0)
+        guard duration > 0 else { return max(0, absoluteTime) }
+        return max(0, min(absoluteTime, duration))
+    }
+
+    private func absoluteDuration(for itemDuration: TimeInterval) -> TimeInterval {
+        if let songDuration = currentSong?.duration, songDuration > 0 {
+            return songDuration
+        }
+
+        let absoluteDuration = streamStartOffset + itemDuration.validDuration(fallback: 0)
+        return absoluteDuration > 0 ? absoluteDuration : duration
     }
 
     private func syncNowPlaying(force: Bool) {
@@ -759,7 +958,7 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func loadEmbeddedLyrics(from url: URL?) {
+    private func loadEmbeddedLyrics(from url: URL?, songId: String) {
         lyricsTask?.cancel()
         lyrics = []
         guard let url else { return }
@@ -768,7 +967,7 @@ final class PlayerController: ObservableObject {
         lyricsTask = Task { [weak self] in
             let lines = await Self.readEmbeddedLyrics(from: url)
             await MainActor.run {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self?.currentSong?.id == songId else { return }
                 self?.lyrics = lines
                 self?.isLoadingLyrics = false
             }
@@ -880,6 +1079,142 @@ final class PlayerController: ObservableObject {
         }
 
         return minutes * 60 + seconds + fraction
+    }
+}
+
+enum PlaybackAudioCache {
+    private static let version = "v2"
+
+    struct Key: Hashable {
+        let serverHash: String
+        let userId: String
+        let itemId: String
+        let quality: OnlinePlaybackQuality
+        let format: AudioTranscodeFormat
+        let fileExtension: String
+
+        init(session: EmbySession, item: EmbyAudioItem, options: PlaybackStreamOptions) {
+            serverHash = PlaybackAudioCache.stableHash(session.serverURL.absoluteString)
+            userId = session.userId
+            itemId = item.id
+            quality = options.quality
+            format = options.transcodeFormat
+            fileExtension = options.cacheFileExtension(for: item)
+        }
+
+        var fileName: String {
+            let stem = [
+                PlaybackAudioCache.version,
+                serverHash,
+                userId,
+                itemId,
+                quality.rawValue,
+                format.rawValue
+            ]
+            .map(PlaybackAudioCache.sanitizedPathComponent)
+            .joined(separator: "-")
+
+            return "\(stem).\(PlaybackAudioCache.sanitizedFileExtension(fileExtension))"
+        }
+    }
+
+    static func cachedFileURL(for key: Key) -> URL? {
+        let url = fileURL(for: key)
+        guard FileManager.default.fileExists(atPath: url.path),
+              (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 0 else {
+            return nil
+        }
+        return url
+    }
+
+    static func clearAll() {
+        try? FileManager.default.removeItem(at: directoryURL)
+    }
+
+    fileprivate static func fileURL(for key: Key) -> URL {
+        directoryURL.appendingPathComponent(key.fileName, isDirectory: false)
+    }
+
+    fileprivate static func prepareDirectory() throws {
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+    }
+
+    private static var directoryURL: URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("MusicEmby/CurrentPlaybackAudio", isDirectory: true)
+    }
+
+    private static func sanitizedPathComponent(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
+        let scalars = value.unicodeScalars.map { scalar in
+            allowed.contains(scalar) ? Character(scalar) : "-"
+        }
+        let sanitized = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return sanitized.isEmpty ? "value" : sanitized
+    }
+
+    private static func sanitizedFileExtension(_ value: String) -> String {
+        let allowed = CharacterSet.alphanumerics
+        let scalars = value.lowercased().unicodeScalars.filter { allowed.contains($0) }
+        let sanitized = String(String.UnicodeScalarView(scalars))
+        return sanitized.isEmpty ? "audio" : sanitized
+    }
+
+    private static func stableHash(_ value: String) -> String {
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for scalar in value.unicodeScalars {
+            hash ^= UInt64(scalar.value)
+            hash &*= 1_099_511_628_211
+        }
+        return String(hash, radix: 16)
+    }
+}
+
+actor CurrentSongAudioCache {
+    func cacheCurrentSong(from sourceURL: URL, key: PlaybackAudioCache.Key) async throws -> URL {
+        if let cachedURL = PlaybackAudioCache.cachedFileURL(for: key) {
+            return cachedURL
+        }
+
+        try PlaybackAudioCache.prepareDirectory()
+        let destinationURL = PlaybackAudioCache.fileURL(for: key)
+        let (temporaryURL, response) = try await URLSession.shared.download(from: sourceURL)
+        try Task.checkCancellation()
+        try validate(response: response, temporaryURL: temporaryURL)
+
+        try? FileManager.default.removeItem(at: destinationURL)
+        do {
+            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+        } catch {
+            try FileManager.default.copyItem(at: temporaryURL, to: destinationURL)
+            try? FileManager.default.removeItem(at: temporaryURL)
+        }
+        return destinationURL
+    }
+
+    private func validate(response: URLResponse, temporaryURL: URL) throws {
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+
+        let fileSize = try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        guard fileSize > 0 else {
+            throw URLError(.zeroByteResource)
+        }
+    }
+}
+
+private extension NWPath {
+    var playbackNetworkKind: PlaybackNetworkKind {
+        if usesInterfaceType(.wifi) || usesInterfaceType(.wiredEthernet) {
+            return .wifi
+        }
+        if usesInterfaceType(.cellular) {
+            return .cellular
+        }
+        return .wifi
     }
 }
 

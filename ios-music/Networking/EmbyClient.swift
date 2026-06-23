@@ -443,67 +443,113 @@ struct EmbyClient {
             song.artistLine.localizedCaseInsensitiveContains(term)
     }
 
-    func playbackURLCandidates(for item: EmbyAudioItem, session embySession: EmbySession) -> [URL] {
-        let candidates = [
-            directAudioStreamURL(for: item, session: embySession),
-            universalAudioStreamURL(
-                for: item,
-                session: embySession,
-                audioCodec: "aac",
-                transcodingContainer: "m4a"
-            ),
-            universalAudioStreamURL(
-                for: item,
-                session: embySession,
-                audioCodec: "mp3",
-                transcodingContainer: "mp3"
-            ),
-            downloadURL(for: item, session: embySession)
-        ].compactMap { $0 }
+    func playbackURLCandidates(
+        for item: EmbyAudioItem,
+        session embySession: EmbySession,
+        options: PlaybackStreamOptions = PlaybackStreamOptions(
+            quality: .lossless,
+            transcodeFormat: .mp3,
+            networkKind: .wifi
+        ),
+        startTime: TimeInterval = 0
+    ) -> [URL] {
+        let playSessionId = UUID().uuidString
+        let startTimeTicks = startTime.embyStartTimeTicks
+        let candidates: [URL?]
+        if let bitrate = options.quality.bitrate {
+            candidates = [
+                universalAudioStreamURL(
+                    for: item,
+                    session: embySession,
+                    playSessionId: playSessionId,
+                    startTimeTicks: startTimeTicks,
+                    format: options.transcodeFormat,
+                    maxStreamingBitrate: bitrate
+                )
+            ]
+        } else {
+            candidates = [
+                directAudioStreamURL(
+                    for: item,
+                    session: embySession,
+                    playSessionId: playSessionId,
+                    startTimeTicks: startTimeTicks
+                ),
+                startTimeTicks == nil ? downloadURL(for: item, session: embySession) : nil
+            ]
+        }
 
         var seen = Set<String>()
-        return candidates.filter { seen.insert($0.absoluteString).inserted }
+        return candidates.compactMap { $0 }.filter { seen.insert($0.absoluteString).inserted }
+    }
+
+    func originalAudioStreamURL(for item: EmbyAudioItem, session embySession: EmbySession) -> URL? {
+        directAudioStreamURL(
+            for: item,
+            session: embySession,
+            playSessionId: UUID().uuidString,
+            startTimeTicks: nil
+        )
     }
 
     func streamURL(for item: EmbyAudioItem, session embySession: EmbySession) -> URL {
         playbackURLCandidates(for: item, session: embySession).first ?? embySession.serverURL
     }
 
-    private func directAudioStreamURL(for item: EmbyAudioItem, session embySession: EmbySession) -> URL? {
+    private func directAudioStreamURL(
+        for item: EmbyAudioItem,
+        session embySession: EmbySession,
+        playSessionId: String,
+        startTimeTicks: Int64?
+    ) -> URL? {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Audio/\(item.id)/stream"),
             resolvingAgainstBaseURL: false
         )
-        components?.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "api_key", value: embySession.accessToken),
             URLQueryItem(name: "Static", value: "true"),
-            URLQueryItem(name: "PlaySessionId", value: deviceId)
+            URLQueryItem(name: "PlaySessionId", value: playSessionId)
         ]
+        if let startTimeTicks {
+            queryItems.append(URLQueryItem(name: "StartTimeTicks", value: "\(startTimeTicks)"))
+        }
+        components?.queryItems = queryItems
         return components?.url
     }
 
     private func universalAudioStreamURL(
         for item: EmbyAudioItem,
         session embySession: EmbySession,
-        audioCodec: String,
-        transcodingContainer: String
+        playSessionId: String,
+        startTimeTicks: Int64?,
+        format: AudioTranscodeFormat,
+        maxStreamingBitrate: Int
     ) -> URL? {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Audio/\(item.id)/universal"),
             resolvingAgainstBaseURL: false
         )
-        components?.queryItems = [
+        var queryItems = [
             URLQueryItem(name: "api_key", value: embySession.accessToken),
             URLQueryItem(name: "UserId", value: embySession.userId),
             URLQueryItem(name: "DeviceId", value: deviceId),
-            URLQueryItem(name: "PlaySessionId", value: deviceId),
-            URLQueryItem(name: "AudioCodec", value: audioCodec),
-            URLQueryItem(name: "Container", value: "m4a,aac,mp3"),
-            URLQueryItem(name: "TranscodingContainer", value: transcodingContainer),
+            URLQueryItem(name: "PlaySessionId", value: playSessionId),
+            URLQueryItem(name: "AudioCodec", value: format.codec),
+            URLQueryItem(name: "Container", value: format.containerQueryValue),
+            URLQueryItem(name: "TranscodingContainer", value: format.transcodingContainer),
             URLQueryItem(name: "TranscodingProtocol", value: "http"),
-            URLQueryItem(name: "MaxStreamingBitrate", value: "320000"),
-            URLQueryItem(name: "EnableRedirection", value: "true")
+            URLQueryItem(name: "MaxStreamingBitrate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "AudioBitRate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "MaxAudioBitrate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "EnableDirectPlay", value: "false"),
+            URLQueryItem(name: "EnableDirectStream", value: "false"),
+            URLQueryItem(name: "EnableRedirection", value: "false")
         ]
+        if let startTimeTicks {
+            queryItems.append(URLQueryItem(name: "StartTimeTicks", value: "\(startTimeTicks)"))
+        }
+        components?.queryItems = queryItems
         return components?.url
     }
 
@@ -625,5 +671,12 @@ enum EmbyError: LocalizedError {
             }
             return "当前 Emby 用户没有可见音乐库。可见媒体库：\(libraries.joined(separator: ", "))。"
         }
+    }
+}
+
+private extension TimeInterval {
+    var embyStartTimeTicks: Int64? {
+        guard isFinite, self > 0 else { return nil }
+        return Int64((self * 10_000_000).rounded())
     }
 }

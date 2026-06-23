@@ -87,6 +87,17 @@ struct SettingsView: View {
 
     private var playbackRows: some View {
         Group {
+            NavigationLink {
+                PlaybackQualitySettingsView()
+            } label: {
+                SettingsValueRow(
+                    title: "播放品质",
+                    value: store.playbackQualitySummary,
+                    icon: "dot.radiowaves.left.and.right",
+                    tint: .musicRed
+                )
+            }
+
             SettingsToggleRow(
                 title: "淡入淡出",
                 icon: "waveform",
@@ -119,6 +130,127 @@ struct SettingsView: View {
                 isOn: $store.prefersHighRefreshRate
             )
         }
+    }
+}
+
+private struct PlaybackQualitySettingsView: View {
+    @EnvironmentObject private var store: AppStore
+
+    var body: some View {
+        Form {
+            Section {
+                PlaybackQualityMenuRow(
+                    title: "移动网络在线音质",
+                    icon: "antenna.radiowaves.left.and.right",
+                    tint: .orange,
+                    selection: $store.cellularOnlineQuality
+                )
+
+                PlaybackQualityMenuRow(
+                    title: "Wi-Fi 在线音质",
+                    icon: "wifi",
+                    tint: .blue,
+                    selection: $store.wifiOnlineQuality
+                )
+
+                TranscodeFormatMenuRow(
+                    title: "转码格式",
+                    icon: "music.note",
+                    tint: .musicRed,
+                    selection: $store.audioTranscodeFormat
+                )
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color.musicPageBackground.ignoresSafeArea())
+        .navigationTitle("在线播放音质")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+private struct PlaybackQualityMenuRow: View {
+    let title: String
+    let icon: String
+    let tint: Color
+    @Binding var selection: OnlinePlaybackQuality
+
+    var body: some View {
+        Menu {
+            ForEach(OnlinePlaybackQuality.allCases) { quality in
+                Button {
+                    selection = quality
+                } label: {
+                    if selection == quality {
+                        Label(quality.displayTitle, systemImage: "checkmark")
+                    } else {
+                        Text(quality.displayTitle)
+                    }
+                }
+            }
+        } label: {
+            PlaybackOptionRow(
+                title: title,
+                value: selection.displayTitle,
+                icon: icon,
+                tint: tint
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct TranscodeFormatMenuRow: View {
+    let title: String
+    let icon: String
+    let tint: Color
+    @Binding var selection: AudioTranscodeFormat
+
+    var body: some View {
+        Menu {
+            ForEach(AudioTranscodeFormat.allCases) { format in
+                Button {
+                    selection = format
+                } label: {
+                    if selection == format {
+                        Label(format.title, systemImage: "checkmark")
+                    } else {
+                        Text(format.title)
+                    }
+                }
+            }
+        } label: {
+            PlaybackOptionRow(
+                title: title,
+                value: selection.title,
+                icon: icon,
+                tint: tint
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct PlaybackOptionRow: View {
+    let title: String
+    let value: String
+    let icon: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsIcon(icon: icon, tint: tint)
+            Text(title)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Text(value)
+                .foregroundStyle(.blue)
+                .lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.blue)
+        }
+        .contentShape(Rectangle())
     }
 }
 

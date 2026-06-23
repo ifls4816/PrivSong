@@ -7,6 +7,130 @@ struct EmbySession: Codable, Equatable {
     let accessToken: String
 }
 
+enum OnlinePlaybackQuality: String, CaseIterable, Codable, Identifiable, Hashable {
+    case lossless
+    case veryHigh
+    case high
+    case standard
+    case low
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .lossless:
+            return "无损"
+        case .veryHigh:
+            return "极高"
+        case .high:
+            return "较高"
+        case .standard:
+            return "标准"
+        case .low:
+            return "较低"
+        }
+    }
+
+    var bitrate: Int? {
+        switch self {
+        case .lossless:
+            return nil
+        case .veryHigh:
+            return 320_000
+        case .high:
+            return 256_000
+        case .standard:
+            return 192_000
+        case .low:
+            return 128_000
+        }
+    }
+
+    var displayTitle: String {
+        guard let bitrate else { return "无损（不转码）" }
+        return "\(title) (\(bitrate / 1_000) kbps)"
+    }
+
+    var usesTranscoding: Bool {
+        bitrate != nil
+    }
+}
+
+enum AudioTranscodeFormat: String, CaseIterable, Codable, Identifiable, Hashable {
+    case mp3
+    case aac
+
+    var id: String { rawValue }
+
+    var title: String {
+        rawValue.uppercased()
+    }
+
+    var codec: String {
+        switch self {
+        case .mp3:
+            return "mp3"
+        case .aac:
+            return "aac"
+        }
+    }
+
+    var transcodingContainer: String {
+        switch self {
+        case .mp3:
+            return "mp3"
+        case .aac:
+            return "m4a"
+        }
+    }
+
+    var containerQueryValue: String {
+        switch self {
+        case .mp3:
+            return "mp3"
+        case .aac:
+            return "m4a,aac"
+        }
+    }
+
+    var fileExtension: String {
+        transcodingContainer
+    }
+}
+
+enum PlaybackNetworkKind: String, Hashable {
+    case wifi
+    case cellular
+}
+
+struct PlaybackQualityPreferences: Equatable {
+    var cellularQuality: OnlinePlaybackQuality = .standard
+    var wifiQuality: OnlinePlaybackQuality = .lossless
+    var transcodeFormat: AudioTranscodeFormat = .mp3
+
+    func quality(for networkKind: PlaybackNetworkKind) -> OnlinePlaybackQuality {
+        switch networkKind {
+        case .wifi:
+            return wifiQuality
+        case .cellular:
+            return cellularQuality
+        }
+    }
+}
+
+struct PlaybackStreamOptions: Hashable {
+    let quality: OnlinePlaybackQuality
+    let transcodeFormat: AudioTranscodeFormat
+    let networkKind: PlaybackNetworkKind
+
+    func cacheFileExtension(for item: EmbyAudioItem) -> String {
+        if quality.usesTranscoding {
+            return transcodeFormat.fileExtension
+        }
+        return item.audioCacheFileExtension
+    }
+}
+
 struct EmbyAuthResponse: Decodable {
     let user: EmbyUser
     let accessToken: String
@@ -195,6 +319,15 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         }
     }
 
+    var audioCacheFileExtension: String {
+        let rawValue = firstNonEmpty(
+            container,
+            mediaSources?.first?.container,
+            mediaSources?.first?.audioStream?.codec
+        )
+        return rawValue.flatMap(Self.audioFileExtension) ?? "audio"
+    }
+
     private var preferredAudioFormat: String? {
         let rawValue = firstNonEmpty(
             container,
@@ -220,6 +353,25 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         return normalized
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
+    }
+
+    private static func audioFileExtension(_ value: String) -> String? {
+        let normalized = normalizedAudioFormat(value)
+        switch normalized {
+        case "mpeg", "mpga":
+            return "mp3"
+        case "alac":
+            return "m4a"
+        case "wave":
+            return "wav"
+        case "x-flac":
+            return "flac"
+        default:
+            let allowed = CharacterSet.alphanumerics
+            let sanitized = normalized.unicodeScalars.filter { allowed.contains($0) }
+            guard !sanitized.isEmpty else { return nil }
+            return String(String.UnicodeScalarView(sanitized))
+        }
     }
 
     private func firstNonEmpty(_ values: String?...) -> String? {
