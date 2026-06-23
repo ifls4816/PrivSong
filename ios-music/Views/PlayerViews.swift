@@ -216,12 +216,13 @@ struct NowPlayingView: View {
         let pageHeight = safeDimension(size.height)
         let contentWidth = min(max(pageWidth - 48, 1), 352)
         let compactHeight = pageHeight < 760
-        let expandedArtworkSize = min(contentWidth * (compactHeight ? 0.82 : 0.90), compactHeight ? 276 : 332)
-        let artworkSize = player.isPlaying ? expandedArtworkSize : expandedArtworkSize * (compactHeight ? 0.84 : 0.86)
-        let upperHeight = min(expandedArtworkSize + (compactHeight ? 26 : 34), compactHeight ? 304 : 366)
-        let topOffset: CGFloat = compactHeight ? 34 : 42
-        let titleGap: CGFloat = compactHeight ? 16 : 20
-        let progressGap: CGFloat = compactHeight ? 10 : 12
+        let artworkSlotSize = min(contentWidth * (compactHeight ? 0.92 : 1.0), compactHeight ? 312 : 352)
+        let playingArtworkSize = artworkSlotSize * (compactHeight ? 0.84 : 0.86)
+        let artworkSize = player.isPlaying ? playingArtworkSize : playingArtworkSize * (compactHeight ? 0.82 : 0.84)
+        let upperHeight = min(artworkSlotSize + (compactHeight ? 58 : 92), compactHeight ? 370 : 444)
+        let topOffset: CGFloat = compactHeight ? 22 : 28
+        let titleGap: CGFloat = compactHeight ? 16 : 22
+        let progressGap: CGFloat = compactHeight ? 7 : 8
         let controlsProgress = controlsRevealProgress
 
         return VStack(spacing: 0) {
@@ -261,30 +262,26 @@ struct NowPlayingView: View {
         let contentWidth = safeDimension(contentWidth)
         let screenWidth = safeDimension(screenWidth)
         let height = safeDimension(height)
-        let topGap = min(max(height * 0.045, compactHeight ? 8 : 12), compactHeight ? 18 : 24)
-        let middleGap = min(max(height * 0.045, compactHeight ? 8 : 12), compactHeight ? 18 : 24)
-        let lowerGap = min(max(height * 0.035, compactHeight ? 6 : 10), compactHeight ? 14 : 20)
+        let topGap = min(max(height * 0.032, compactHeight ? 6 : 8), compactHeight ? 12 : 16)
+        let middleGap = compactHeight ? CGFloat(24) : CGFloat(28)
+        let lowerGap = compactHeight ? CGFloat(24) : CGFloat(28)
 
         return VStack(spacing: 0) {
-            Spacer(minLength: topGap)
+            Color.clear.frame(height: topGap)
 
             transportControls(width: contentWidth, song: song)
 
-            Spacer(minLength: middleGap)
-
-            playbackModeControls(width: contentWidth)
-
-            Spacer(minLength: compactHeight ? 6 : 8)
+            Color.clear.frame(height: middleGap)
 
             volumeControl
                 .frame(width: contentWidth)
 
-            Spacer(minLength: lowerGap)
+            Color.clear.frame(height: lowerGap)
 
             bottomBar(width: screenWidth)
-                .frame(height: compactHeight ? 60 : 68, alignment: .top)
+                .frame(height: compactHeight ? 56 : 62, alignment: .top)
         }
-        .frame(width: screenWidth, height: height, alignment: .bottom)
+        .frame(width: screenWidth, height: height, alignment: .top)
     }
 
     private func sanitizedPageSize(_ size: CGSize) -> CGSize {
@@ -310,7 +307,7 @@ struct NowPlayingView: View {
                     radius: isArtworkExpanded ? 22 : 16,
                     y: isArtworkExpanded ? 12 : 8
                 )
-                .frame(width: width, height: height, alignment: .top)
+                .frame(width: width, height: height, alignment: .center)
                 .animation(.spring(response: 0.48, dampingFraction: 0.76, blendDuration: 0.08), value: isArtworkExpanded)
         case .lyrics:
             LyricsPanelView(song: song)
@@ -396,13 +393,17 @@ struct NowPlayingView: View {
     }
 
     private func transportControls(width: CGFloat, song: EmbyAudioItem) -> some View {
-        HStack(spacing: 42) {
+        let spacing = min(max((width - 236) / 4, 8), 22)
+
+        return HStack(spacing: spacing) {
+            shuffleModeButton
+
             Button {
                 player.previous()
             } label: {
                 Image(systemName: "backward.fill")
-                    .font(.system(size: 29, weight: .semibold))
-                    .frame(width: 52, height: 52)
+                    .font(.system(size: 28, weight: .semibold))
+                    .frame(width: 48, height: 52)
             }
             .disabled(player.currentSong == nil)
             .opacity(player.currentSong == nil ? 0.42 : 1)
@@ -433,39 +434,40 @@ struct NowPlayingView: View {
                 player.next()
             } label: {
                 Image(systemName: "forward.fill")
-                    .font(.system(size: 29, weight: .semibold))
-                    .frame(width: 52, height: 52)
+                    .font(.system(size: 28, weight: .semibold))
+                    .frame(width: 48, height: 52)
             }
             .disabled(player.currentSong == nil)
             .opacity(player.currentSong == nil ? 0.42 : 1)
+
+            repeatModeButton
         }
         .frame(width: width)
         .foregroundStyle(.primary)
     }
 
-    private func playbackModeControls(width: CGFloat) -> some View {
-        HStack(spacing: 28) {
-            Button {
-                player.toggleShuffle()
-            } label: {
-                Image(systemName: "shuffle")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 38, height: 30)
-                    .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                player.cycleRepeatMode()
-            } label: {
-                Image(systemName: player.repeatMode.iconName)
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 38, height: 30)
-                    .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
-            }
-            .buttonStyle(.plain)
+    private var shuffleModeButton: some View {
+        Button {
+            player.toggleShuffle()
+        } label: {
+            Image(systemName: "shuffle")
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 36, height: 44)
+                .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
         }
-        .frame(width: width)
+        .buttonStyle(.plain)
+    }
+
+    private var repeatModeButton: some View {
+        Button {
+            player.cycleRepeatMode()
+        } label: {
+            Image(systemName: player.repeatMode.iconName)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 36, height: 44)
+                .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
+        }
+        .buttonStyle(.plain)
     }
 
     private var volumeControl: some View {
