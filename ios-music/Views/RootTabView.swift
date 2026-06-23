@@ -7,10 +7,11 @@ struct RootTabView: View {
     @State private var isPlayerExpanded = false
     @State private var selectedTab: AppTab = .home
     @State private var pendingHomeRoute: HomeRoute?
+    @State private var routeAfterPlayerDismiss: HomeRoute?
 
     var body: some View {
         tabs
-            .sheet(isPresented: $isPlayerExpanded) {
+            .sheet(isPresented: $isPlayerExpanded, onDismiss: handlePlayerSheetDismiss) {
                 NowPlayingView(
                     onOpenAlbum: openAlbum,
                     onOpenArtist: openArtist
@@ -49,7 +50,7 @@ struct RootTabView: View {
     private var tabs: some View {
         baseTabs
             .tabViewBottomAccessory {
-                MiniPlayerView(visibility: miniPlayerVisibility) {
+                MiniPlayerView {
                     guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
                     isPlayerExpanded = true
                 }
@@ -78,10 +79,6 @@ struct RootTabView: View {
         .tabViewSearchActivation(.searchTabSelection)
     }
 
-    private var miniPlayerVisibility: Double {
-        isPlayerExpanded ? 0 : 1
-    }
-
     private func openAlbum(for song: EmbyAudioItem) {
         guard let album = song.album?.trimmingCharacters(in: .whitespacesAndNewlines),
               !album.isEmpty else { return }
@@ -97,12 +94,14 @@ struct RootTabView: View {
     }
 
     private func openHomeRoute(_ route: HomeRoute) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            isPlayerExpanded = false
-            selectedTab = .home
-        }
+        routeAfterPlayerDismiss = route
+        isPlayerExpanded = false
+    }
+
+    private func handlePlayerSheetDismiss() {
+        guard let route = routeAfterPlayerDismiss else { return }
+        routeAfterPlayerDismiss = nil
+        selectedTab = .home
         DispatchQueue.main.async {
             pendingHomeRoute = route
         }

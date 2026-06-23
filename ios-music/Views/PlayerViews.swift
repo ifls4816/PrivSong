@@ -7,7 +7,6 @@ struct MiniPlayerView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
 
-    var visibility = 1.0
     let expand: () -> Void
 
     var body: some View {
@@ -104,11 +103,8 @@ struct MiniPlayerView: View {
         }
         .background(Color.musicMiniPlayerBackground, in: shape)
         .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
-        .opacity(visibility)
         .contentShape(shape)
         .onTapGesture(perform: expand)
-        .allowsHitTesting(visibility > 0.95)
-        .animation(.easeOut(duration: 0.2), value: visibility)
     }
 
     private func miniSubtitle(for song: EmbyAudioItem?) -> String {
@@ -220,8 +216,9 @@ struct NowPlayingView: View {
         let pageHeight = safeDimension(size.height)
         let contentWidth = min(max(pageWidth - 48, 1), 352)
         let compactHeight = pageHeight < 760
-        let artworkSize = min(contentWidth * (compactHeight ? 0.82 : 0.90), compactHeight ? 276 : 332)
-        let upperHeight = min(artworkSize + (compactHeight ? 26 : 34), compactHeight ? 304 : 366)
+        let expandedArtworkSize = min(contentWidth * (compactHeight ? 0.82 : 0.90), compactHeight ? 276 : 332)
+        let artworkSize = player.isPlaying ? expandedArtworkSize : expandedArtworkSize * (compactHeight ? 0.84 : 0.86)
+        let upperHeight = min(expandedArtworkSize + (compactHeight ? 26 : 34), compactHeight ? 304 : 366)
         let topOffset: CGFloat = compactHeight ? 34 : 42
         let titleGap: CGFloat = compactHeight ? 16 : 20
         let progressGap: CGFloat = compactHeight ? 10 : 12
@@ -303,12 +300,18 @@ struct NowPlayingView: View {
     private func upperContent(song: EmbyAudioItem, width: CGFloat, height: CGFloat, artworkSize: CGFloat) -> some View {
         switch mode {
         case .nowPlaying:
+            let isArtworkExpanded = player.isPlaying
             ArtworkView(url: store.imageURL(for: song), cornerRadius: 10)
                 .aspectRatio(1, contentMode: .fill)
                 .frame(width: artworkSize, height: artworkSize)
                 .clipped()
-                .shadow(color: .black.opacity(0.28), radius: 22, y: 12)
+                .shadow(
+                    color: .black.opacity(isArtworkExpanded ? 0.30 : 0.20),
+                    radius: isArtworkExpanded ? 22 : 16,
+                    y: isArtworkExpanded ? 12 : 8
+                )
                 .frame(width: width, height: height, alignment: .top)
+                .animation(.spring(response: 0.48, dampingFraction: 0.76, blendDuration: 0.08), value: isArtworkExpanded)
         case .lyrics:
             LyricsPanelView(song: song)
                 .frame(width: width, height: height)
@@ -352,10 +355,9 @@ struct NowPlayingView: View {
                 Image(systemName: store.isFavorite(song) ? "star.fill" : "star")
                     .font(.system(size: 18, weight: .semibold))
                     .frame(width: 34, height: 34)
-                    .background(Color.primary.opacity(0.08), in: Circle())
+                    .foregroundStyle(store.isFavorite(song) ? Color.musicRed : .secondary)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
         }
     }
 
@@ -415,8 +417,10 @@ struct NowPlayingView: View {
                 ZStack {
                     if player.isBuffering || player.isSeeking {
                         ProgressView()
-                            .controlSize(.regular)
+                            .controlSize(.large)
                             .tint(Color.musicRed)
+                            .scaleEffect(1.28)
+                            .frame(width: 48, height: 48)
                     } else {
                         Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 45, weight: .semibold))
@@ -616,16 +620,16 @@ private struct PlayerPageBackground: View {
             Color.musicPageBackground
 
             LinearGradient(
-                colors: [
-                    palette.top.swiftUIColor.opacity(isDark ? 0.48 : 0.42),
-                    palette.middle.swiftUIColor.opacity(isDark ? 0.30 : 0.22),
-                    Color.musicPageBackground.opacity(isDark ? 0.72 : 0.92),
-                    palette.bottom.swiftUIColor.opacity(isDark ? 0.20 : 0.28)
+                stops: [
+                    .init(color: palette.top.swiftUIColor.opacity(isDark ? 0.46 : 0.38), location: 0.00),
+                    .init(color: palette.middle.swiftUIColor.opacity(isDark ? 0.34 : 0.24), location: 0.36),
+                    .init(color: palette.bottom.swiftUIColor.opacity(isDark ? 0.24 : 0.24), location: 0.72),
+                    .init(color: Color.musicPageBackground.opacity(isDark ? 0.74 : 0.92), location: 1.00)
                 ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+                startPoint: .top,
+                endPoint: .bottom
             )
-            .blur(radius: 18)
+            .blur(radius: 12)
             .saturation(0.92)
 
             Color.musicPageBackground.opacity(isDark ? 0.32 : 0.16)
