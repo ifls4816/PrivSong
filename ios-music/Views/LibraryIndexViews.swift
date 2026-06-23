@@ -3,11 +3,8 @@ import SwiftUI
 
 struct ArtistLibraryView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var selectedArtist: MusicArtist?
-
-    private var sections: [IndexedSection<MusicArtist>] {
-        PinyinIndexer.sections(for: store.artists, title: \.name)
-    }
+    @State private var selectedArtist: LibrarySelection?
+    @State private var sections: [IndexedSection<MusicArtist>] = []
 
     var body: some View {
         IndexedLibraryView(
@@ -17,25 +14,36 @@ struct ArtistLibraryView: View {
             sections: sections
         ) { artist in
             Button {
-                selectedArtist = artist
+                selectedArtist = LibrarySelection(id: artist.id)
             } label: {
                 ArtistIndexRow(artist: artist)
             }
             .buttonStyle(.plain)
         }
-        .navigationDestination(item: $selectedArtist) { artist in
-            ArtistDetailView(artist: artist)
+        .navigationDestination(item: $selectedArtist) { selection in
+            if let artist = store.artists.first(where: { $0.id == selection.id }) {
+                ArtistDetailView(artist: artist)
+            } else {
+                ContentUnavailableView("艺术家不可用", systemImage: "music.mic")
+            }
         }
+        .onAppear {
+            refreshSections()
+        }
+        .onChange(of: store.artists) { _, _ in
+            refreshSections()
+        }
+    }
+
+    private func refreshSections() {
+        sections = PinyinIndexer.sections(for: store.artists, title: \.name)
     }
 }
 
 struct AlbumLibraryView: View {
     @EnvironmentObject private var store: AppStore
-    @State private var selectedAlbum: MusicAlbum?
-
-    private var sections: [IndexedSection<MusicAlbum>] {
-        PinyinIndexer.sections(for: store.albums, title: \.title)
-    }
+    @State private var selectedAlbum: LibrarySelection?
+    @State private var sections: [IndexedSection<MusicAlbum>] = []
 
     var body: some View {
         IndexedLibraryView(
@@ -45,16 +53,34 @@ struct AlbumLibraryView: View {
             sections: sections
         ) { album in
             Button {
-                selectedAlbum = album
+                selectedAlbum = LibrarySelection(id: album.id)
             } label: {
                 AlbumIndexRow(album: album)
             }
             .buttonStyle(.plain)
         }
-        .navigationDestination(item: $selectedAlbum) { album in
-            AlbumDetailView(album: album)
+        .navigationDestination(item: $selectedAlbum) { selection in
+            if let album = store.albums.first(where: { $0.id == selection.id }) {
+                AlbumDetailView(album: album)
+            } else {
+                ContentUnavailableView("专辑不可用", systemImage: "square.stack")
+            }
+        }
+        .onAppear {
+            refreshSections()
+        }
+        .onChange(of: store.albums) { _, _ in
+            refreshSections()
         }
     }
+
+    private func refreshSections() {
+        sections = PinyinIndexer.sections(for: store.albums, title: \.title)
+    }
+}
+
+private struct LibrarySelection: Identifiable, Hashable {
+    let id: String
 }
 
 private struct IndexedLibraryView<Item: Identifiable, Row: View>: View {

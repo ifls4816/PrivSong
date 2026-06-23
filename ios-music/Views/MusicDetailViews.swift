@@ -20,10 +20,26 @@ struct SongRow: View {
                         .font(.system(size: 15, weight: .semibold))
                         .lineLimit(1)
                         .foregroundStyle(.primary)
-                    Text(song.artistLine)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if let tagText = song.audioInfoTagText {
+                            Text(tagText)
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(Color.musicRed)
+                                .lineLimit(1)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Color.musicRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                        .strokeBorder(Color.musicRed.opacity(0.32), lineWidth: 0.8)
+                                }
+                        }
+
+                        Text(song.artistLine)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Spacer(minLength: 8)
@@ -249,11 +265,24 @@ private struct MusicCollectionDetailView: View {
     let songs: [EmbyAudioItem]
     let play: (EmbyAudioItem?) -> Void
 
+    @State private var visibleCount = 80
+    @State private var isLoadingNextPage = false
+
+    private var visibleSongs: [EmbyAudioItem] {
+        Array(songs.prefix(min(visibleCount, songs.count)))
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 22) {
                 header
                 songList
+
+                if visibleCount < songs.count {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(.vertical, 8)
+                }
             }
             .padding(.horizontal, 18)
             .padding(.top, 18)
@@ -261,6 +290,12 @@ private struct MusicCollectionDetailView: View {
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
+        .onAppear {
+            visibleCount = min(max(visibleCount, 80), songs.count)
+        }
+        .onChange(of: songs.count) { _, count in
+            visibleCount = min(80, count)
+        }
     }
 
     private var header: some View {
@@ -312,7 +347,21 @@ private struct MusicCollectionDetailView: View {
     }
 
     private var songList: some View {
-        SongRowsCard(songs: songs)
+        SongRowsCard(songs: visibleSongs, playbackSongs: songs) { index in
+            loadNextPageIfNeeded(appearingIndex: index)
+        }
+    }
+
+    private func loadNextPageIfNeeded(appearingIndex index: Int) {
+        let preloadThreshold = max(visibleSongs.count - 12, 0)
+        guard index >= preloadThreshold else { return }
+        guard visibleCount < songs.count, !isLoadingNextPage else { return }
+
+        isLoadingNextPage = true
+        visibleCount = min(visibleCount + 80, songs.count)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            isLoadingNextPage = false
+        }
     }
 }
 

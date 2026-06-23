@@ -4,7 +4,6 @@ import UIKit
 struct RootTabView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
-    @Namespace private var playerNamespace
     @State private var isPlayerExpanded = false
     @State private var playerCollapseProgress = 0.0
     @State private var selectedTab: AppTab = .home
@@ -16,7 +15,6 @@ struct RootTabView: View {
 
             if isPlayerExpanded, player.currentSong != nil || store.lastPlayedSong != nil {
                 NowPlayingView(
-                    namespace: playerNamespace,
                     collapseProgress: $playerCollapseProgress,
                     onOpenAlbum: openAlbum,
                     onOpenArtist: openArtist
@@ -29,11 +27,9 @@ struct RootTabView: View {
                         isPlayerExpanded = false
                     }
                 }
+                .ignoresSafeArea()
                 .zIndex(20)
-                .transition(.asymmetric(
-                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                    removal: .move(edge: .bottom).combined(with: .opacity)
-                ))
+                .transition(.identity)
             }
         }
         .overlay {
@@ -64,9 +60,9 @@ struct RootTabView: View {
     private var tabs: some View {
         baseTabs
             .tabViewBottomAccessory {
-                MiniPlayerView(namespace: playerNamespace, visibility: miniPlayerVisibility) {
+                MiniPlayerView(visibility: miniPlayerVisibility) {
                     guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
-                    withAnimation(.interactiveSpring(response: 0.46, dampingFraction: 0.88, blendDuration: 0.08)) {
+                    withAnimation(.easeOut(duration: 0.28)) {
                         playerCollapseProgress = 0
                         isPlayerExpanded = true
                     }

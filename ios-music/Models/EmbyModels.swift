@@ -96,6 +96,9 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
     let primaryImageItemId: String?
     let type: String?
     let mediaType: String?
+    let container: String?
+    let bitrate: Int?
+    let mediaSources: [EmbyMediaSource]?
     let isFolder: Bool?
     let runTimeTicks: Int64?
     let productionYear: Int?
@@ -114,6 +117,9 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         case primaryImageItemId = "PrimaryImageItemId"
         case type = "Type"
         case mediaType = "MediaType"
+        case container = "Container"
+        case bitrate = "Bitrate"
+        case mediaSources = "MediaSources"
         case isFolder = "IsFolder"
         case runTimeTicks = "RunTimeTicks"
         case productionYear = "ProductionYear"
@@ -134,6 +140,9 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
         primaryImageItemId = try container.decodeIfPresent(String.self, forKey: .primaryImageItemId)
         type = try container.decodeIfPresent(String.self, forKey: .type)
         mediaType = try container.decodeIfPresent(String.self, forKey: .mediaType)
+        self.container = try container.decodeIfPresent(String.self, forKey: .container)
+        bitrate = container.decodeIntIfPresent(forKey: .bitrate)
+        mediaSources = try container.decodeIfPresent([EmbyMediaSource].self, forKey: .mediaSources)
         isFolder = try container.decodeIfPresent(Bool.self, forKey: .isFolder)
         runTimeTicks = container.decodeInt64IfPresent(forKey: .runTimeTicks)
         productionYear = try container.decodeIfPresent(Int.self, forKey: .productionYear)
@@ -168,6 +177,110 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
 
     var canContainAudio: Bool {
         isFolder == true && !isAudio
+    }
+
+    var audioInfoTagText: String? {
+        let format = preferredAudioFormat
+        let bitrate = preferredBitrate
+
+        switch (format, bitrate) {
+        case let (format?, bitrate?):
+            return "\(format) \(bitrate.kilobitText)"
+        case let (format?, nil):
+            return format
+        case let (nil, bitrate?):
+            return bitrate.kilobitText
+        default:
+            return nil
+        }
+    }
+
+    private var preferredAudioFormat: String? {
+        let rawValue = firstNonEmpty(
+            container,
+            mediaSources?.first?.container,
+            mediaSources?.first?.audioStream?.codec
+        )
+        return rawValue.map(Self.normalizedAudioFormat)
+    }
+
+    private var preferredBitrate: Int? {
+        firstPositive(
+            bitrate,
+            mediaSources?.first?.bitrate,
+            mediaSources?.first?.audioStream?.bitRate
+        )
+    }
+
+    private static func normalizedAudioFormat(_ value: String) -> String {
+        let normalized = value
+            .split(separator: ",")
+            .first
+            .map(String.init) ?? value
+        return normalized
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private func firstNonEmpty(_ values: String?...) -> String? {
+        values.compactMap { value in
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed?.isEmpty == false ? trimmed : nil
+        }.first
+    }
+
+    private func firstPositive(_ values: Int?...) -> Int? {
+        for value in values {
+            if let value, value > 0 {
+                return value
+            }
+        }
+        return nil
+    }
+}
+
+struct EmbyMediaSource: Codable, Hashable {
+    let container: String?
+    let bitrate: Int?
+    let mediaStreams: [EmbyMediaStream]?
+
+    enum CodingKeys: String, CodingKey {
+        case container = "Container"
+        case bitrate = "Bitrate"
+        case mediaStreams = "MediaStreams"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.container = try container.decodeIfPresent(String.self, forKey: .container)
+        bitrate = container.decodeIntIfPresent(forKey: .bitrate)
+        mediaStreams = try container.decodeIfPresent([EmbyMediaStream].self, forKey: .mediaStreams)
+    }
+
+    var audioStream: EmbyMediaStream? {
+        mediaStreams?.first { stream in
+            stream.type?.localizedCaseInsensitiveCompare("Audio") == .orderedSame ||
+                stream.codec != nil
+        }
+    }
+}
+
+struct EmbyMediaStream: Codable, Hashable {
+    let type: String?
+    let codec: String?
+    let bitRate: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case type = "Type"
+        case codec = "Codec"
+        case bitRate = "BitRate"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decodeIfPresent(String.self, forKey: .type)
+        codec = try container.decodeIfPresent(String.self, forKey: .codec)
+        bitRate = container.decodeIntIfPresent(forKey: .bitRate)
     }
 }
 
@@ -337,5 +450,11 @@ extension TimeInterval {
             return "\(hours)小时"
         }
         return "\(minutes)分钟"
+    }
+}
+
+private extension Int {
+    var kilobitText: String {
+        "\(Swift.max(Int((Double(self) / 1_000).rounded()), 1))k"
     }
 }

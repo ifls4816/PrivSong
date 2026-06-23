@@ -4,7 +4,7 @@ struct EmbyClient {
     private let session: URLSession
     private let jsonDecoder: JSONDecoder
     private let deviceIdKey = "EmbyDeviceId"
-    private let itemFields = "Album,AlbumId,AlbumArtist,AlbumPrimaryImageTag,Artists,DateCreated,ImageTags,MediaType,PrimaryImageItemId,PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,UserData"
+    private let itemFields = "Album,AlbumId,AlbumArtist,AlbumPrimaryImageTag,Artists,Bitrate,Container,DateCreated,ImageTags,MediaSources,MediaType,PrimaryImageItemId,PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,UserData"
 
     init(session: URLSession = .shared) {
         self.session = session

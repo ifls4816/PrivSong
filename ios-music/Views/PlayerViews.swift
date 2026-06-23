@@ -6,7 +6,6 @@ struct MiniPlayerView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
 
-    let namespace: Namespace.ID
     var visibility = 1.0
     let expand: () -> Void
 
@@ -111,7 +110,7 @@ struct MiniPlayerView: View {
         .contentShape(shape)
         .onTapGesture(perform: expand)
         .allowsHitTesting(visibility > 0.95)
-        .animation(.interactiveSpring(response: 0.28, dampingFraction: 0.92, blendDuration: 0.05), value: visibility)
+        .animation(.easeOut(duration: 0.2), value: visibility)
     }
 
     private func miniSubtitle(for song: EmbyAudioItem?) -> String {
@@ -122,7 +121,6 @@ struct MiniPlayerView: View {
 struct NowPlayingView: View {
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
-    let namespace: Namespace.ID
     @Binding var collapseProgress: Double
     let onOpenAlbum: (EmbyAudioItem) -> Void
     let onOpenArtist: (EmbyAudioItem) -> Void
@@ -138,14 +136,19 @@ struct NowPlayingView: View {
     @State private var screenHeight: CGFloat = 0
     @State private var isSleepTimerDialogPresented = false
     @State private var sleepTimerRemainingSnapshot: String?
+    @State private var revealPlayerControls = false
+    @State private var isPresented = false
 
     private var cornerRadius: CGFloat {
-        dragOffset > 0 && !isDismissing ? 28 : 0
+        dragOffset > 0 && !isDismissing ? 28 : (isPresented ? 0 : 28)
     }
 
-    private var currentScale: CGFloat {
-        guard dragOffset > 0 else { return 1 }
-        return 1 - (0.12 * min(dragOffset / 360, 1))
+    private var controlsRevealProgress: Double {
+        revealPlayerControls ? 1 : 0
+    }
+
+    private var presentationOffset: CGFloat {
+        isPresented ? 0 : max(screenHeight * 0.72, 420)
     }
 
     private func liveProgress(for song: EmbyAudioItem) -> Double {
@@ -178,6 +181,7 @@ struct NowPlayingView: View {
 
                     VStack(spacing: 0) {
                         grabber(topInset: topInset)
+                            .opacity(controlsRevealProgress)
 
                         nowPlayingPage(song: song, size: size)
                             .frame(width: size.width)
@@ -187,16 +191,35 @@ struct NowPlayingView: View {
                 .frame(width: size.width, height: size.height)
                 .onAppear { screenHeight = size.height }
             }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .scaleEffect(currentScale)
-            .offset(y: dragOffset)
+            .clipShape(
+                UnevenRoundedRectangle(
+                    cornerRadii: .init(
+                        topLeading: cornerRadius,
+                        bottomLeading: 0,
+                        bottomTrailing: 0,
+                        topTrailing: cornerRadius
+                    ),
+                    style: .continuous
+                )
+            )
+            .offset(y: dragOffset + presentationOffset)
             .ignoresSafeArea()
             .gesture(isDismissing ? nil : dragGesture)
             .onAppear {
+                isPresented = false
+                revealPlayerControls = false
                 UIApplication.shared.isIdleTimerDisabled = store.keepsScreenAwakeOnPlayerPage
+                withAnimation(.easeOut(duration: 0.28)) {
+                    isPresented = true
+                }
+                withAnimation(.easeOut(duration: 0.22).delay(0.12)) {
+                    revealPlayerControls = true
+                }
             }
             .onDisappear {
                 UIApplication.shared.isIdleTimerDisabled = false
+                revealPlayerControls = false
+                isPresented = false
             }
             .onReceive(NotificationCenter.default.publisher(for: .lyricsTapped)) { _ in
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
@@ -232,6 +255,8 @@ struct NowPlayingView: View {
                 if shouldDismiss {
                     withAnimation(.interpolatingSpring(stiffness: 240, damping: 28)) {
                         isDismissing = true
+                        revealPlayerControls = false
+                        isPresented = true
                         dragOffset = screenHeight + 40
                         collapseProgress = 1
                     }
@@ -265,6 +290,7 @@ struct NowPlayingView: View {
         let topOffset: CGFloat = compactHeight ? 34 : 42
         let titleGap: CGFloat = compactHeight ? 16 : 20
         let progressGap: CGFloat = compactHeight ? 10 : 12
+        let controlsProgress = controlsRevealProgress
 
         return VStack(spacing: 0) {
             Color.clear.frame(height: topOffset)
@@ -276,6 +302,8 @@ struct NowPlayingView: View {
             VStack(alignment: .leading, spacing: progressGap) {
                 songHeader(song)
                 progressControls(song: song)
+                    .opacity(controlsProgress)
+                    .offset(y: controlsProgress == 1 ? 0 : 8)
             }
             .frame(width: contentWidth)
 
@@ -289,6 +317,8 @@ struct NowPlayingView: View {
                 )
             }
             .frame(maxHeight: .infinity)
+            .opacity(controlsProgress)
+            .offset(y: controlsProgress == 1 ? 0 : 18)
         }
         .frame(width: size.width)
         .frame(maxHeight: .infinity, alignment: .top)
