@@ -109,10 +109,11 @@ struct SongListView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 0) {
+            VStack(spacing: 14) {
                 if songs.isEmpty {
                     emptyState
                 } else {
+                    SongListPlaybackControls(songs: songs)
                     SongRowsCard(songs: songs)
                 }
             }
@@ -168,6 +169,7 @@ struct PaginatedSongListView: View {
                         .frame(maxWidth: .infinity)
                         .padding(.top, 90)
                 } else {
+                    SongListPlaybackControls(songs: songs)
                     SongRowsCard(songs: visibleSongs, playbackSongs: songs) { index in
                         loadNextPageIfNeeded(appearingIndex: index)
                     }
@@ -317,33 +319,11 @@ private struct MusicCollectionDetailView: View {
                     .lineLimit(1)
             }
 
-            HStack(spacing: 12) {
-                Button {
-                    play(songs.first)
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "play.fill")
-                        Text("播放")
-                    }
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(songs.isEmpty)
-
-                Button {
-                    play(songs.randomElement())
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "shuffle")
-                        Text("随机")
-                    }
-                    .font(.body.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .disabled(songs.isEmpty)
-            }
+            CollectionPlaybackButtons(
+                isDisabled: songs.isEmpty,
+                play: { play(songs.first) },
+                shuffle: { play(songs.randomElement()) }
+            )
         }
         .frame(maxWidth: .infinity)
     }
@@ -363,6 +343,57 @@ private struct MusicCollectionDetailView: View {
         visibleCount = min(visibleCount + pageSize, songs.count)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             isLoadingNextPage = false
+        }
+    }
+}
+
+private struct SongListPlaybackControls: View {
+    @EnvironmentObject private var store: AppStore
+    let songs: [EmbyAudioItem]
+
+    var body: some View {
+        CollectionPlaybackButtons(
+            isDisabled: songs.isEmpty,
+            play: {
+                guard let firstSong = songs.first else { return }
+                store.play(song: firstSong, in: songs)
+            },
+            shuffle: {
+                guard let randomSong = songs.randomElement() else { return }
+                store.play(song: randomSong, in: songs)
+            }
+        )
+    }
+}
+
+private struct CollectionPlaybackButtons: View {
+    let isDisabled: Bool
+    let play: () -> Void
+    let shuffle: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: play) {
+                HStack(spacing: 7) {
+                    Image(systemName: "play.fill")
+                    Text("播放")
+                }
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isDisabled)
+
+            Button(action: shuffle) {
+                HStack(spacing: 7) {
+                    Image(systemName: "shuffle")
+                    Text("随机")
+                }
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isDisabled)
         }
     }
 }
