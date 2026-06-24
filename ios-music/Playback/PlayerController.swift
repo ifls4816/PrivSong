@@ -46,9 +46,11 @@ final class PlayerController: ObservableObject {
     private var streamCandidateIndex = 0
     private var currentStreamURL: URL?
     private var streamStartOffset: TimeInterval = 0
+    private var currentStreamOptions: PlaybackStreamOptions?
     private var currentPlaySessionId: String?
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
     private var lastPlaybackProgressReport = Date.distantPast
+    private var lastTranscodedStreamRefresh = Date.distantPast
     private var currentNetworkKind: PlaybackNetworkKind = .wifi
     private var playbackQualityPreferences = PlaybackQualityPreferences()
     private var activeAudioCacheKey: PlaybackAudioCache.Key?
@@ -126,10 +128,7 @@ final class PlayerController: ObservableObject {
 
         let resumePosition = elapsed
         let shouldResume = isPlaying || engine.timeControlStatus == .playing
-        start(song: currentSong, session: session, autoplay: shouldResume)
-        if resumePosition > 0 {
-            seek(toSeconds: resumePosition, shouldPlayAfterSeek: shouldResume)
-        }
+        start(song: currentSong, session: session, autoplay: shouldResume, startPosition: resumePosition)
     }
 
     func seek(to progress: Double) {
@@ -313,12 +312,15 @@ final class PlayerController: ObservableObject {
         lastNowPlayingSync = .distantPast
         currentStreamURL = nil
         streamStartOffset = 0
+        currentStreamOptions = nil
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
         lastPlaybackProgressReport = .distantPast
 
         let streamOptions = currentPlaybackStreamOptions()
+        currentStreamOptions = streamOptions
+        streamStartOffset = streamOptions.quality.usesTranscoding ? initialPosition : 0
         let cacheKey = PlaybackAudioCache.Key(session: session, item: song, options: streamOptions)
         let playSessionId = UUID().uuidString
         activeAudioCacheKey = cacheKey
@@ -327,7 +329,8 @@ final class PlayerController: ObservableObject {
             for: song,
             session: session,
             options: streamOptions,
-            playSessionId: playSessionId
+            playSessionId: playSessionId,
+            startTime: streamStartOffset
         )
         streamCandidateIndex = 0
         syncQueueSnapshots()
@@ -444,6 +447,7 @@ final class PlayerController: ObservableObject {
         streamCandidates = []
         streamCandidateIndex = 0
         streamStartOffset = 0
+        currentStreamOptions = nil
         activeAudioCacheKey = nil
         seekTarget = nil
         pendingSeekTarget = nil
@@ -461,6 +465,16 @@ final class PlayerController: ObservableObject {
     private func seek(toSeconds seconds: TimeInterval, shouldPlayAfterSeek: Bool) {
         let clamped = max(0, min(seconds, max(duration, 0)))
         guard currentStreamURL != nil else { return }
+
+        if currentStreamOptions?.quality.usesTranscoding == true {
+            seekTarget = clamped
+            pendingSeekTarget = clamped
+            elapsed = clamped
+            syncNowPlaying(force: true)
+            reportPlaybackProgress(force: true, position: clamped)
+            refreshTranscodedStream(at: clamped, autoplay: shouldPlayAfterSeek, statusText: "正在跳转")
+            return
+        }
 
         let targetTime = CMTime(seconds: itemTime(forAbsoluteTime: clamped), preferredTimescale: 600)
         isSeeking = true
@@ -526,6 +540,11 @@ final class PlayerController: ObservableObject {
     private func handleItemFailure(_ error: Error?) {
         let message = error?.localizedDescription ?? "unknown error"
         print("[Player] AVPlayerItem failed: \(message)")
+
+        if currentStreamOptions?.quality.usesTranscoding == true,
+           refreshTranscodedStreamAfterInterruption(reason: "item failure") {
+            return
+        }
 
         if currentStreamURL?.isFileURL == true {
             guard streamCandidates.indices.contains(streamCandidateIndex) else {
@@ -677,8 +696,17 @@ final class PlayerController: ObservableObject {
             forName: .AVPlayerItemDidPlayToEndTime,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.handleTrackEnded() }
+        ) { [weak self] notification in
+            guard let finishedItemId = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init) else {
+                return
+            }
+
+            MainActor.assumeIsolated {
+                guard let self,
+                      let currentItem = self.engine.currentItem,
+                      ObjectIdentifier(currentItem) == finishedItemId else { return }
+                self.handleTrackEnded()
+            }
         }
     }
 
@@ -712,9 +740,10 @@ final class PlayerController: ObservableObject {
     private func observeStatus(of item: AVPlayerItem) {
         itemStatusObserver = item.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
             Task { @MainActor in
+                guard let self,
+                      observedItem === self.engine.currentItem else { return }
                 switch observedItem.status {
                 case .readyToPlay:
-                    guard let self else { return }
                     self.duration = self.absoluteDuration(for: observedItem.duration.seconds)
                     if self.isSeeking, let pendingSeekTarget = self.pendingSeekTarget {
                         self.elapsed = pendingSeekTarget
@@ -723,12 +752,13 @@ final class PlayerController: ObservableObject {
                     self.isBuffering = false
                     if self.playbackStatusText == "正在跳转" ||
                         self.playbackStatusText == "正在缓冲" ||
-                        self.playbackStatusText == "正在连接" {
+                        self.playbackStatusText == "正在连接" ||
+                        self.playbackStatusText == "正在恢复播放" {
                         self.playbackStatusText = nil
                     }
                     self.syncNowPlaying(force: true)
                 case .failed:
-                    self?.handleItemFailure(observedItem.error)
+                    self.handleItemFailure(observedItem.error)
                 default:
                     break
                 }
@@ -740,17 +770,23 @@ final class PlayerController: ObservableObject {
         itemPlaybackBufferEmptyObserver = item.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] observedItem, _ in
             Task { @MainActor in
                 guard let self,
+                      observedItem === self.engine.currentItem,
                       observedItem.isPlaybackBufferEmpty,
                       self.engine.rate == 0 else { return }
                 self.isBuffering = true
                 self.playbackStatusText = "正在缓冲"
+                if self.currentStreamOptions?.quality.usesTranscoding == true {
+                    self.refreshTranscodedStreamAfterInterruption(reason: "buffer empty")
+                }
             }
         }
 
         itemPlaybackLikelyToKeepUpObserver = item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] observedItem, _ in
             Task { @MainActor in
-                guard observedItem.isPlaybackLikelyToKeepUp else { return }
-                self?.clearTransientPlaybackStatus()
+                guard let self,
+                      observedItem === self.engine.currentItem,
+                      observedItem.isPlaybackLikelyToKeepUp else { return }
+                self.clearTransientPlaybackStatus()
             }
         }
     }
@@ -806,6 +842,7 @@ final class PlayerController: ObservableObject {
         if playbackStatusText == "正在跳转" ||
             playbackStatusText == "正在缓冲" ||
             playbackStatusText == "正在连接" ||
+            playbackStatusText == "正在恢复播放" ||
             playbackStatusText == "正在切换播放源" {
             playbackStatusText = nil
         }
@@ -813,6 +850,64 @@ final class PlayerController: ObservableObject {
 
     private func itemTime(forAbsoluteTime absoluteTime: TimeInterval) -> TimeInterval {
         max(0, absoluteTime - streamStartOffset)
+    }
+
+    @discardableResult
+    private func refreshTranscodedStreamAfterInterruption(reason: String) -> Bool {
+        let shouldKeepPlaying = isPlaying ||
+            engine.timeControlStatus == .playing ||
+            engine.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
+            engine.rate > 0
+        guard currentStreamOptions?.quality.usesTranscoding == true,
+              shouldKeepPlaying,
+              !isSwitchingTracks,
+              !isSeeking,
+              elapsed > 1 else { return false }
+
+        let now = Date()
+        guard now.timeIntervalSince(lastTranscodedStreamRefresh) > 8 else { return false }
+        lastTranscodedStreamRefresh = now
+
+        print("[Player] Refreshing transcoded stream after \(reason) at \(elapsed.musicDurationText)")
+        refreshTranscodedStream(
+            at: elapsed,
+            autoplay: shouldKeepPlaying,
+            statusText: "正在恢复播放"
+        )
+        return true
+    }
+
+    private func refreshTranscodedStream(at position: TimeInterval, autoplay: Bool, statusText: String) {
+        guard let currentSong,
+              let session,
+              let streamOptions = currentStreamOptions,
+              streamOptions.quality.usesTranscoding else { return }
+
+        let clamped = max(0, min(position, max(duration, currentSong.duration)))
+        let playSessionId = currentPlaySessionId ?? UUID().uuidString
+        currentPlaySessionId = playSessionId
+        lastTranscodedStreamRefresh = Date()
+        streamStartOffset = clamped
+        streamCandidateIndex = 0
+        streamCandidates = client.playbackURLCandidates(
+            for: currentSong,
+            session: session,
+            options: streamOptions,
+            playSessionId: playSessionId,
+            startTime: clamped
+        )
+        currentPlaybackReportMethod = playbackReportMethod(for: streamOptions, isUsingLocalFile: false)
+        isSwitchingTracks = true
+        isSeeking = true
+        isBuffering = true
+        playbackStatusText = statusText
+
+        replaceCurrentItem(
+            with: streamCandidates.first,
+            autoplay: autoplay,
+            startAt: clamped,
+            candidateIndex: 0
+        )
     }
 
     private func absoluteElapsed(forItemTime itemTime: TimeInterval) -> TimeInterval {

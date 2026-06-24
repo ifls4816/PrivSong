@@ -221,8 +221,8 @@ struct NowPlayingView: View {
         let artworkSize = player.isPlaying ? playingArtworkSize : playingArtworkSize * (compactHeight ? 0.82 : 0.84)
         let upperHeight = min(artworkSlotSize + (compactHeight ? 58 : 92), compactHeight ? 370 : 444)
         let topOffset: CGFloat = compactHeight ? 22 : 28
-        let titleGap: CGFloat = compactHeight ? 16 : 22
-        let progressGap: CGFloat = compactHeight ? 7 : 8
+        let titleGap: CGFloat = compactHeight ? 22 : 32
+        let progressGap: CGFloat = compactHeight ? 9 : 10
         let controlsProgress = controlsRevealProgress
 
         return VStack(spacing: 0) {
@@ -262,9 +262,18 @@ struct NowPlayingView: View {
         let contentWidth = safeDimension(contentWidth)
         let screenWidth = safeDimension(screenWidth)
         let height = safeDimension(height)
-        let topGap = min(max(height * 0.032, compactHeight ? 6 : 8), compactHeight ? 12 : 16)
-        let middleGap = compactHeight ? CGFloat(24) : CGFloat(28)
-        let lowerGap = compactHeight ? CGFloat(24) : CGFloat(28)
+        let transportHeight: CGFloat = 62
+        let volumeHeight: CGFloat = 20
+        let bottomBarHeight: CGFloat = compactHeight ? 56 : 62
+        let availableGap = max(0, height - transportHeight - volumeHeight - bottomBarHeight)
+        let targetTopGap = compactHeight ? CGFloat(24) : CGFloat(30)
+        let targetMiddleGap = compactHeight ? CGFloat(34) : CGFloat(42)
+        let targetLowerGap = compactHeight ? CGFloat(36) : CGFloat(44)
+        let targetGap = targetTopGap + targetMiddleGap + targetLowerGap
+        let gapScale = targetGap > 0 ? min(1, availableGap / targetGap) : 1
+        let topGap = targetTopGap * gapScale
+        let middleGap = targetMiddleGap * gapScale
+        let lowerGap = targetLowerGap * gapScale
 
         return VStack(spacing: 0) {
             Color.clear.frame(height: topGap)
@@ -279,7 +288,7 @@ struct NowPlayingView: View {
             Color.clear.frame(height: lowerGap)
 
             bottomBar(width: screenWidth)
-                .frame(height: compactHeight ? 56 : 62, alignment: .top)
+                .frame(height: bottomBarHeight, alignment: .top)
         }
         .frame(width: screenWidth, height: height, alignment: .top)
     }
