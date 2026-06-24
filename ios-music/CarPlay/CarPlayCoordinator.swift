@@ -188,7 +188,7 @@ final class CarPlayCoordinator: NSObject {
 
         var sections: [CPListSection] = []
 
-        let playlistCards = store.playlists.map { playlist in
+        let playlistCards = previewCards(store.playlists.map { playlist in
             CarPlayCardDescriptor(
                 title: playlist.name,
                 subtitle: nil,
@@ -196,23 +196,29 @@ final class CarPlayCoordinator: NSObject {
                 placeholderSystemImageName: "music.note.list",
                 tintColor: .secondarySystemBackground
             )
-        }
+        })
         if !playlistCards.isEmpty {
             sections.append(
                 CPListSection(
                     items: [
-                        makeCardRow(cards: playlistCards) { [weak self] index in
+                        makeCardRow(
+                            title: "我的歌单",
+                            cards: playlistCards,
+                            rowSelection: { [weak self] in
+                                self?.pushPlaylists()
+                            }
+                        ) { [weak self] index in
                             guard let playlist = self?.store.playlists[safe: index] else { return }
                             self?.loadAndPushPlaylist(playlist)
                         }
                     ],
-                    header: "我的歌单",
+                    header: nil,
                     sectionIndexTitle: nil
                 )
             )
         }
 
-        let audiobookCards = store.audiobooks.map { audiobook in
+        let audiobookCards = previewCards(store.audiobooks.map { audiobook in
             CarPlayCardDescriptor(
                 title: audiobook.title,
                 subtitle: nil,
@@ -220,17 +226,23 @@ final class CarPlayCoordinator: NSObject {
                 placeholderSystemImageName: "book.closed.fill",
                 tintColor: .secondarySystemBackground
             )
-        }
+        })
         if !audiobookCards.isEmpty {
             sections.append(
                 CPListSection(
                     items: [
-                        makeCardRow(cards: audiobookCards) { [weak self] index in
+                        makeCardRow(
+                            title: "有声书",
+                            cards: audiobookCards,
+                            rowSelection: { [weak self] in
+                                self?.pushAudiobooks()
+                            }
+                        ) { [weak self] index in
                             guard let audiobook = self?.store.audiobooks[safe: index] else { return }
                             self?.pushAudiobook(audiobook)
                         }
                     ],
-                    header: "有声书",
+                    header: nil,
                     sectionIndexTitle: nil
                 )
             )
@@ -275,34 +287,51 @@ final class CarPlayCoordinator: NSObject {
             homeTopSpacerSection(),
             CPListSection(
                 items: [
-                    makeCardRow(cards: discoveryCards) { [weak self] index in
+                    makeCardRow(
+                        title: "发现",
+                        cards: discoveryCards,
+                        rowSelection: { [weak self] in
+                            self?.pushDiscovery()
+                        }
+                    ) { [weak self] index in
                         switch index {
                         case 0:
-                            self?.pushSongList(title: "每日推荐", songs: self?.store.dailyRecommendedSongs ?? [])
+                            self?.pushSongCollection(title: "每日推荐", songs: self?.store.dailyRecommendedSongs ?? [])
                         case 1:
-                            self?.pushSongList(title: "最近添加", songs: self?.store.recentlyAddedSongs ?? [])
+                            self?.pushSongCollection(title: "最近添加", songs: self?.store.recentlyAddedSongs ?? [])
                         case 2:
-                            self?.pushSongList(title: "最常播放", songs: self?.store.mostPlayedSongs ?? [])
+                            self?.pushSongCollection(title: "最常播放", songs: self?.store.mostPlayedSongs ?? [])
                         default:
                             break
                         }
                     }
                 ],
-                header: "发现",
+                header: nil,
                 sectionIndexTitle: nil
             )
         ]
     }
 
     private func makeCardRow(
+        title: String? = nil,
         cards: [CarPlayCardDescriptor],
+        rowSelection: (() -> Void)? = nil,
         selection: @escaping (Int) -> Void
     ) -> CPListImageRowItem {
         let row = CPListImageRowItem(
-            text: nil,
-            cardElements: cards.map { cardElement(for: $0, image: placeholderImage(systemName: $0.placeholderSystemImageName)) },
+            text: title,
+            cardElements: cards.map { cardElement(for: $0, image: initialCardImage(for: $0)) },
             allowsMultipleLines: false
         )
+
+        if let rowSelection {
+            row.handler = { _, completion in
+                Task { @MainActor in
+                    completion()
+                    rowSelection()
+                }
+            }
+        }
 
         row.listImageRowHandler = { _, index, completion in
             Task { @MainActor in
@@ -313,6 +342,12 @@ final class CarPlayCoordinator: NSObject {
 
         loadArtwork(for: row, cards: cards)
         return row
+    }
+
+    private func previewCards(_ cards: [CarPlayCardDescriptor]) -> [CarPlayCardDescriptor] {
+        let limit = Int(CPMaximumNumberOfGridImages)
+        guard limit > 0, cards.count > limit else { return cards }
+        return Array(cards.prefix(limit))
     }
 
     private func loadArtwork(for row: CPListImageRowItem, cards: [CarPlayCardDescriptor]) {
@@ -371,6 +406,14 @@ final class CarPlayCoordinator: NSObject {
         }
     }
 
+    private func initialCardImage(for card: CarPlayCardDescriptor) -> UIImage {
+        guard let imageURL = card.imageURL,
+              let cached = ArtworkImageCache.shared.image(for: imageURL) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL) else {
+            return placeholderImage(systemName: card.placeholderSystemImageName)
+        }
+        return preparedCardImage(cached)
+    }
+
     private func preparedCardImage(_ image: UIImage) -> UIImage {
         let maximumSize = CPListImageRowItemCardElement.maximumFullHeightImageSize
         let fallbackSize = CGSize(width: 240, height: 240)
@@ -402,11 +445,74 @@ final class CarPlayCoordinator: NSObject {
             guard let self else { return }
             do {
                 let songs = try await store.loadPlaylistSongsIfNeeded(playlistId: playlist.id)
-                pushPlaylistSongList(title: playlist.name, songs: songs)
+                pushSongCollection(title: playlist.name, songs: songs)
             } catch {
                 pushStatusTemplate(title: playlist.name, message: error.localizedDescription, imageName: "exclamationmark.triangle")
             }
         }
+    }
+
+    private func pushPlaylists() {
+        guard !store.playlists.isEmpty else {
+            pushStatusTemplate(title: "我的歌单", message: "暂无歌单", imageName: "music.note.list")
+            return
+        }
+
+        let items = store.playlists.map { playlist in
+            navigationItem(
+                title: playlist.name,
+                detail: nil,
+                imageName: "music.note.list"
+            ) { [weak self] in
+                self?.loadAndPushPlaylist(playlist)
+            }
+        }
+        pushList(title: "我的歌单", sections: [CPListSection(items: items, header: nil, sectionIndexTitle: nil)])
+    }
+
+    private func pushAudiobooks() {
+        guard !store.audiobooks.isEmpty else {
+            pushStatusTemplate(title: "有声书", message: "暂无有声书", imageName: "book.closed")
+            return
+        }
+
+        let items = store.audiobooks.map { audiobook in
+            navigationItem(
+                title: audiobook.title,
+                detail: audiobook.author.isEmpty ? nil : audiobook.author,
+                imageName: "book.closed.fill"
+            ) { [weak self] in
+                self?.pushAudiobook(audiobook)
+            }
+        }
+        pushList(title: "有声书", sections: [CPListSection(items: items, header: nil, sectionIndexTitle: nil)])
+    }
+
+    private func pushDiscovery() {
+        let items = [
+            navigationItem(
+                title: "每日推荐",
+                detail: nil,
+                imageName: "music.note.list"
+            ) { [weak self] in
+                self?.pushSongCollection(title: "每日推荐", songs: self?.store.dailyRecommendedSongs ?? [])
+            },
+            navigationItem(
+                title: "最近添加",
+                detail: nil,
+                imageName: "music.note.list"
+            ) { [weak self] in
+                self?.pushSongCollection(title: "最近添加", songs: self?.store.recentlyAddedSongs ?? [])
+            },
+            navigationItem(
+                title: "最常播放",
+                detail: nil,
+                imageName: "music.note.list"
+            ) { [weak self] in
+                self?.pushSongCollection(title: "最常播放", songs: self?.store.mostPlayedSongs ?? [])
+            }
+        ]
+        pushList(title: "发现", sections: [CPListSection(items: items, header: nil, sectionIndexTitle: nil)])
     }
 
     private func pushAudiobook(_ audiobook: Audiobook) {
@@ -442,26 +548,7 @@ final class CarPlayCoordinator: NSObject {
         pushList(title: audiobook.title, sections: sections)
     }
 
-    private func pushSongList(title: String, songs: [EmbyAudioItem]) {
-        guard !songs.isEmpty else {
-            pushStatusTemplate(title: title, message: "暂无歌曲", imageName: "music.note")
-            return
-        }
-
-        let items = songs.map { song in
-            playableItem(
-                title: song.name,
-                detail: song.artistLine.isEmpty ? "未知艺术家" : song.artistLine,
-                imageName: "music.note"
-            ) { [weak self] in
-                self?.store.play(song: song, in: songs)
-                self?.showNowPlayingAfterPlaybackStarts()
-            }
-        }
-        pushList(title: title, sections: [CPListSection(items: items, header: "\(songs.count) 首歌曲", sectionIndexTitle: nil)])
-    }
-
-    private func pushPlaylistSongList(title: String, songs: [EmbyAudioItem]) {
+    private func pushSongCollection(title: String, songs: [EmbyAudioItem]) {
         guard !songs.isEmpty else {
             pushStatusTemplate(title: title, message: "暂无歌曲", imageName: "music.note")
             return
@@ -481,12 +568,12 @@ final class CarPlayCoordinator: NSObject {
         let template = listTemplate(
             title: title,
             sections: sections,
-            headerGridButtons: playlistPlaybackButtons(songs: songs)
+            headerGridButtons: songPlaybackButtons(songs: songs)
         )
         interfaceController?.pushTemplate(template, animated: true, completion: nil)
     }
 
-    private func playlistPlaybackButtons(songs: [EmbyAudioItem]) -> [CPGridButton] {
+    private func songPlaybackButtons(songs: [EmbyAudioItem]) -> [CPGridButton] {
         [
             CPGridButton(
                 titleVariants: ["顺序播放"],
@@ -610,11 +697,6 @@ final class CarPlayCoordinator: NSObject {
         )
         item.isEnabled = false
         return item
-    }
-
-    private func audiobookDetailText(for audiobook: Audiobook) -> String {
-        let progress = store.audiobookListSubtitle(for: audiobook)
-        return "\(audiobook.author) - \(progress)"
     }
 
     private func episodeTitle(for episode: EmbyAudioItem, index: Int) -> String {
