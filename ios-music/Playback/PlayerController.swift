@@ -15,6 +15,8 @@ private enum StreamTimebase {
     case absolute
 }
 
+private let seekBackwardTolerance: TimeInterval = 0.35
+
 @MainActor
 final class PlaybackTimeline: ObservableObject {
     @Published private(set) var seekTarget: TimeInterval?
@@ -83,6 +85,7 @@ final class PlayerController: ObservableObject {
     private var streamStartOffset: TimeInterval = 0
     private var currentStreamTimebase: StreamTimebase?
     private var currentStreamOptions: PlaybackStreamOptions?
+    private var currentDurationOverride: TimeInterval?
     private var currentPlaySessionId: String?
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
     private var lastPlaybackProgressReport = Date.distantPast
@@ -125,7 +128,13 @@ final class PlayerController: ObservableObject {
         configureNetworkPathMonitor()
     }
 
-    func play(song: EmbyAudioItem, in songs: [EmbyAudioItem], session: EmbySession, startPosition: TimeInterval = 0) {
+    func play(
+        song: EmbyAudioItem,
+        in songs: [EmbyAudioItem],
+        session: EmbySession,
+        startPosition: TimeInterval = 0,
+        durationOverride: TimeInterval? = nil
+    ) {
         guard !isSwitchingTracks else { return }
 
         self.session = session
@@ -143,7 +152,13 @@ final class PlayerController: ObservableObject {
         }
 
         syncQueueSnapshots()
-        start(song: song, session: session, autoplay: true, startPosition: startPosition)
+        start(
+            song: song,
+            session: session,
+            autoplay: true,
+            startPosition: startPosition,
+            durationOverride: durationOverride
+        )
     }
 
     func togglePlayPause() {
@@ -172,7 +187,13 @@ final class PlayerController: ObservableObject {
 
         let resumePosition = elapsed
         let shouldResume = isPlaying || engine.timeControlStatus == .playing
-        start(song: currentSong, session: session, autoplay: shouldResume, startPosition: resumePosition)
+        start(
+            song: currentSong,
+            session: session,
+            autoplay: shouldResume,
+            startPosition: resumePosition,
+            durationOverride: currentDurationOverride
+        )
     }
 
     func seek(to progress: Double) {
@@ -357,15 +378,20 @@ final class PlayerController: ObservableObject {
         song: EmbyAudioItem,
         session: EmbySession,
         autoplay: Bool,
-        startPosition: TimeInterval = 0
+        startPosition: TimeInterval = 0,
+        durationOverride: TimeInterval? = nil
     ) {
         reportPlaybackStoppedIfNeeded(position: elapsed)
         audioCacheTask?.cancel()
-        let initialPosition = max(0, min(startPosition, song.duration > 0 ? max(song.duration - 1, 0) : startPosition))
+        let normalizedStartPosition = max(0, startPosition)
+        let knownDuration = max(song.duration, durationOverride ?? 0)
+        let initialPosition = knownDuration > normalizedStartPosition
+            ? min(normalizedStartPosition, max(knownDuration - 1, 0))
+            : normalizedStartPosition
         isSwitchingTracks = true
         currentSong = song
         elapsed = initialPosition
-        duration = song.duration
+        duration = max(knownDuration, initialPosition)
         isPlaying = autoplay
         currentArtwork = nil
         lyrics = []
@@ -378,6 +404,7 @@ final class PlayerController: ObservableObject {
         streamStartOffset = 0
         currentStreamTimebase = nil
         currentStreamOptions = nil
+        currentDurationOverride = durationOverride
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
@@ -518,6 +545,7 @@ final class PlayerController: ObservableObject {
         streamStartOffset = 0
         currentStreamTimebase = nil
         currentStreamOptions = nil
+        currentDurationOverride = nil
         activeAudioCacheKey = nil
         seekTarget = nil
         pendingSeekTarget = nil
@@ -933,9 +961,12 @@ final class PlayerController: ObservableObject {
             reference: pendingSeekTarget ?? seekTarget ?? elapsed
         )
         if let pendingSeekTarget {
-            if Date() < suppressTimeUpdatesUntil,
-               abs(newElapsed - pendingSeekTarget) > 0.45 {
-                return
+            if Date() < suppressTimeUpdatesUntil {
+                let isOutsideSeekWindow = abs(newElapsed - pendingSeekTarget) > 0.45
+                let isBeforeSeekTarget = newElapsed + seekBackwardTolerance < pendingSeekTarget
+                if isOutsideSeekWindow || isBeforeSeekTarget {
+                    return
+                }
             }
             self.pendingSeekTarget = nil
             seekTarget = nil
@@ -1143,12 +1174,14 @@ final class PlayerController: ObservableObject {
     }
 
     private func absoluteDuration(for itemDuration: TimeInterval) -> TimeInterval {
-        if let songDuration = currentSong?.duration, songDuration > 0 {
-            return songDuration
+        let absoluteDuration = streamStartOffset + itemDuration.validDuration(fallback: 0)
+        let knownDuration = max(currentSong?.duration ?? 0, currentDurationOverride ?? 0)
+        if knownDuration > 0 {
+            guard duration > knownDuration else { return knownDuration }
+            return max(duration, absoluteDuration)
         }
 
-        let absoluteDuration = streamStartOffset + itemDuration.validDuration(fallback: 0)
-        return absoluteDuration > 0 ? absoluteDuration : duration
+        return max(absoluteDuration, duration)
     }
 
     private func syncNowPlaying(force: Bool) {

@@ -969,6 +969,7 @@ struct LyricsPanelView: View {
     @State private var timedLyricIndexCache = TimedLyricIndexCache()
 
     private let autoScrollInterval: TimeInterval = 0.35
+    private let lyricActivationLeadTime: TimeInterval = 0.35
 
     private var playbackElapsed: TimeInterval {
         displayedPlaybackElapsed(
@@ -1002,6 +1003,14 @@ struct LyricsPanelView: View {
     }
 
     var body: some View {
+        if isPlaceholderLyrics {
+            placeholderView
+        } else {
+            lyricsScrollView
+        }
+    }
+
+    private var lyricsScrollView: some View {
         let activeIndex = activeLyricIndex
         let activeID = activeLyricId(for: activeIndex)
 
@@ -1071,6 +1080,18 @@ struct LyricsPanelView: View {
         }
     }
 
+    private var placeholderView: some View {
+        Text(lines.first?.text ?? "暂无歌词")
+            .font(.system(size: 20, weight: .bold))
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var isPlaceholderLyrics: Bool {
+        lines.count == 1 && lines[0].id < 0 && lines[0].time == nil
+    }
+
     private var activeLyricIndex: Int {
         guard !lines.isEmpty else { return 0 }
         if let timedIndex = activeTimedLyricIndex {
@@ -1086,6 +1107,7 @@ struct LyricsPanelView: View {
         let anchors = currentTimedLyricAnchors
         guard !anchors.isEmpty else { return nil }
 
+        let adjustedElapsed = playbackElapsed + lyricActivationLeadTime
         var lowerBound = 0
         var upperBound = anchors.count
         var bestIndex: Int?
@@ -1094,7 +1116,7 @@ struct LyricsPanelView: View {
             let middle = (lowerBound + upperBound) / 2
             let anchor = anchors[middle]
 
-            if anchor.time <= playbackElapsed {
+            if anchor.time <= adjustedElapsed {
                 bestIndex = anchor.lineIndex
                 lowerBound = middle + 1
             } else {

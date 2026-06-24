@@ -159,15 +159,31 @@ final class AppStore: ObservableObject {
         return libraryStatus
     }
 
-    func play(song: EmbyAudioItem, in songs: [EmbyAudioItem], startPosition: TimeInterval = 0) {
+    func play(
+        song: EmbyAudioItem,
+        in songs: [EmbyAudioItem],
+        startPosition: TimeInterval = 0,
+        durationOverride: TimeInterval? = nil
+    ) {
         guard let session else { return }
         registerPlayback(song: song)
-        player?.play(song: song, in: songs, session: session, startPosition: startPosition)
+        player?.play(
+            song: song,
+            in: songs,
+            session: session,
+            startPosition: startPosition,
+            durationOverride: durationOverride
+        )
     }
 
     func playAudiobook(_ audiobook: Audiobook) {
         guard let target = audiobookResumeTarget(for: audiobook) else { return }
-        play(song: target.episode, in: audiobook.episodes, startPosition: target.position)
+        play(
+            song: target.episode,
+            in: audiobook.episodes,
+            startPosition: target.position,
+            durationOverride: target.duration
+        )
     }
 
     func restartAudiobook(_ audiobook: Audiobook) {
@@ -177,7 +193,12 @@ final class AppStore: ObservableObject {
 
     func playAudiobookEpisode(_ episode: EmbyAudioItem, in audiobook: Audiobook) {
         let position = audiobookResumePosition(for: episode)
-        play(song: episode, in: audiobook.episodes, startPosition: position)
+        play(
+            song: episode,
+            in: audiobook.episodes,
+            startPosition: position,
+            durationOverride: audiobookResumeDuration(for: episode)
+        )
     }
 
     func playNext(_ song: EmbyAudioItem) {
@@ -227,9 +248,13 @@ final class AppStore: ObservableObject {
         playlists = content.playlists
         audiobookEpisodes = content.audiobookEpisodes
         recentlyAddedSongs = content.recentlyAddedSongs
-        mostPlayedSongs = content.mostPlayedSongs.isEmpty ? content.recentlyAddedSongs : content.mostPlayedSongs
 
         let day = currentRecommendationDay()
+        if mostPlayedDay != day || mostPlayedSongs.isEmpty {
+            mostPlayedSongs = content.mostPlayedSongs.isEmpty ? content.recentlyAddedSongs : content.mostPlayedSongs
+            mostPlayedDay = day
+        }
+
         let dailySeed = firstNonEmptySongList(
             content.dailySeedSongs,
             content.recentlyAddedSongs,
@@ -237,7 +262,6 @@ final class AppStore: ObservableObject {
         )
         dailyRecommendationDay = day
         dailyRecommendedSongs = dailyRecommendation(from: dailySeed, day: day, limit: 50)
-        mostPlayedDay = day
         hasLoadedInitialContent = true
         libraryStatus = "Loaded home content."
 
@@ -411,7 +435,9 @@ final class AppStore: ObservableObject {
         UserDefaults.standard.set(Array(favoriteSongIds), forKey: favoritesKey)
     }
 
-    private func audiobookResumeTarget(for audiobook: Audiobook) -> (episode: EmbyAudioItem, position: TimeInterval)? {
+    private func audiobookResumeTarget(
+        for audiobook: Audiobook
+    ) -> (episode: EmbyAudioItem, position: TimeInterval, duration: TimeInterval?)? {
         let episodes = audiobook.episodes
         guard !episodes.isEmpty else { return nil }
 
@@ -420,7 +446,11 @@ final class AppStore: ObservableObject {
             .filter({ !$0.progress.isFinished })
             .max(by: { $0.progress.updatedAt < $1.progress.updatedAt }) {
             let episode = episodes[active.index]
-            return (episode, audiobookResumePosition(for: episode))
+            return (
+                episode,
+                audiobookResumePosition(for: episode),
+                audiobookResumeDuration(for: episode)
+            )
         }
 
         if let lastFinishedIndex = entries
@@ -428,10 +458,10 @@ final class AppStore: ObservableObject {
             .map(\.index)
             .max(),
            episodes.indices.contains(lastFinishedIndex + 1) {
-            return (episodes[lastFinishedIndex + 1], 0)
+            return (episodes[lastFinishedIndex + 1], 0, nil)
         }
 
-        return (episodes[0], 0)
+        return (episodes[0], 0, nil)
     }
 
     private func latestRecordedEpisodeIndex(for audiobook: Audiobook) -> Int? {
@@ -469,10 +499,19 @@ final class AppStore: ObservableObject {
 
         let duration = max(progress.duration, episode.duration)
         guard progress.position > 5 else { return 0 }
-        if duration > 0, progress.position >= max(duration - 30, duration * 0.98) {
+        if duration > progress.position,
+           progress.position >= max(duration - 30, duration * 0.98) {
             return 0
         }
-        return max(0, min(progress.position, duration > 0 ? duration : progress.position))
+        return max(0, duration > progress.position ? min(progress.position, duration) : progress.position)
+    }
+
+    private func audiobookResumeDuration(for episode: EmbyAudioItem) -> TimeInterval? {
+        guard let progress = audiobookMergedProgress(for: episode),
+              !progress.isFinished else { return nil }
+
+        let duration = max(progress.duration, episode.duration)
+        return duration > progress.position ? duration : nil
     }
 
     private func audiobookMergedProgress(for episode: EmbyAudioItem) -> AudiobookPlaybackProgress? {
