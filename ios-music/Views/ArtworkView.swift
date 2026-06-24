@@ -1,3 +1,4 @@
+import ImageIO
 import SwiftUI
 import UIKit
 
@@ -90,7 +91,7 @@ struct ArtworkView: View {
         }
 
         if let diskData = await ArtworkDiskCache.data(for: url),
-           let cached = UIImage(data: diskData) {
+           let cached = await ArtworkDecoder.image(from: diskData, url: url) {
             ArtworkImageCache.shared.insert(cached, for: url)
             withoutAnimation {
                 image = cached
@@ -101,7 +102,8 @@ struct ArtworkView: View {
 
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
-            guard !Task.isCancelled, let loaded = UIImage(data: data) else { return }
+            guard !Task.isCancelled,
+                  let loaded = await ArtworkDecoder.image(from: data, url: url) else { return }
             ArtworkImageCache.shared.insert(loaded, for: url)
             await ArtworkDiskCache.insert(data, for: url)
             image = loaded
@@ -118,6 +120,47 @@ struct ArtworkView: View {
         var transaction = Transaction()
         transaction.disablesAnimations = true
         withTransaction(transaction, update)
+    }
+}
+
+private enum ArtworkDecoder {
+    static func image(from data: Data, url: URL) async -> UIImage? {
+        await Task.detached(priority: .utility) {
+            autoreleasepool {
+                if let maxPixelSize = maxPixelSize(from: url),
+                   let imageSource = CGImageSourceCreateWithData(data as CFData, nil) {
+                    let options: [CFString: Any] = [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceShouldCacheImmediately: true,
+                        kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+                    ]
+                    if let cgImage = CGImageSourceCreateThumbnailAtIndex(imageSource, 0, options as CFDictionary) {
+                        return UIImage(cgImage: cgImage)
+                    }
+                }
+                return UIImage(data: data)
+            }
+        }.value
+    }
+
+    private static func maxPixelSize(from url: URL) -> Int? {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+
+        let sizeValues = components.queryItems?.compactMap { item -> Int? in
+            let name = item.name.lowercased()
+            guard name == "maxwidth" || name == "maxheight",
+                  let value = item.value,
+                  let size = Int(value),
+                  size > 0 else {
+                return nil
+            }
+            return size
+        } ?? []
+
+        return sizeValues.max()
     }
 }
 

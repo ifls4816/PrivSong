@@ -3,7 +3,6 @@ import UIKit
 
 struct RootTabView: View {
     @EnvironmentObject private var store: AppStore
-    @EnvironmentObject private var player: PlayerController
     @State private var isPlayerExpanded = false
     @State private var selectedTab: AppTab = .home
     @State private var pendingHomeRoute: HomeRoute?
@@ -51,7 +50,6 @@ struct RootTabView: View {
         baseTabs
             .tabViewBottomAccessory {
                 MiniPlayerView {
-                    guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
                     isPlayerExpanded = true
                 }
             }

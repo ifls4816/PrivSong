@@ -119,12 +119,17 @@ struct MiniPlayerView: View {
         .transaction { transaction in
             transaction.animation = nil
         }
-        .onTapGesture(perform: expand)
-        .onLongPressGesture(minimumDuration: 0.45, perform: expand)
+        .onTapGesture(perform: openPlayer)
+        .onLongPressGesture(minimumDuration: 0.45, perform: openPlayer)
     }
 
     private func miniSubtitle(for song: EmbyAudioItem?) -> String {
         return song.map { $0.artistLine.isEmpty ? "暂无艺术家" : $0.artistLine } ?? "播放后会显示当前歌曲"
+    }
+
+    private func openPlayer() {
+        guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
+        expand()
     }
 }
 
@@ -627,30 +632,32 @@ private struct SystemVolumeSlider: UIViewRepresentable {
         view.clipsToBounds = true
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        style(view, syncInitialVolume: true)
-        context.coordinator.didSyncInitialVolume = true
+        styleIfNeeded(view, context: context)
         return view
     }
 
     func updateUIView(_ view: MPVolumeView, context: Context) {
+        guard !context.coordinator.didStyleSlider else { return }
         view.showsVolumeSlider = true
-        style(view, syncInitialVolume: !context.coordinator.didSyncInitialVolume)
-        context.coordinator.didSyncInitialVolume = true
+        styleIfNeeded(view, context: context)
     }
 
     final class Coordinator {
         var didSyncInitialVolume = false
+        var didStyleSlider = false
     }
 
-    private func style(_ view: MPVolumeView, syncInitialVolume: Bool) {
+    private func styleIfNeeded(_ view: MPVolumeView, context: Context) {
         UIView.performWithoutAnimation {
             view.tintColor = .musicRed
+            var foundSlider = false
             for subview in view.subviews {
                 guard let slider = subview as? UISlider else {
                     subview.isHidden = true
                     subview.isUserInteractionEnabled = false
                     continue
                 }
+                foundSlider = true
                 slider.minimumTrackTintColor = .musicRed
                 slider.maximumTrackTintColor = UIColor.secondaryLabel.withAlphaComponent(0.24)
                 slider.thumbTintColor = .musicSliderThumb
@@ -658,11 +665,12 @@ private struct SystemVolumeSlider: UIViewRepresentable {
                 slider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 slider.frame = view.bounds
                 slider.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                if syncInitialVolume {
+                if !context.coordinator.didSyncInitialVolume {
                     slider.setValue(AVAudioSession.sharedInstance().outputVolume, animated: false)
                 }
             }
-            view.layoutIfNeeded()
+            context.coordinator.didStyleSlider = foundSlider
+            context.coordinator.didSyncInitialVolume = context.coordinator.didSyncInitialVolume || foundSlider
         }
     }
 }
