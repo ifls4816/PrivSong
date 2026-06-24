@@ -395,7 +395,7 @@ final class AppStore: ObservableObject {
         recentSongIds.insert(song.id, at: 0)
         recentSongIds = Array(recentSongIds.prefix(50))
         UserDefaults.standard.set(recentSongIds, forKey: recentKey)
-        recomputeDerivedData()
+        refreshRecentSongs()
     }
 
     func isFavorite(_ song: EmbyAudioItem) -> Bool {
@@ -708,9 +708,7 @@ final class AppStore: ObservableObject {
         artists = songs.musicArtists
         albumSections = PinyinIndexer.sections(for: albums, title: \.title)
         artistSections = PinyinIndexer.sections(for: artists, title: \.name)
-        let byId = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
-        let ordered = recentSongIds.compactMap { byId[$0] }
-        recentSongs = ordered.isEmpty ? Array(songs.prefix(20)) : ordered
+        refreshRecentSongs()
         let day = currentRecommendationDay()
         refreshDailyRecommendations(for: day)
         recentlyAddedSongs = recentlyAdded(from: songs, limit: 50)
@@ -718,6 +716,17 @@ final class AppStore: ObservableObject {
         if playlists.isEmpty {
             playlists = songs.generatedPlaylists
         }
+    }
+
+    private func refreshRecentSongs() {
+        guard !songs.isEmpty else {
+            recentSongs = []
+            return
+        }
+
+        let byId = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
+        let ordered = recentSongIds.compactMap { byId[$0] }
+        recentSongs = ordered.isEmpty ? Array(songs.prefix(20)) : ordered
     }
 
     private func recomputeAudiobooks() {

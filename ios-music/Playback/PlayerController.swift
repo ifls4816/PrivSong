@@ -16,13 +16,41 @@ private enum StreamTimebase {
 }
 
 @MainActor
+final class PlaybackTimeline: ObservableObject {
+    @Published private(set) var seekTarget: TimeInterval?
+    @Published private(set) var elapsed: TimeInterval = 0
+    @Published private(set) var duration: TimeInterval = 0
+
+    func updateSeekTarget(_ value: TimeInterval?) {
+        guard seekTarget != value else { return }
+        seekTarget = value
+    }
+
+    func updateElapsed(_ value: TimeInterval) {
+        guard abs(elapsed - value) > 0.01 else { return }
+        elapsed = value
+    }
+
+    func updateDuration(_ value: TimeInterval) {
+        guard abs(duration - value) > 0.05 else { return }
+        duration = value
+    }
+}
+
+@MainActor
 final class PlayerController: ObservableObject {
     @Published private(set) var currentSong: EmbyAudioItem?
     @Published private(set) var isPlaying = false
     @Published private(set) var isSeeking = false
-    @Published private(set) var seekTarget: TimeInterval?
-    @Published private(set) var elapsed: TimeInterval = 0
-    @Published private(set) var duration: TimeInterval = 0
+    private(set) var seekTarget: TimeInterval? {
+        didSet { timeline.updateSeekTarget(seekTarget) }
+    }
+    private(set) var elapsed: TimeInterval = 0 {
+        didSet { timeline.updateElapsed(elapsed) }
+    }
+    private(set) var duration: TimeInterval = 0 {
+        didSet { timeline.updateDuration(duration) }
+    }
     @Published private(set) var queueSnapshot: [EmbyAudioItem] = []
     @Published private(set) var upcomingQueueSnapshot: [EmbyAudioItem] = []
     @Published private(set) var lyrics: [LyricLine] = []
@@ -35,6 +63,7 @@ final class PlayerController: ObservableObject {
     @Published var repeatMode: RepeatMode = .none
 
     var onPlaybackPositionChanged: ((EmbyAudioItem, TimeInterval, TimeInterval, Bool) -> Void)?
+    let timeline = PlaybackTimeline()
 
     private let engine = AVPlayer()
     private let audioSession = AudioSessionCoordinator.shared

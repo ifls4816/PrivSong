@@ -22,7 +22,6 @@ struct MiniPlayerView: View {
         let subtitleSize: CGFloat = isInline ? 10.5 : 11
         let contentHeight: CGFloat = isInline ? 44 : 56
         let maxAccessoryWidth: CGFloat = isInline ? 360 : 430
-        let progress = player.currentSong != nil && player.duration > 0 ? player.elapsed / player.duration : 0
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         ZStack(alignment: .bottom) {
@@ -104,14 +103,11 @@ struct MiniPlayerView: View {
         .fixedSize(horizontal: false, vertical: true)
         .background(Color.musicMiniPlayerBackground, in: shape)
         .overlay(alignment: .bottom) {
-            if !isInline {
-                ProgressView(value: progress)
-                    .tint(.secondary.opacity(0.7))
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 1)
-                    .frame(height: 3)
-                    .allowsHitTesting(false)
-            }
+            MiniPlayerProgressView(
+                timeline: player.timeline,
+                isVisible: !isInline,
+                hasCurrentSong: player.currentSong != nil
+            )
         }
         .clipShape(shape)
         .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
@@ -130,6 +126,28 @@ struct MiniPlayerView: View {
     private func openPlayer() {
         guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
         expand()
+    }
+}
+
+private struct MiniPlayerProgressView: View {
+    @ObservedObject var timeline: PlaybackTimeline
+    let isVisible: Bool
+    let hasCurrentSong: Bool
+
+    var body: some View {
+        if isVisible {
+            ProgressView(value: progress)
+                .tint(.secondary.opacity(0.7))
+                .padding(.horizontal, 12)
+                .padding(.bottom, 1)
+                .frame(height: 3)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private var progress: Double {
+        guard hasCurrentSong, timeline.duration > 0 else { return 0 }
+        return min(max(timeline.elapsed / timeline.duration, 0), 1)
     }
 }
 
@@ -163,31 +181,9 @@ struct NowPlayingView: View {
         revealPlayerControls ? 1 : 0
     }
 
-    private func displayedElapsed(for song: EmbyAudioItem) -> TimeInterval {
-        guard player.currentSong != nil else { return 0 }
-        let duration = effectiveDuration(for: song)
-        let upperBound = duration > 0 ? duration : max(player.elapsed, 0)
-        if isScrubbing {
-            return min(max(scrubElapsed, 0), upperBound)
-        }
-        if let seekTarget = player.seekTarget, duration > 0 {
-            return min(max(seekTarget, 0), duration)
-        }
-        return min(max(player.elapsed, 0), upperBound)
-    }
-
-    private func effectiveDuration(for song: EmbyAudioItem) -> TimeInterval {
-        player.currentSong == nil ? song.duration : player.duration
-    }
-
     private func preloadDisplayedLyricsIfNeeded(for song: EmbyAudioItem) {
         guard let session = store.session else { return }
         player.preloadLyrics(for: song, session: session)
-    }
-
-    private func playerTimeText(_ value: TimeInterval) -> String {
-        let totalSeconds = Int(max(value.isFinite ? value : 0, 0).rounded())
-        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
     }
 
     var body: some View {
@@ -339,7 +335,14 @@ struct NowPlayingView: View {
                 .frame(width: width, height: height, alignment: .center)
                 .animation(.spring(response: 0.48, dampingFraction: 0.76, blendDuration: 0.08), value: isArtworkExpanded)
         case .lyrics:
-            LyricsPanelView(song: song, playbackElapsed: displayedElapsed(for: song))
+            LyricsPanelView(
+                song: song,
+                timeline: player.timeline,
+                fallbackDuration: song.duration,
+                isPlaybackActive: player.currentSong != nil,
+                scrubElapsed: scrubElapsed,
+                isScrubbing: isScrubbing
+            )
                 .frame(width: width, height: height)
         case .queue:
             QueuePlayerView()
@@ -388,41 +391,14 @@ struct NowPlayingView: View {
     }
 
     private func progressControls(song: EmbyAudioItem) -> some View {
-        let duration = effectiveDuration(for: song)
-        let sliderUpperBound = max(duration, 1)
-        return VStack(spacing: 4) {
-            Slider(value: Binding(
-                get: { displayedElapsed(for: song) },
-                set: { value in
-                    isScrubbing = true
-                    scrubElapsed = value
-                }
-            ), in: 0...sliderUpperBound) { editing in
-                if editing {
-                    if !isScrubbing {
-                        scrubElapsed = displayedElapsed(for: song)
-                    }
-                    isScrubbing = true
-                } else {
-                    let targetElapsed = min(max(scrubElapsed, 0), duration)
-                    isScrubbing = false
-                    player.seek(toElapsed: targetElapsed)
-                }
-            }
-            .tint(Color.musicRed)
-            .disabled(player.currentSong == nil || duration <= 0)
-
-            HStack {
-                let elapsed = displayedElapsed(for: song)
-                let duration = effectiveDuration(for: song)
-                Text(playerTimeText(elapsed))
-                    .monospacedDigit()
-                Spacer()
-                Text("-\(playerTimeText(duration - elapsed))")
-                    .monospacedDigit()
-            }
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(.secondary)
+        PlaybackProgressControls(
+            timeline: player.timeline,
+            fallbackDuration: song.duration,
+            isPlaybackActive: player.currentSong != nil,
+            scrubElapsed: $scrubElapsed,
+            isScrubbing: $isScrubbing
+        ) { targetElapsed in
+            player.seek(toElapsed: targetElapsed)
         }
     }
 
@@ -619,6 +595,108 @@ struct NowPlayingView: View {
         }
         .buttonStyle(.plain)
     }
+}
+
+private struct PlaybackProgressControls: View {
+    @ObservedObject var timeline: PlaybackTimeline
+    let fallbackDuration: TimeInterval
+    let isPlaybackActive: Bool
+    @Binding var scrubElapsed: TimeInterval
+    @Binding var isScrubbing: Bool
+    let seek: (TimeInterval) -> Void
+
+    private var duration: TimeInterval {
+        effectivePlaybackDuration(
+            timeline: timeline,
+            fallbackDuration: fallbackDuration,
+            isPlaybackActive: isPlaybackActive
+        )
+    }
+
+    private var elapsed: TimeInterval {
+        displayedPlaybackElapsed(
+            timeline: timeline,
+            fallbackDuration: fallbackDuration,
+            isPlaybackActive: isPlaybackActive,
+            isScrubbing: isScrubbing,
+            scrubElapsed: scrubElapsed
+        )
+    }
+
+    var body: some View {
+        let sliderUpperBound = max(duration, 1)
+
+        VStack(spacing: 4) {
+            Slider(value: Binding(
+                get: { elapsed },
+                set: { value in
+                    isScrubbing = true
+                    scrubElapsed = value
+                }
+            ), in: 0...sliderUpperBound) { editing in
+                if editing {
+                    if !isScrubbing {
+                        scrubElapsed = elapsed
+                    }
+                    isScrubbing = true
+                } else {
+                    let targetElapsed = min(max(scrubElapsed, 0), duration)
+                    isScrubbing = false
+                    seek(targetElapsed)
+                }
+            }
+            .tint(Color.musicRed)
+            .disabled(!isPlaybackActive || duration <= 0)
+
+            HStack {
+                Text(playbackTimeText(elapsed))
+                    .monospacedDigit()
+                Spacer()
+                Text("-\(playbackTimeText(duration - elapsed))")
+                    .monospacedDigit()
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+        }
+    }
+}
+
+@MainActor
+private func effectivePlaybackDuration(
+    timeline: PlaybackTimeline,
+    fallbackDuration: TimeInterval,
+    isPlaybackActive: Bool
+) -> TimeInterval {
+    isPlaybackActive ? timeline.duration : fallbackDuration
+}
+
+@MainActor
+private func displayedPlaybackElapsed(
+    timeline: PlaybackTimeline,
+    fallbackDuration: TimeInterval,
+    isPlaybackActive: Bool,
+    isScrubbing: Bool,
+    scrubElapsed: TimeInterval
+) -> TimeInterval {
+    guard isPlaybackActive else { return 0 }
+    let duration = effectivePlaybackDuration(
+        timeline: timeline,
+        fallbackDuration: fallbackDuration,
+        isPlaybackActive: isPlaybackActive
+    )
+    let upperBound = duration > 0 ? duration : max(timeline.elapsed, 0)
+    if isScrubbing {
+        return min(max(scrubElapsed, 0), upperBound)
+    }
+    if let seekTarget = timeline.seekTarget, duration > 0 {
+        return min(max(seekTarget, 0), duration)
+    }
+    return min(max(timeline.elapsed, 0), upperBound)
+}
+
+private func playbackTimeText(_ value: TimeInterval) -> String {
+    let totalSeconds = Int(max(value.isFinite ? value : 0, 0).rounded())
+    return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
 }
 
 private struct SystemVolumeSlider: UIViewRepresentable {
@@ -872,7 +950,32 @@ private struct PaletteSample {
 struct LyricsPanelView: View {
     @EnvironmentObject private var player: PlayerController
     let song: EmbyAudioItem
-    let playbackElapsed: TimeInterval
+    @ObservedObject var timeline: PlaybackTimeline
+    let fallbackDuration: TimeInterval
+    let isPlaybackActive: Bool
+    let scrubElapsed: TimeInterval
+    let isScrubbing: Bool
+    @State private var lastAutoScrollAt = Date.distantPast
+
+    private let autoScrollInterval: TimeInterval = 0.35
+
+    private var playbackElapsed: TimeInterval {
+        displayedPlaybackElapsed(
+            timeline: timeline,
+            fallbackDuration: fallbackDuration,
+            isPlaybackActive: isPlaybackActive,
+            isScrubbing: isScrubbing,
+            scrubElapsed: scrubElapsed
+        )
+    }
+
+    private var playbackDuration: TimeInterval {
+        effectivePlaybackDuration(
+            timeline: timeline,
+            fallbackDuration: fallbackDuration,
+            isPlaybackActive: isPlaybackActive
+        )
+    }
 
     private var lines: [LyricLine] {
         guard player.lyricsSongId == song.id else {
@@ -888,18 +991,22 @@ struct LyricsPanelView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
+        let activeIndex = activeLyricIndex
+        let activeID = activeLyricId(for: activeIndex)
+
+        return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                        let isActive = activeIndex == index
                         Button {
                             player.seek(toLyric: line)
                         } label: {
                             Text(line.text)
-                                .font(.system(size: activeLyricIndex == index ? 24 : 19, weight: .bold))
+                                .font(.system(size: isActive ? 24 : 19, weight: .bold))
                                 .lineSpacing(2)
                                 .multilineTextAlignment(.leading)
-                                .foregroundStyle(activeLyricIndex == index ? .primary : .secondary)
+                                .foregroundStyle(isActive ? .primary : .secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .contentShape(Rectangle())
                         }
@@ -913,21 +1020,24 @@ struct LyricsPanelView: View {
             .scrollIndicators(.hidden)
             .onAppear {
                 DispatchQueue.main.async {
-                    scrollToActiveLyric(using: proxy, animated: false)
+                    scrollToActiveLyric(activeID, using: proxy, animated: false)
                 }
             }
             .onChange(of: song.id) { _, _ in
                 DispatchQueue.main.async {
-                    scrollToActiveLyric(using: proxy, animated: false)
+                    scrollToActiveLyric(activeID, using: proxy, animated: false)
                 }
             }
             .onChange(of: lyricsScrollVersion) { _, _ in
                 DispatchQueue.main.async {
-                    scrollToActiveLyric(using: proxy, animated: false)
+                    scrollToActiveLyric(activeID, using: proxy, animated: false)
                 }
             }
-            .onChange(of: activeLyricId) { _, id in
+            .onChange(of: activeID) { _, id in
                 guard let id else { return }
+                let now = Date()
+                guard now.timeIntervalSince(lastAutoScrollAt) >= autoScrollInterval else { return }
+                lastAutoScrollAt = now
                 withAnimation(.easeInOut(duration: 0.28)) {
                     proxy.scrollTo(id, anchor: .center)
                 }
@@ -949,28 +1059,49 @@ struct LyricsPanelView: View {
 
     private var activeLyricIndex: Int {
         guard !lines.isEmpty else { return 0 }
-        if lines.contains(where: { $0.time != nil }) {
-            return lines.lastIndex { line in
-                guard let time = line.time else { return false }
-                return time <= playbackElapsed
-            } ?? 0
+        if let timedIndex = activeTimedLyricIndex {
+            return timedIndex
         }
 
-        let duration = max(player.duration, 1)
+        let duration = max(playbackDuration, 1)
         let progress = min(max(playbackElapsed / duration, 0), 0.999)
         return min(Int(progress * Double(lines.count)), lines.count - 1)
     }
 
-    private var activeLyricId: Int? {
-        guard lines.indices.contains(activeLyricIndex) else { return nil }
-        return lines[activeLyricIndex].id
+    private var activeTimedLyricIndex: Int? {
+        let timedIndexes = lines.indices.filter { lines[$0].time != nil }
+        guard !timedIndexes.isEmpty else { return nil }
+
+        var lowerBound = 0
+        var upperBound = timedIndexes.count
+        var bestIndex: Int?
+
+        while lowerBound < upperBound {
+            let middle = (lowerBound + upperBound) / 2
+            let lineIndex = timedIndexes[middle]
+            guard let time = lines[lineIndex].time else { break }
+
+            if time <= playbackElapsed {
+                bestIndex = lineIndex
+                lowerBound = middle + 1
+            } else {
+                upperBound = middle
+            }
+        }
+
+        return bestIndex
+    }
+
+    private func activeLyricId(for activeIndex: Int) -> Int? {
+        guard lines.indices.contains(activeIndex) else { return nil }
+        return lines[activeIndex].id
     }
 
     private var lyricsScrollVersion: String {
         "\(song.id)-\(lines.count)-\(lines.first?.id ?? Int.min)-\(lines.last?.id ?? Int.min)"
     }
 
-    private func scrollToActiveLyric(using proxy: ScrollViewProxy, animated: Bool) {
+    private func scrollToActiveLyric(_ activeLyricId: Int?, using proxy: ScrollViewProxy, animated: Bool) {
         guard let activeLyricId else { return }
         if animated {
             withAnimation(.easeInOut(duration: 0.28)) {
