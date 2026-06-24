@@ -20,10 +20,12 @@ struct MiniPlayerView: View {
         let cornerRadius: CGFloat = isInline ? 26 : 16
         let titleSize: CGFloat = isInline ? 14 : 15
         let subtitleSize: CGFloat = isInline ? 10.5 : 11
-        let progressOpacity = isInline ? 0.0 : 1.0
+        let contentHeight: CGFloat = isInline ? 44 : 56
+        let maxAccessoryWidth: CGFloat = isInline ? 360 : 430
+        let progress = player.currentSong != nil && player.duration > 0 ? player.elapsed / player.duration : 0
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
-        VStack(spacing: 0) {
+        ZStack(alignment: .bottom) {
             HStack(spacing: 10) {
                 if song != nil {
                     ArtworkView(url: artworkURL, cornerRadius: isInline ? 7 : 8)
@@ -54,6 +56,8 @@ struct MiniPlayerView: View {
                         .lineLimit(1)
                 }
                 .minimumScaleFactor(0.82)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
 
                 Spacer(minLength: 8)
 
@@ -94,17 +98,27 @@ struct MiniPlayerView: View {
             }
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
-
-            ProgressView(value: player.currentSong != nil && player.duration > 0 ? player.elapsed / player.duration : 0)
-                .tint(.secondary.opacity(0.7))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 1)
-                .opacity(progressOpacity)
-                .frame(height: 3)
+            .frame(height: contentHeight)
         }
+        .frame(maxWidth: maxAccessoryWidth)
+        .fixedSize(horizontal: false, vertical: true)
         .background(Color.musicMiniPlayerBackground, in: shape)
+        .overlay(alignment: .bottom) {
+            if !isInline {
+                ProgressView(value: progress)
+                    .tint(.secondary.opacity(0.7))
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 1)
+                    .frame(height: 3)
+                    .allowsHitTesting(false)
+            }
+        }
+        .clipShape(shape)
         .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
         .contentShape(shape)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
         .onTapGesture(perform: expand)
         .onLongPressGesture(minimumDuration: 0.45, perform: expand)
     }
