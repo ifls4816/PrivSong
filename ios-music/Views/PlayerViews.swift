@@ -1003,11 +1003,15 @@ struct LyricsPanelView: View {
     }
 
     var body: some View {
-        if isPlaceholderLyrics {
-            placeholderView
-        } else {
-            lyricsScrollView
+        ZStack {
+            Color.clear
+            if isPlaceholderLyrics {
+                placeholderView
+            } else {
+                lyricsScrollView
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var lyricsScrollView: some View {
@@ -1085,7 +1089,8 @@ struct LyricsPanelView: View {
             .font(.system(size: 20, weight: .bold))
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 24)
     }
 
     private var isPlaceholderLyrics: Bool {

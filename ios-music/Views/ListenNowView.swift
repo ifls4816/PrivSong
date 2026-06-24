@@ -308,14 +308,20 @@ struct PlaylistArtworkGrid: View {
     @EnvironmentObject private var store: AppStore
     let songs: [EmbyAudioItem]
 
+    private var artworkURLs: [URL] {
+        songs
+            .prefix(4)
+            .compactMap { store.imageURL(for: $0, size: 160) }
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
             let tile = (min(size.width, size.height) - 2) / 2
 
             ZStack {
-                if songs.isEmpty {
-                    ArtworkView(url: nil, cornerRadius: 12)
+                if artworkURLs.count <= 1 {
+                    ArtworkView(url: artworkURLs.first, cornerRadius: 12)
                 } else {
                     VStack(spacing: 2) {
                         HStack(spacing: 2) {
@@ -336,8 +342,8 @@ struct PlaylistArtworkGrid: View {
 
     @ViewBuilder
     private func artworkTile(at index: Int, size: CGFloat) -> some View {
-        if songs.indices.contains(index) {
-            ArtworkView(url: store.imageURL(for: songs[index], size: 160), cornerRadius: 3)
+        if artworkURLs.indices.contains(index) {
+            ArtworkView(url: artworkURLs[index], cornerRadius: 3)
                 .frame(width: size, height: size)
         } else {
             ArtworkView(url: nil, cornerRadius: 3)
