@@ -1,3 +1,4 @@
+import AVFoundation
 import MediaPlayer
 import SwiftUI
 import UIKit
@@ -169,6 +170,16 @@ struct NowPlayingView: View {
         player.currentSong == nil ? song.duration : player.duration
     }
 
+    private func preloadDisplayedLyricsIfNeeded(for song: EmbyAudioItem) {
+        guard let session = store.session else { return }
+        player.preloadLyrics(for: song, session: session)
+    }
+
+    private func playerTimeText(_ value: TimeInterval) -> String {
+        let totalSeconds = Int(max(value.isFinite ? value : 0, 0).rounded())
+        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
+    }
+
     var body: some View {
         if let song = player.currentSong ?? store.lastPlayedSong {
             GeometryReader { proxy in
@@ -186,6 +197,7 @@ struct NowPlayingView: View {
             }
             .onAppear {
                 revealPlayerControls = false
+                preloadDisplayedLyricsIfNeeded(for: song)
                 UIApplication.shared.isIdleTimerDisabled = store.keepsScreenAwakeOnPlayerPage
                 withAnimation(.easeOut(duration: 0.22).delay(0.12)) {
                     revealPlayerControls = true
@@ -202,6 +214,9 @@ struct NowPlayingView: View {
             }
             .onChange(of: store.keepsScreenAwakeOnPlayerPage) { _, enabled in
                 UIApplication.shared.isIdleTimerDisabled = enabled
+            }
+            .onChange(of: song.id) { _, _ in
+                preloadDisplayedLyricsIfNeeded(for: song)
             }
             .onChange(of: player.isSeeking) { _, isSeeking in
                 if !isSeeking, isScrubbing {
@@ -390,10 +405,10 @@ struct NowPlayingView: View {
             HStack {
                 let elapsed = displayedElapsed(for: song)
                 let duration = effectiveDuration(for: song)
-                Text(elapsed.musicDurationText)
+                Text(playerTimeText(elapsed))
                     .monospacedDigit()
                 Spacer()
-                Text("-\(max(duration - elapsed, 0).musicDurationText)")
+                Text("-\(playerTimeText(duration - elapsed))")
                     .monospacedDigit()
             }
             .font(.system(size: 11, weight: .semibold))
@@ -480,14 +495,21 @@ struct NowPlayingView: View {
     }
 
     private var volumeControl: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 10) {
             Image(systemName: "speaker.fill")
                 .font(.system(size: 11, weight: .semibold))
+                .frame(width: 18, height: 20)
             SystemVolumeSlider()
+                .frame(maxWidth: .infinity)
                 .frame(height: 20)
+                .transaction { transaction in
+                    transaction.disablesAnimations = true
+                }
             Image(systemName: "speaker.wave.2.fill")
                 .font(.system(size: 12, weight: .semibold))
+                .frame(width: 18, height: 20)
         }
+        .frame(maxWidth: .infinity)
         .foregroundStyle(.secondary)
     }
 
@@ -590,28 +612,52 @@ struct NowPlayingView: View {
 }
 
 private struct SystemVolumeSlider: UIViewRepresentable {
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
     func makeUIView(context: Context) -> MPVolumeView {
         let view = MPVolumeView(frame: .zero)
         view.showsVolumeSlider = true
-        style(view)
+        view.clipsToBounds = true
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        style(view, syncInitialVolume: true)
+        context.coordinator.didSyncInitialVolume = true
         return view
     }
 
-    func updateUIView(_ uiView: MPVolumeView, context: Context) {
-        style(uiView)
+    func updateUIView(_ view: MPVolumeView, context: Context) {
+        view.showsVolumeSlider = true
+        style(view, syncInitialVolume: !context.coordinator.didSyncInitialVolume)
+        context.coordinator.didSyncInitialVolume = true
     }
 
-    private func style(_ view: MPVolumeView) {
-        view.tintColor = .musicRed
-        for subview in view.subviews {
-            guard let slider = subview as? UISlider else {
-                subview.isHidden = true
-                subview.isUserInteractionEnabled = false
-                continue
+    final class Coordinator {
+        var didSyncInitialVolume = false
+    }
+
+    private func style(_ view: MPVolumeView, syncInitialVolume: Bool) {
+        UIView.performWithoutAnimation {
+            view.tintColor = .musicRed
+            for subview in view.subviews {
+                guard let slider = subview as? UISlider else {
+                    subview.isHidden = true
+                    subview.isUserInteractionEnabled = false
+                    continue
+                }
+                slider.minimumTrackTintColor = .musicRed
+                slider.maximumTrackTintColor = UIColor.secondaryLabel.withAlphaComponent(0.24)
+                slider.thumbTintColor = .musicSliderThumb
+                slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+                slider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                slider.frame = view.bounds
+                slider.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                if syncInitialVolume {
+                    slider.setValue(AVAudioSession.sharedInstance().outputVolume, animated: false)
+                }
             }
-            slider.minimumTrackTintColor = .musicRed
-            slider.maximumTrackTintColor = UIColor.secondaryLabel.withAlphaComponent(0.24)
-            slider.thumbTintColor = .musicSliderThumb
+            view.layoutIfNeeded()
         }
     }
 }
@@ -621,7 +667,7 @@ private struct PlayerPageBackground: View {
 
     let imageURL: URL?
 
-    @State private var palette = BackdropPalette.fallback
+    @State private var palette: BackdropPalette?
     @State private var loadedImageURL: URL?
 
     var body: some View {
@@ -630,18 +676,21 @@ private struct PlayerPageBackground: View {
         ZStack {
             Color.musicPageBackground
 
-            LinearGradient(
-                stops: [
-                    .init(color: palette.top.swiftUIColor.opacity(isDark ? 0.46 : 0.38), location: 0.00),
-                    .init(color: palette.middle.swiftUIColor.opacity(isDark ? 0.34 : 0.24), location: 0.36),
-                    .init(color: palette.bottom.swiftUIColor.opacity(isDark ? 0.24 : 0.24), location: 0.72),
-                    .init(color: Color.musicPageBackground.opacity(isDark ? 0.74 : 0.92), location: 1.00)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .blur(radius: 12)
-            .saturation(0.92)
+            if let palette {
+                LinearGradient(
+                    stops: [
+                        .init(color: palette.top.swiftUIColor.opacity(isDark ? 0.46 : 0.38), location: 0.00),
+                        .init(color: palette.middle.swiftUIColor.opacity(isDark ? 0.34 : 0.24), location: 0.36),
+                        .init(color: palette.bottom.swiftUIColor.opacity(isDark ? 0.24 : 0.24), location: 0.72),
+                        .init(color: Color.musicPageBackground.opacity(isDark ? 0.74 : 0.92), location: 1.00)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .blur(radius: 12)
+                .saturation(0.92)
+                .transition(.opacity)
+            }
 
             Color.musicPageBackground.opacity(isDark ? 0.32 : 0.16)
         }
@@ -658,7 +707,7 @@ private struct PlayerPageBackground: View {
         loadedImageURL = imageURL
 
         guard let imageURL else {
-            palette = .fallback
+            palette = nil
             return
         }
 
@@ -674,9 +723,9 @@ private struct BackdropPalette: Equatable, Sendable {
     let bottom: PaletteColor
 
     static let fallback = BackdropPalette(
-        top: PaletteColor(red: 0.96, green: 0.18, blue: 0.22),
-        middle: PaletteColor(red: 0.26, green: 0.36, blue: 0.58),
-        bottom: PaletteColor(red: 0.96, green: 0.97, blue: 0.99)
+        top: PaletteColor(red: 0.50, green: 0.52, blue: 0.56),
+        middle: PaletteColor(red: 0.72, green: 0.73, blue: 0.76),
+        bottom: PaletteColor(red: 0.95, green: 0.95, blue: 0.97)
     )
 }
 
@@ -812,16 +861,16 @@ struct LyricsPanelView: View {
     let song: EmbyAudioItem
 
     private var lines: [LyricLine] {
+        guard player.lyricsSongId == song.id else {
+            return [LyricLine(id: -2, time: nil, text: "暂无歌词")]
+        }
         if !player.lyrics.isEmpty {
             return player.lyrics
         }
         if player.isLoadingLyrics {
             return [LyricLine(id: -1, time: nil, text: "正在读取歌曲内置歌词")]
         }
-        return [
-            LyricLine(id: -2, time: nil, text: "这首歌没有可读取的内置歌词"),
-            LyricLine(id: -3, time: nil, text: "支持 ID3 / iTunes / QuickTime 元数据中的歌词字段")
-        ]
+        return [LyricLine(id: -2, time: nil, text: "暂无歌词")]
     }
 
     var body: some View {

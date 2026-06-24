@@ -21,6 +21,7 @@ final class PlayerController: ObservableObject {
     @Published private(set) var queueSnapshot: [EmbyAudioItem] = []
     @Published private(set) var upcomingQueueSnapshot: [EmbyAudioItem] = []
     @Published private(set) var lyrics: [LyricLine] = []
+    @Published private(set) var lyricsSongId: String?
     @Published private(set) var isLoadingLyrics = false
     @Published private(set) var playbackStatusText: String?
     @Published private(set) var isBuffering = false
@@ -67,6 +68,8 @@ final class PlayerController: ObservableObject {
     private var itemPlaybackLikelyToKeepUpObserver: NSKeyValueObservation?
     private var timeControlStatusObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
+    private var accessLogObserver: NSObjectProtocol?
+    private var playbackStalledObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
     private var artworkTask: Task<Void, Never>?
@@ -74,6 +77,7 @@ final class PlayerController: ObservableObject {
     private var sleepTimerTask: Task<Void, Never>?
     private var audioCacheTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
+    private var currentAccessLogEventCount = 0
 
     init() {
         engine.automaticallyWaitsToMinimizeStalling = true
@@ -246,6 +250,13 @@ final class PlayerController: ObservableObject {
         seek(toSeconds: time, shouldPlayAfterSeek: isPlaying)
     }
 
+    func preloadLyrics(for song: EmbyAudioItem, session: EmbySession) {
+        guard currentSong?.id != song.id,
+              lyricsSongId != song.id else { return }
+
+        loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
+    }
+
     private var activeQueue: [EmbyAudioItem] {
         isShuffleEnabled ? shuffledQueue : queue
     }
@@ -306,6 +317,7 @@ final class PlayerController: ObservableObject {
         isPlaying = autoplay
         currentArtwork = nil
         lyrics = []
+        lyricsSongId = nil
         isLoadingLyrics = false
         playbackStatusText = "正在连接"
         isBuffering = true
@@ -317,6 +329,7 @@ final class PlayerController: ObservableObject {
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
         lastPlaybackProgressReport = .distantPast
+        currentAccessLogEventCount = 0
 
         let streamOptions = currentPlaybackStreamOptions()
         currentStreamOptions = streamOptions
@@ -371,6 +384,7 @@ final class PlayerController: ObservableObject {
             streamCandidateIndex = candidateIndex
         }
         currentStreamURL = url
+        currentAccessLogEventCount = 0
 
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
@@ -455,6 +469,7 @@ final class PlayerController: ObservableObject {
         elapsed = 0
         duration = 0
         lyrics = []
+        lyricsSongId = nil
         isLoadingLyrics = false
         lastNowPlayingSync = .distantPast
         syncQueueSnapshots()
@@ -708,6 +723,34 @@ final class PlayerController: ObservableObject {
                 self.handleTrackEnded()
             }
         }
+
+        accessLogObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemNewAccessLogEntry,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let itemId = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init) else {
+                return
+            }
+
+            Task { @MainActor in
+                self?.handleAccessLogEntry(for: itemId)
+            }
+        }
+
+        playbackStalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let itemId = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init) else {
+                return
+            }
+
+            Task { @MainActor in
+                self?.handlePlaybackStalled(for: itemId)
+            }
+        }
     }
 
     private func configureAudioSessionObservers() {
@@ -808,6 +851,9 @@ final class PlayerController: ObservableObject {
 
         let previousElapsed = elapsed
         elapsed = newElapsed
+        if refreshLongRunningCellularTranscodeIfNeeded() {
+            return
+        }
         if engine.rate > 0 || newElapsed > previousElapsed + 0.05 {
             clearTransientPlaybackStatus()
         }
@@ -850,6 +896,60 @@ final class PlayerController: ObservableObject {
 
     private func itemTime(forAbsoluteTime absoluteTime: TimeInterval) -> TimeInterval {
         max(0, absoluteTime - streamStartOffset)
+    }
+
+    private var currentStreamUsesHLS: Bool {
+        guard let currentStreamURL else { return false }
+        let absoluteString = currentStreamURL.absoluteString.lowercased()
+        return currentStreamURL.pathExtension.localizedCaseInsensitiveCompare("m3u8") == .orderedSame ||
+            absoluteString.contains("transcodingprotocol=hls")
+    }
+
+    private func handleAccessLogEntry(for itemId: ObjectIdentifier) {
+        guard currentStreamOptions?.quality.usesTranscoding == true,
+              !currentStreamUsesHLS,
+              let currentItem = engine.currentItem,
+              ObjectIdentifier(currentItem) == itemId else { return }
+
+        let eventCount = currentItem.accessLog()?.events.count ?? 0
+        let previousEventCount = currentAccessLogEventCount
+        currentAccessLogEventCount = eventCount
+
+        guard previousEventCount > 0,
+              eventCount > previousEventCount,
+              elapsed > 10 else { return }
+
+        _ = refreshTranscodedStreamAfterInterruption(reason: "stream reconnect")
+    }
+
+    private func handlePlaybackStalled(for itemId: ObjectIdentifier) {
+        guard currentStreamOptions?.quality.usesTranscoding == true,
+              let currentItem = engine.currentItem,
+              ObjectIdentifier(currentItem) == itemId else { return }
+
+        isBuffering = true
+        playbackStatusText = "正在缓冲"
+        _ = refreshTranscodedStreamAfterInterruption(reason: "playback stalled")
+    }
+
+    @discardableResult
+    private func refreshLongRunningCellularTranscodeIfNeeded() -> Bool {
+        let isCellularTranscode = currentNetworkKind == .cellular ||
+            currentStreamOptions?.networkKind == .cellular
+        let isPlayingNow = isPlaying ||
+            engine.timeControlStatus == .playing ||
+            engine.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
+            engine.rate > 0
+
+        guard isCellularTranscode,
+              currentStreamOptions?.quality.usesTranscoding == true,
+              !currentStreamUsesHLS,
+              isPlayingNow,
+              !isSwitchingTracks,
+              !isSeeking,
+              elapsed - streamStartOffset >= 115 else { return false }
+
+        return refreshTranscodedStreamAfterInterruption(reason: "long cellular transcode stream")
     }
 
     @discardableResult
@@ -1110,13 +1210,15 @@ final class PlayerController: ObservableObject {
     private func loadEmbeddedLyrics(from url: URL?, songId: String) {
         lyricsTask?.cancel()
         lyrics = []
+        lyricsSongId = songId
+        isLoadingLyrics = false
         guard let url else { return }
 
         isLoadingLyrics = true
         lyricsTask = Task { [weak self] in
             let lines = await Self.readEmbeddedLyrics(from: url)
             await MainActor.run {
-                guard !Task.isCancelled, self?.currentSong?.id == songId else { return }
+                guard !Task.isCancelled, self?.lyricsSongId == songId else { return }
                 self?.lyrics = lines
                 self?.isLoadingLyrics = false
             }

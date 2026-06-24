@@ -625,6 +625,14 @@ struct EmbyClient {
         let candidates: [URL?]
         if let bitrate = options.quality.bitrate {
             candidates = [
+                transcodedAudioHLSURL(
+                    for: item,
+                    session: embySession,
+                    playSessionId: playSessionId,
+                    startTimeTicks: startTimeTicks,
+                    format: options.transcodeFormat,
+                    maxStreamingBitrate: bitrate
+                ),
                 transcodedAudioStreamURL(
                     for: item,
                     session: embySession,
@@ -732,6 +740,45 @@ struct EmbyClient {
             URLQueryItem(name: "Static", value: "true"),
             URLQueryItem(name: "PlaySessionId", value: playSessionId)
         ]
+        if let startTimeTicks {
+            queryItems.append(URLQueryItem(name: "StartTimeTicks", value: "\(startTimeTicks)"))
+        }
+        components?.queryItems = queryItems
+        return components?.url
+    }
+
+    private func transcodedAudioHLSURL(
+        for item: EmbyAudioItem,
+        session embySession: EmbySession,
+        playSessionId: String,
+        startTimeTicks: Int64?,
+        format: AudioTranscodeFormat,
+        maxStreamingBitrate: Int
+    ) -> URL? {
+        var components = URLComponents(
+            url: embySession.serverURL.appending(path: "Audio/\(item.id)/universal"),
+            resolvingAgainstBaseURL: false
+        )
+        var queryItems = [
+            URLQueryItem(name: "api_key", value: embySession.accessToken),
+            URLQueryItem(name: "UserId", value: embySession.userId),
+            URLQueryItem(name: "DeviceId", value: deviceId),
+            URLQueryItem(name: "PlaySessionId", value: playSessionId),
+            URLQueryItem(name: "Static", value: "false"),
+            URLQueryItem(name: "Container", value: "ts"),
+            URLQueryItem(name: "TranscodingContainer", value: "ts"),
+            URLQueryItem(name: "TranscodingProtocol", value: "hls"),
+            URLQueryItem(name: "AudioCodec", value: format.codec),
+            URLQueryItem(name: "AudioBitRate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "MaxAudioBitrate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "MaxStreamingBitrate", value: "\(maxStreamingBitrate)"),
+            URLQueryItem(name: "EnableAutoStreamCopy", value: "false"),
+            URLQueryItem(name: "EnableDirectPlay", value: "false"),
+            URLQueryItem(name: "EnableDirectStream", value: "false")
+        ]
+        if let mediaSourceId = item.mediaSources?.first?.id, !mediaSourceId.isEmpty {
+            queryItems.append(URLQueryItem(name: "MediaSourceId", value: mediaSourceId))
+        }
         if let startTimeTicks {
             queryItems.append(URLQueryItem(name: "StartTimeTicks", value: "\(startTimeTicks)"))
         }
