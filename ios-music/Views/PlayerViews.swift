@@ -947,6 +947,16 @@ private struct PaletteSample {
     }
 }
 
+private struct TimedLyricAnchor: Equatable {
+    let lineIndex: Int
+    let time: TimeInterval
+}
+
+private struct TimedLyricIndexCache: Equatable {
+    var version = ""
+    var anchors: [TimedLyricAnchor] = []
+}
+
 struct LyricsPanelView: View {
     @EnvironmentObject private var player: PlayerController
     let song: EmbyAudioItem
@@ -956,6 +966,7 @@ struct LyricsPanelView: View {
     let scrubElapsed: TimeInterval
     let isScrubbing: Bool
     @State private var lastAutoScrollAt = Date.distantPast
+    @State private var timedLyricIndexCache = TimedLyricIndexCache()
 
     private let autoScrollInterval: TimeInterval = 0.35
 
@@ -1019,16 +1030,19 @@ struct LyricsPanelView: View {
             }
             .scrollIndicators(.hidden)
             .onAppear {
+                refreshTimedLyricIndexCache()
                 DispatchQueue.main.async {
                     scrollToActiveLyric(activeID, using: proxy, animated: false)
                 }
             }
             .onChange(of: song.id) { _, _ in
+                refreshTimedLyricIndexCache()
                 DispatchQueue.main.async {
                     scrollToActiveLyric(activeID, using: proxy, animated: false)
                 }
             }
             .onChange(of: lyricsScrollVersion) { _, _ in
+                refreshTimedLyricIndexCache()
                 DispatchQueue.main.async {
                     scrollToActiveLyric(activeID, using: proxy, animated: false)
                 }
@@ -1069,20 +1083,19 @@ struct LyricsPanelView: View {
     }
 
     private var activeTimedLyricIndex: Int? {
-        let timedIndexes = lines.indices.filter { lines[$0].time != nil }
-        guard !timedIndexes.isEmpty else { return nil }
+        let anchors = currentTimedLyricAnchors
+        guard !anchors.isEmpty else { return nil }
 
         var lowerBound = 0
-        var upperBound = timedIndexes.count
+        var upperBound = anchors.count
         var bestIndex: Int?
 
         while lowerBound < upperBound {
             let middle = (lowerBound + upperBound) / 2
-            let lineIndex = timedIndexes[middle]
-            guard let time = lines[lineIndex].time else { break }
+            let anchor = anchors[middle]
 
-            if time <= playbackElapsed {
-                bestIndex = lineIndex
+            if anchor.time <= playbackElapsed {
+                bestIndex = anchor.lineIndex
                 lowerBound = middle + 1
             } else {
                 upperBound = middle
@@ -1099,6 +1112,26 @@ struct LyricsPanelView: View {
 
     private var lyricsScrollVersion: String {
         "\(song.id)-\(lines.count)-\(lines.first?.id ?? Int.min)-\(lines.last?.id ?? Int.min)"
+    }
+
+    private var currentTimedLyricAnchors: [TimedLyricAnchor] {
+        timedLyricIndexCache.version == lyricsScrollVersion
+            ? timedLyricIndexCache.anchors
+            : Self.makeTimedLyricAnchors(from: lines)
+    }
+
+    private func refreshTimedLyricIndexCache() {
+        timedLyricIndexCache = TimedLyricIndexCache(
+            version: lyricsScrollVersion,
+            anchors: Self.makeTimedLyricAnchors(from: lines)
+        )
+    }
+
+    private static func makeTimedLyricAnchors(from lines: [LyricLine]) -> [TimedLyricAnchor] {
+        lines.enumerated().compactMap { index, line in
+            guard let time = line.time else { return nil }
+            return TimedLyricAnchor(lineIndex: index, time: time)
+        }
     }
 
     private func scrollToActiveLyric(_ activeLyricId: Int?, using proxy: ScrollViewProxy, animated: Bool) {
