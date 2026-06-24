@@ -10,6 +10,11 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     let text: String
 }
 
+private enum StreamTimebase {
+    case relativeToStartOffset
+    case absolute
+}
+
 @MainActor
 final class PlayerController: ObservableObject {
     @Published private(set) var currentSong: EmbyAudioItem?
@@ -47,6 +52,7 @@ final class PlayerController: ObservableObject {
     private var streamCandidateIndex = 0
     private var currentStreamURL: URL?
     private var streamStartOffset: TimeInterval = 0
+    private var currentStreamTimebase: StreamTimebase?
     private var currentStreamOptions: PlaybackStreamOptions?
     private var currentPlaySessionId: String?
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
@@ -341,6 +347,7 @@ final class PlayerController: ObservableObject {
         lastNowPlayingSync = .distantPast
         currentStreamURL = nil
         streamStartOffset = 0
+        currentStreamTimebase = nil
         currentStreamOptions = nil
         seekTarget = nil
         pendingSeekTarget = nil
@@ -402,6 +409,7 @@ final class PlayerController: ObservableObject {
             streamCandidateIndex = candidateIndex
         }
         currentStreamURL = url
+        currentStreamTimebase = nil
         currentAccessLogEventCount = 0
 
         let asset = AVURLAsset(url: url)
@@ -479,6 +487,7 @@ final class PlayerController: ObservableObject {
         streamCandidates = []
         streamCandidateIndex = 0
         streamStartOffset = 0
+        currentStreamTimebase = nil
         currentStreamOptions = nil
         activeAudioCacheKey = nil
         seekTarget = nil
@@ -528,7 +537,10 @@ final class PlayerController: ObservableObject {
                       self.seekGeneration == generation,
                       self.engine.currentItem === currentItem else { return }
                 guard finished else {
-                    let actualElapsed = self.absoluteElapsed(forItemTime: self.engine.currentTime().seconds)
+                    let actualElapsed = self.resolvedElapsed(
+                        forItemTime: self.engine.currentTime().seconds,
+                        reference: clamped
+                    )
                     self.elapsed = actualElapsed
                     self.seekTarget = nil
                     self.pendingSeekTarget = nil
@@ -887,7 +899,10 @@ final class PlayerController: ObservableObject {
     private func handlePeriodicTime(_ time: CMTime) {
         guard !isSeeking else { return }
 
-        let newElapsed = absoluteElapsed(forItemTime: time.seconds)
+        let newElapsed = resolvedElapsed(
+            forItemTime: time.seconds,
+            reference: pendingSeekTarget ?? seekTarget ?? elapsed
+        )
         if let pendingSeekTarget {
             if Date() < suppressTimeUpdatesUntil,
                abs(newElapsed - pendingSeekTarget) > 0.45 {
@@ -946,6 +961,29 @@ final class PlayerController: ObservableObject {
 
     private func itemTime(forAbsoluteTime absoluteTime: TimeInterval) -> TimeInterval {
         max(0, absoluteTime - streamStartOffset)
+    }
+
+    private func resolvedElapsed(forItemTime itemTime: TimeInterval, reference: TimeInterval?) -> TimeInterval {
+        let normalizedItemTime = itemTime.validDuration(fallback: 0)
+        updateStreamTimebaseIfNeeded(forItemTime: normalizedItemTime, reference: reference)
+        return absoluteElapsed(forNormalizedItemTime: normalizedItemTime)
+    }
+
+    private func updateStreamTimebaseIfNeeded(forItemTime itemTime: TimeInterval, reference: TimeInterval?) {
+        guard currentStreamTimebase == nil,
+              streamStartOffset > 1,
+              let reference else { return }
+
+        let relativeElapsed = streamStartOffset + itemTime
+        let absoluteElapsed = itemTime
+        let relativeDelta = abs(relativeElapsed - reference)
+        let absoluteDelta = abs(absoluteElapsed - reference)
+
+        if absoluteDelta + 0.25 < relativeDelta {
+            currentStreamTimebase = .absolute
+        } else if relativeDelta + 0.25 < absoluteDelta {
+            currentStreamTimebase = .relativeToStartOffset
+        }
     }
 
     private var currentStreamUsesHLS: Bool {
@@ -1061,7 +1099,16 @@ final class PlayerController: ObservableObject {
     }
 
     private func absoluteElapsed(forItemTime itemTime: TimeInterval) -> TimeInterval {
-        let absoluteTime = streamStartOffset + itemTime.validDuration(fallback: 0)
+        absoluteElapsed(forNormalizedItemTime: itemTime.validDuration(fallback: 0))
+    }
+
+    private func absoluteElapsed(forNormalizedItemTime itemTime: TimeInterval) -> TimeInterval {
+        let absoluteTime: TimeInterval
+        if currentStreamTimebase == .absolute {
+            absoluteTime = itemTime
+        } else {
+            absoluteTime = streamStartOffset + itemTime
+        }
         guard duration > 0 else { return max(0, absoluteTime) }
         return max(0, min(absoluteTime, duration))
     }

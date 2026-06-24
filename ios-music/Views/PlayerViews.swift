@@ -334,7 +334,7 @@ struct NowPlayingView: View {
                 .frame(width: width, height: height, alignment: .center)
                 .animation(.spring(response: 0.48, dampingFraction: 0.76, blendDuration: 0.08), value: isArtworkExpanded)
         case .lyrics:
-            LyricsPanelView(song: song)
+            LyricsPanelView(song: song, playbackElapsed: displayedElapsed(for: song))
                 .frame(width: width, height: height)
         case .queue:
             QueuePlayerView()
@@ -864,6 +864,7 @@ private struct PaletteSample {
 struct LyricsPanelView: View {
     @EnvironmentObject private var player: PlayerController
     let song: EmbyAudioItem
+    let playbackElapsed: TimeInterval
 
     private var lines: [LyricLine] {
         guard player.lyricsSongId == song.id else {
@@ -943,12 +944,12 @@ struct LyricsPanelView: View {
         if lines.contains(where: { $0.time != nil }) {
             return lines.lastIndex { line in
                 guard let time = line.time else { return false }
-                return time <= player.elapsed
+                return time <= playbackElapsed
             } ?? 0
         }
 
         let duration = max(player.duration, 1)
-        let progress = min(max(player.elapsed / duration, 0), 0.999)
+        let progress = min(max(playbackElapsed / duration, 0), 0.999)
         return min(Int(progress * Double(lines.count)), lines.count - 1)
     }
 
