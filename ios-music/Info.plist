@@ -31,7 +31,6 @@
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
-		<!-- CarPlay scene disabled until CarPlay entitlement is restored.
 		<key>UISceneConfigurations</key>
 		<dict>
 			<key>CPTemplateApplicationSceneSessionRoleApplication</key>
@@ -46,7 +45,6 @@
 				</dict>
 			</array>
 		</dict>
-		-->
 	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>

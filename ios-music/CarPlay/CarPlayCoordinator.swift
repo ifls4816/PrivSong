@@ -10,7 +10,11 @@ final class CarPlayCoordinator: NSObject {
     private let player: PlayerController
     private var cancellables: Set<AnyCancellable> = []
     private var tabBarTemplate: CPTabBarTemplate?
+    private var homeListTemplate: CPListTemplate?
+    private var discoveryListTemplate: CPListTemplate?
     private var refreshTask: Task<Void, Never>?
+    private var cardArtworkTasks: [Task<Void, Never>] = []
+    private var observedStoreContentSignature = ""
 
     init(interfaceController: CPInterfaceController, store: AppStore, player: PlayerController) {
         self.interfaceController = interfaceController
@@ -22,33 +26,32 @@ final class CarPlayCoordinator: NSObject {
     func connect() {
         setRootTemplate(animated: false)
         observeStoreChanges()
-        observePlayerChanges()
     }
 
     func disconnect() {
         refreshTask?.cancel()
         refreshTask = nil
+        cardArtworkTasks.forEach { $0.cancel() }
+        cardArtworkTasks.removeAll()
         cancellables.removeAll()
         interfaceController = nil
         tabBarTemplate = nil
+        homeListTemplate = nil
+        discoveryListTemplate = nil
     }
 
     private func observeStoreChanges() {
+        observedStoreContentSignature = storeContentSignature()
         store.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                self?.scheduleRootRefresh()
-            }
-            .store(in: &cancellables)
-    }
-
-    private func observePlayerChanges() {
-        player.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 Task { @MainActor in
                     await Task.yield()
-                    self?.scheduleRootRefresh()
+                    guard let self else { return }
+                    let signature = self.storeContentSignature()
+                    guard self.observedStoreContentSignature != signature else { return }
+                    self.observedStoreContentSignature = signature
+                    self.scheduleRootRefresh()
                 }
             }
             .store(in: &cancellables)
@@ -56,8 +59,14 @@ final class CarPlayCoordinator: NSObject {
 
     private func scheduleRootRefresh() {
         guard let interfaceController,
-              let tabBarTemplate,
-              interfaceController.topTemplate === tabBarTemplate else {
+              let tabBarTemplate else {
+            return
+        }
+
+        let topTemplate = interfaceController.topTemplate
+        guard topTemplate === tabBarTemplate ||
+              topTemplate === homeListTemplate ||
+              topTemplate === discoveryListTemplate else {
             return
         }
 
@@ -69,6 +78,44 @@ final class CarPlayCoordinator: NSObject {
         }
     }
 
+    private func storeContentSignature() -> String {
+        let playlistSignature = store.playlists
+            .map { playlist in
+                [
+                    playlist.id,
+                    playlist.name,
+                    "\(playlist.displaySongCount)",
+                    playlist.songs.first?.id ?? ""
+                ].joined(separator: ":")
+            }
+            .joined(separator: "|")
+        let audiobookSignature = store.audiobooks
+            .map { audiobook in
+                [
+                    audiobook.id,
+                    audiobook.title,
+                    "\(audiobook.episodeCount)",
+                    audiobook.representativeEpisode?.id ?? ""
+                ].joined(separator: ":")
+            }
+            .joined(separator: "|")
+        let discoverySignature = [
+            store.dailyRecommendedSongs.map(\.id).joined(separator: ","),
+            store.recentlyAddedSongs.map(\.id).joined(separator: ","),
+            store.mostPlayedSongs.map(\.id).joined(separator: ",")
+        ].joined(separator: "|")
+
+        return [
+            store.session?.userId ?? "signed-out",
+            store.hasLoadedInitialContent ? "loaded" : "not-loaded",
+            store.isLoading ? "loading" : "idle",
+            store.localizedLibraryStatus,
+            playlistSignature,
+            audiobookSignature,
+            discoverySignature
+        ].joined(separator: "#")
+    }
+
     private func setRootTemplate(animated: Bool) {
         let template = makeTabBarTemplate()
         tabBarTemplate = template
@@ -76,31 +123,34 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func refreshRootTabs() {
-        tabBarTemplate?.updateTemplates(makeTabTemplates())
+        cardArtworkTasks.forEach { $0.cancel() }
+        cardArtworkTasks.removeAll()
+        homeListTemplate?.updateSections(homeTabSections())
+        discoveryListTemplate?.updateSections(discoveryTabSections())
     }
 
     private func makeTabBarTemplate() -> CPTabBarTemplate {
-        CPTabBarTemplate(templates: makeTabTemplates())
+        let templates = makeTabTemplates()
+        return CPTabBarTemplate(templates: templates)
     }
 
     private func makeTabTemplates() -> [CPTemplate] {
-        [
-            configuredTab(
-                makeRecommendationsTemplate(),
-                title: "推荐",
-                imageName: "music.note.house"
-            ),
-            configuredTab(
-                makeLibraryTemplate(),
-                title: "资料库",
-                imageName: "square.stack"
-            ),
-            configuredTab(
-                makeNowPlayingLauncherTemplate(),
-                title: "播放",
-                imageName: "play.circle.fill"
-            )
-        ]
+        cardArtworkTasks.forEach { $0.cancel() }
+        cardArtworkTasks.removeAll()
+
+        let home = configuredTab(
+            makeHomeTemplate(),
+            title: "主页",
+            imageName: "house.fill"
+        )
+        let discovery = configuredTab(
+            makeDiscoveryTemplate(),
+            title: "发现",
+            imageName: "sparkles"
+        )
+        homeListTemplate = home
+        discoveryListTemplate = discovery
+        return [home, discovery]
     }
 
     private func configuredTab<T: CPTemplate>(_ template: T, title: String, imageName: String) -> T {
@@ -109,167 +159,242 @@ final class CarPlayCoordinator: NSObject {
         return template
     }
 
-    private func makeRecommendationsTemplate() -> CPListTemplate {
-        let sections: [CPListSection]
+    private func makeHomeTemplate() -> CPListTemplate {
+        let template = listTemplate(title: nil, sections: homeTabSections())
+        homeListTemplate = template
+        return template
+    }
+
+    private func makeDiscoveryTemplate() -> CPListTemplate {
+        let template = listTemplate(title: nil, sections: discoveryTabSections())
+        discoveryListTemplate = template
+        return template
+    }
+
+    private func rootStatusSections() -> [CPListSection]? {
         if store.session == nil {
-            sections = [statusSection(title: "未连接 Emby", detail: "请先在 iPhone 上连接资料库", imageName: "antenna.radiowaves.left.and.right.slash")]
-        } else if !store.hasLoadedInitialContent && store.isLoading {
-            sections = [statusSection(title: "正在加载资料库", detail: "请稍候", imageName: "arrow.clockwise")]
-        } else {
-            sections = recommendationSections()
+            return [statusSection(title: "未连接 Emby", detail: "请先在 iPhone 上连接资料库", imageName: "antenna.radiowaves.left.and.right.slash")]
         }
-
-        return CPListTemplate(title: "推荐", sections: sections)
+        if !store.hasLoadedInitialContent && store.isLoading {
+            return [statusSection(title: "正在加载资料库", detail: "请稍候", imageName: "arrow.clockwise")]
+        }
+        return nil
     }
 
-    private func makeNowPlayingLauncherTemplate() -> CPListTemplate {
-        let sections: [CPListSection]
-        if let currentSong = player.currentSong {
-            let item = navigationItem(
-                title: currentSong.name,
-                detail: currentSong.artistLine.isEmpty ? "正在播放" : currentSong.artistLine,
-                imageName: "play.circle.fill"
-            ) { [weak self] in
-                self?.pushNowPlayingTemplate()
-            }
-            sections = [CPListSection(items: [item], header: "正在播放", sectionIndexTitle: nil)]
-        } else {
-            sections = [statusSection(title: "暂无播放内容", detail: "播放歌曲后可在这里继续控制", imageName: "play.circle")]
+    private func homeTabSections() -> [CPListSection] {
+        if let statusSections = rootStatusSections() {
+            return statusSections
         }
 
-        return CPListTemplate(title: "播放", sections: sections)
-    }
-
-    private func recommendationSections() -> [CPListSection] {
         var sections: [CPListSection] = []
 
-        if let currentSong = player.currentSong {
+        let playlistCards = store.playlists.map { playlist in
+            CarPlayCardDescriptor(
+                title: playlist.name,
+                subtitle: nil,
+                imageURL: playlist.songs.first.flatMap { store.imageURL(for: $0, size: 360) },
+                placeholderSystemImageName: "music.note.list",
+                tintColor: .secondarySystemBackground
+            )
+        }
+        if !playlistCards.isEmpty {
             sections.append(
                 CPListSection(
                     items: [
-                        navigationItem(
-                            title: currentSong.name,
-                            detail: currentSong.artistLine.isEmpty ? "正在播放" : currentSong.artistLine,
-                            imageName: "play.circle.fill"
-                        ) { [weak self] in
-                            self?.pushNowPlayingTemplate()
+                        makeCardRow(cards: playlistCards) { [weak self] index in
+                            guard let playlist = self?.store.playlists[safe: index] else { return }
+                            self?.loadAndPushPlaylist(playlist)
                         }
                     ],
-                    header: "继续播放",
+                    header: "我的歌单",
                     sectionIndexTitle: nil
                 )
             )
         }
 
-        if !store.dailyRecommendedSongs.isEmpty {
+        let audiobookCards = store.audiobooks.map { audiobook in
+            CarPlayCardDescriptor(
+                title: audiobook.title,
+                subtitle: nil,
+                imageURL: audiobook.representativeEpisode.flatMap { store.imageURL(for: $0, size: 360) },
+                placeholderSystemImageName: "book.closed.fill",
+                tintColor: .secondarySystemBackground
+            )
+        }
+        if !audiobookCards.isEmpty {
             sections.append(
                 CPListSection(
                     items: [
-                        navigationItem(
-                            title: "每日推荐",
-                            detail: "\(store.dailyRecommendedSongs.count) 首歌曲",
-                            imageName: "sparkles"
-                        ) { [weak self] in
-                            self?.pushSongList(title: "每日推荐", songs: self?.store.dailyRecommendedSongs ?? [])
+                        makeCardRow(cards: audiobookCards) { [weak self] index in
+                            guard let audiobook = self?.store.audiobooks[safe: index] else { return }
+                            self?.pushAudiobook(audiobook)
                         }
                     ],
-                    header: "为你推荐",
+                    header: "有声书",
                     sectionIndexTitle: nil
                 )
             )
-        }
-
-        var discoveryItems: [CPListItem] = []
-        if !store.recentlyAddedSongs.isEmpty {
-            discoveryItems.append(
-                navigationItem(
-                    title: "最近添加",
-                    detail: "\(store.recentlyAddedSongs.count) 首歌曲",
-                    imageName: "clock"
-                ) { [weak self] in
-                    self?.pushSongList(title: "最近添加", songs: self?.store.recentlyAddedSongs ?? [])
-                }
-            )
-        }
-        if !store.mostPlayedSongs.isEmpty {
-            discoveryItems.append(
-                navigationItem(
-                    title: "最长播放",
-                    detail: "\(store.mostPlayedSongs.count) 首歌曲",
-                    imageName: "chart.bar.fill"
-                ) { [weak self] in
-                    self?.pushSongList(title: "最长播放", songs: self?.store.mostPlayedSongs ?? [])
-                }
-            )
-        }
-        if !discoveryItems.isEmpty {
-            sections.append(CPListSection(items: discoveryItems, header: "更多推荐", sectionIndexTitle: nil))
         }
 
         if sections.isEmpty {
-            sections.append(statusSection(title: "暂无推荐内容", detail: store.localizedLibraryStatus, imageName: "music.note.list"))
+            return [statusSection(title: "暂无主页内容", detail: store.localizedLibraryStatus, imageName: "music.note.list")]
         }
 
-        return sections
+        return [homeTopSpacerSection()] + sections
     }
 
-    private func makeLibraryTemplate() -> CPListTemplate {
-        let sections: [CPListSection]
-        if store.session == nil {
-            sections = [statusSection(title: "未连接 Emby", detail: "请先在 iPhone 上连接资料库", imageName: "antenna.radiowaves.left.and.right.slash")]
-        } else if !store.hasLoadedInitialContent && store.isLoading {
-            sections = [statusSection(title: "正在加载资料库", detail: "请稍候", imageName: "arrow.clockwise")]
-        } else {
-            sections = librarySections()
+    private func discoveryTabSections() -> [CPListSection] {
+        if let statusSections = rootStatusSections() {
+            return statusSections
         }
 
-        return CPListTemplate(title: "资料库", sections: sections)
+        let discoveryCards = [
+            CarPlayCardDescriptor(
+                title: "每日推荐",
+                subtitle: nil,
+                imageURL: store.dailyRecommendedSongs.first.flatMap { store.imageURL(for: $0, size: 360) },
+                placeholderSystemImageName: "sparkles",
+                tintColor: .secondarySystemBackground
+            ),
+            CarPlayCardDescriptor(
+                title: "最近添加",
+                subtitle: nil,
+                imageURL: store.recentlyAddedSongs.first.flatMap { store.imageURL(for: $0, size: 360) },
+                placeholderSystemImageName: "clock",
+                tintColor: .secondarySystemBackground
+            ),
+            CarPlayCardDescriptor(
+                title: "最常播放",
+                subtitle: nil,
+                imageURL: store.mostPlayedSongs.first.flatMap { store.imageURL(for: $0, size: 360) },
+                placeholderSystemImageName: "chart.bar.fill",
+                tintColor: .secondarySystemBackground
+            )
+        ]
+        return [
+            homeTopSpacerSection(),
+            CPListSection(
+                items: [
+                    makeCardRow(cards: discoveryCards) { [weak self] index in
+                        switch index {
+                        case 0:
+                            self?.pushSongList(title: "每日推荐", songs: self?.store.dailyRecommendedSongs ?? [])
+                        case 1:
+                            self?.pushSongList(title: "最近添加", songs: self?.store.recentlyAddedSongs ?? [])
+                        case 2:
+                            self?.pushSongList(title: "最常播放", songs: self?.store.mostPlayedSongs ?? [])
+                        default:
+                            break
+                        }
+                    }
+                ],
+                header: "发现",
+                sectionIndexTitle: nil
+            )
+        ]
     }
 
-    private func librarySections() -> [CPListSection] {
-        var items: [CPListItem] = []
-        items.append(
-            navigationItem(
-                title: "我的歌单",
-                detail: "\(store.playlists.count) 个歌单",
-                imageName: "music.note.list"
-            ) { [weak self] in
-                self?.pushPlaylists()
-            }
+    private func makeCardRow(
+        cards: [CarPlayCardDescriptor],
+        selection: @escaping (Int) -> Void
+    ) -> CPListImageRowItem {
+        let row = CPListImageRowItem(
+            text: nil,
+            cardElements: cards.map { cardElement(for: $0, image: placeholderImage(systemName: $0.placeholderSystemImageName)) },
+            allowsMultipleLines: false
         )
-        items.append(
-            navigationItem(
-                title: "有声书",
-                detail: "\(store.audiobooks.count) 本",
-                imageName: "book.closed.fill"
-            ) { [weak self] in
-                self?.pushAudiobooks()
-            }
-        )
 
-        if store.playlists.isEmpty, store.audiobooks.isEmpty {
-            return [statusSection(title: "暂无资料库内容", detail: store.localizedLibraryStatus, imageName: "music.note.list")]
+        row.listImageRowHandler = { _, index, completion in
+            Task { @MainActor in
+                completion()
+                selection(index)
+            }
         }
 
-        return [CPListSection(items: items, header: "资料库", sectionIndexTitle: nil)]
+        loadArtwork(for: row, cards: cards)
+        return row
     }
 
-    private func pushPlaylists() {
-        guard !store.playlists.isEmpty else {
-            pushStatusTemplate(title: "我的歌单", message: "暂无歌单", imageName: "music.note.list")
-            return
+    private func loadArtwork(for row: CPListImageRowItem, cards: [CarPlayCardDescriptor]) {
+        let task = Task { @MainActor [weak self, weak row] in
+            guard let self else { return }
+            var updatedElements: [CPListImageRowItemCardElement] = []
+            updatedElements.reserveCapacity(cards.count)
+
+            for card in cards {
+                guard !Task.isCancelled else { return }
+                let image = await self.cardImage(for: card)
+                updatedElements.append(self.cardElement(for: card, image: image))
+            }
+
+            guard !Task.isCancelled else { return }
+            row?.elements = updatedElements
+        }
+        cardArtworkTasks.append(task)
+    }
+
+    private func cardElement(for card: CarPlayCardDescriptor, image: UIImage) -> CPListImageRowItemCardElement {
+        CPListImageRowItemCardElement(
+            image: image,
+            showsImageFullHeight: true,
+            title: card.title,
+            subtitle: card.subtitle,
+            tintColor: card.tintColor
+        )
+    }
+
+    private func cardImage(for card: CarPlayCardDescriptor) async -> UIImage {
+        guard let imageURL = card.imageURL else {
+            return placeholderImage(systemName: card.placeholderSystemImageName)
         }
 
-        let items = store.playlists.map { playlist in
-            navigationItem(
-                title: playlist.name,
-                detail: "\(playlist.displaySongCount) 首歌曲",
-                imageName: "music.note.list"
-            ) { [weak self] in
-                self?.loadAndPushPlaylist(playlist)
-            }
+        if let cached = ArtworkImageCache.shared.image(for: imageURL) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL) {
+            return preparedCardImage(cached)
         }
-        pushList(title: "我的歌单", sections: [CPListSection(items: items, header: "\(store.playlists.count) 个歌单", sectionIndexTitle: nil)])
+
+        if let diskData = await ArtworkDiskCache.data(for: imageURL),
+           let diskImage = UIImage(data: diskData) {
+            ArtworkImageCache.shared.insert(diskImage, for: imageURL)
+            return preparedCardImage(diskImage)
+        }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: imageURL)
+            guard !Task.isCancelled, let image = UIImage(data: data) else {
+                return placeholderImage(systemName: card.placeholderSystemImageName)
+            }
+            ArtworkImageCache.shared.insert(image, for: imageURL)
+            await ArtworkDiskCache.insert(data, for: imageURL)
+            return preparedCardImage(image)
+        } catch {
+            return placeholderImage(systemName: card.placeholderSystemImageName)
+        }
+    }
+
+    private func preparedCardImage(_ image: UIImage) -> UIImage {
+        let maximumSize = CPListImageRowItemCardElement.maximumFullHeightImageSize
+        let fallbackSize = CGSize(width: 240, height: 240)
+        let targetSize = maximumSize.width > 1 && maximumSize.height > 1 ? maximumSize : fallbackSize
+        return image.aspectFillResized(to: targetSize)
+    }
+
+    private func placeholderImage(systemName: String) -> UIImage {
+        let maximumSize = CPListImageRowItemCardElement.maximumFullHeightImageSize
+        let size = maximumSize.width > 1 && maximumSize.height > 1 ? maximumSize : CGSize(width: 240, height: 240)
+        return UIGraphicsImageRenderer(size: size).image { context in
+            UIColor.secondarySystemBackground.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+
+            let symbolSize = min(size.width, size.height) * 0.34
+            let configuration = UIImage.SymbolConfiguration(pointSize: symbolSize, weight: .semibold)
+            let symbol = UIImage(systemName: systemName, withConfiguration: configuration)?
+                .withTintColor(.secondaryLabel, renderingMode: .alwaysOriginal)
+            let origin = CGPoint(
+                x: (size.width - symbolSize) / 2,
+                y: (size.height - symbolSize) / 2
+            )
+            symbol?.draw(in: CGRect(origin: origin, size: CGSize(width: symbolSize, height: symbolSize)))
+        }
     }
 
     private func loadAndPushPlaylist(_ playlist: MusicPlaylist) {
@@ -277,29 +402,11 @@ final class CarPlayCoordinator: NSObject {
             guard let self else { return }
             do {
                 let songs = try await store.loadPlaylistSongsIfNeeded(playlistId: playlist.id)
-                pushSongList(title: playlist.name, songs: songs)
+                pushPlaylistSongList(title: playlist.name, songs: songs)
             } catch {
                 pushStatusTemplate(title: playlist.name, message: error.localizedDescription, imageName: "exclamationmark.triangle")
             }
         }
-    }
-
-    private func pushAudiobooks() {
-        guard !store.audiobooks.isEmpty else {
-            pushStatusTemplate(title: "有声书", message: "暂无有声书", imageName: "book.closed")
-            return
-        }
-
-        let items = store.audiobooks.map { audiobook in
-            navigationItem(
-                title: audiobook.title,
-                detail: audiobookDetailText(for: audiobook),
-                imageName: "book.closed.fill"
-            ) { [weak self] in
-                self?.pushAudiobook(audiobook)
-            }
-        }
-        pushList(title: "有声书", sections: [CPListSection(items: items, header: "\(store.audiobooks.count) 本有声书", sectionIndexTitle: nil)])
     }
 
     private func pushAudiobook(_ audiobook: Audiobook) {
@@ -354,6 +461,57 @@ final class CarPlayCoordinator: NSObject {
         pushList(title: title, sections: [CPListSection(items: items, header: "\(songs.count) 首歌曲", sectionIndexTitle: nil)])
     }
 
+    private func pushPlaylistSongList(title: String, songs: [EmbyAudioItem]) {
+        guard !songs.isEmpty else {
+            pushStatusTemplate(title: title, message: "暂无歌曲", imageName: "music.note")
+            return
+        }
+
+        let items = songs.map { song in
+            playableItem(
+                title: song.name,
+                detail: song.artistLine.isEmpty ? "未知艺术家" : song.artistLine,
+                imageName: "music.note"
+            ) { [weak self] in
+                self?.store.play(song: song, in: songs)
+                self?.showNowPlayingAfterPlaybackStarts()
+            }
+        }
+        let sections = [CPListSection(items: items, header: nil, sectionIndexTitle: nil)]
+        let template = listTemplate(
+            title: title,
+            sections: sections,
+            headerGridButtons: playlistPlaybackButtons(songs: songs)
+        )
+        interfaceController?.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    private func playlistPlaybackButtons(songs: [EmbyAudioItem]) -> [CPGridButton] {
+        [
+            CPGridButton(
+                titleVariants: ["顺序播放"],
+                image: UIImage(systemName: "play.fill") ?? UIImage()
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    guard let first = songs.first else { return }
+                    self?.store.play(song: first, in: songs)
+                    self?.showNowPlayingAfterPlaybackStarts()
+                }
+            },
+            CPGridButton(
+                titleVariants: ["随机播放"],
+                image: UIImage(systemName: "shuffle") ?? UIImage()
+            ) { [weak self] _ in
+                Task { @MainActor in
+                    let shuffledSongs = songs.shuffled()
+                    guard let first = shuffledSongs.first else { return }
+                    self?.store.play(song: first, in: shuffledSongs)
+                    self?.showNowPlayingAfterPlaybackStarts()
+                }
+            }
+        ]
+    }
+
     private func pushNowPlayingTemplate() {
         guard player.currentSong != nil else { return }
         guard interfaceController?.topTemplate !== CPNowPlayingTemplate.shared else { return }
@@ -361,8 +519,22 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func pushList(title: String, sections: [CPListSection]) {
-        let template = CPListTemplate(title: title, sections: sections)
+        let template = listTemplate(title: title, sections: sections)
         interfaceController?.pushTemplate(template, animated: true, completion: nil)
+    }
+
+    private func listTemplate(
+        title: String?,
+        sections: [CPListSection],
+        headerGridButtons: [CPGridButton]? = nil
+    ) -> CPListTemplate {
+        let template = CPListTemplate(
+            title: title,
+            sections: sections,
+            assistantCellConfiguration: nil,
+            headerGridButtons: headerGridButtons
+        )
+        return template
     }
 
     private func pushStatusTemplate(title: String, message: String, imageName: String) {
@@ -424,6 +596,10 @@ final class CarPlayCoordinator: NSObject {
         CPListSection(items: [statusItem(title: title, detail: detail, imageName: imageName)])
     }
 
+    private func homeTopSpacerSection() -> CPListSection {
+        CPListSection(items: [], header: " ", sectionIndexTitle: nil)
+    }
+
     private func statusItem(title: String, detail: String?, imageName: String) -> CPListItem {
         let item = CPListItem(
             text: title,
@@ -457,5 +633,42 @@ final class CarPlayCoordinator: NSObject {
             parts.append(progress)
         }
         return parts.isEmpty ? " " : parts.joined(separator: " - ")
+    }
+}
+
+private struct CarPlayCardDescriptor {
+    let title: String
+    let subtitle: String?
+    let imageURL: URL?
+    let placeholderSystemImageName: String
+    let tintColor: UIColor?
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+private extension UIImage {
+    func aspectFillResized(to targetSize: CGSize) -> UIImage {
+        guard targetSize.width > 0, targetSize.height > 0, size.width > 0, size.height > 0 else {
+            return self
+        }
+
+        let widthScale = targetSize.width / size.width
+        let heightScale = targetSize.height / size.height
+        let scale = max(widthScale, heightScale)
+        let scaledSize = CGSize(width: size.width * scale, height: size.height * scale)
+        let drawRect = CGRect(
+            x: (targetSize.width - scaledSize.width) / 2,
+            y: (targetSize.height - scaledSize.height) / 2,
+            width: scaledSize.width,
+            height: scaledSize.height
+        )
+
+        return UIGraphicsImageRenderer(size: targetSize).image { _ in
+            draw(in: drawRect)
+        }
     }
 }
