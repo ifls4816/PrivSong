@@ -106,6 +106,7 @@ struct MiniPlayerView: View {
         .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
         .contentShape(shape)
         .onTapGesture(perform: expand)
+        .onLongPressGesture(minimumDuration: 0.45, perform: expand)
     }
 
     private func miniSubtitle(for song: EmbyAudioItem?) -> String {
@@ -121,7 +122,7 @@ struct NowPlayingView: View {
     let onDismiss: () -> Void
 
     @State private var mode: PlayerMode = .nowPlaying
-    @State private var scrubProgress = 0.0
+    @State private var scrubElapsed: TimeInterval = 0
     @State private var isScrubbing = false
 
     @State private var selectedSleepTimerTitle: String?
@@ -143,27 +144,17 @@ struct NowPlayingView: View {
         revealPlayerControls ? 1 : 0
     }
 
-    private func liveProgress(for song: EmbyAudioItem) -> Double {
-        guard player.currentSong != nil, effectiveDuration(for: song) > 0 else { return 0 }
-        return min(max(player.elapsed / effectiveDuration(for: song), 0), 1)
-    }
-
-    private func displayedProgress(for song: EmbyAudioItem) -> Double {
-        if isScrubbing {
-            return scrubProgress
-        }
-        let duration = effectiveDuration(for: song)
-        if let seekTarget = player.seekTarget, duration > 0 {
-            return min(max(seekTarget / duration, 0), 1)
-        }
-        return liveProgress(for: song)
-    }
-
     private func displayedElapsed(for song: EmbyAudioItem) -> TimeInterval {
         guard player.currentSong != nil else { return 0 }
         let duration = effectiveDuration(for: song)
-        guard duration > 0 else { return player.elapsed }
-        return displayedProgress(for: song) * duration
+        let upperBound = duration > 0 ? duration : max(player.elapsed, 0)
+        if isScrubbing {
+            return min(max(scrubElapsed, 0), upperBound)
+        }
+        if let seekTarget = player.seekTarget, duration > 0 {
+            return min(max(seekTarget, 0), duration)
+        }
+        return min(max(player.elapsed, 0), upperBound)
     }
 
     private func effectiveDuration(for song: EmbyAudioItem) -> TimeInterval {
@@ -217,11 +208,6 @@ struct NowPlayingView: View {
             }
             .onChange(of: song.id) { _, _ in
                 preloadDisplayedLyricsIfNeeded(for: song)
-            }
-            .onChange(of: player.isSeeking) { _, isSeeking in
-                if !isSeeking, isScrubbing {
-                    isScrubbing = false
-                }
             }
         }
     }
@@ -383,24 +369,29 @@ struct NowPlayingView: View {
     }
 
     private func progressControls(song: EmbyAudioItem) -> some View {
-        VStack(spacing: 4) {
+        let duration = effectiveDuration(for: song)
+        let sliderUpperBound = max(duration, 1)
+        return VStack(spacing: 4) {
             Slider(value: Binding(
-                get: { displayedProgress(for: song) },
-                set: { scrubProgress = $0 }
-            ), in: 0...1) { editing in
+                get: { displayedElapsed(for: song) },
+                set: { value in
+                    isScrubbing = true
+                    scrubElapsed = value
+                }
+            ), in: 0...sliderUpperBound) { editing in
                 if editing {
                     if !isScrubbing {
-                        scrubProgress = liveProgress(for: song)
+                        scrubElapsed = displayedElapsed(for: song)
                     }
                     isScrubbing = true
                 } else {
-                    let targetProgress = scrubProgress
+                    let targetElapsed = min(max(scrubElapsed, 0), duration)
                     isScrubbing = false
-                    player.seek(to: targetProgress)
+                    player.seek(toElapsed: targetElapsed)
                 }
             }
             .tint(Color.musicRed)
-            .disabled(player.currentSong == nil)
+            .disabled(player.currentSong == nil || duration <= 0)
 
             HStack {
                 let elapsed = displayedElapsed(for: song)

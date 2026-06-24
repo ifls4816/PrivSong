@@ -654,7 +654,7 @@ struct MostPlayedSection: View {
                 SongListView(title: "最常播放", songs: store.mostPlayedSongs)
             }
 
-            SongRowsCard(songs: store.mostPlayedSongs, limit: 10)
+            SongRowsCard(songs: store.mostPlayedSongs, limit: 5)
         }
     }
 }

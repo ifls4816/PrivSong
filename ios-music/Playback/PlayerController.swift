@@ -42,7 +42,7 @@ final class PlayerController: ObservableObject {
 
     private var session: EmbySession?
     private var queue: [EmbyAudioItem] = []
-    private var shuffledQueue: [EmbyAudioItem] = []
+    private var queueBeforeShuffle: [EmbyAudioItem]?
     private var streamCandidates: [URL] = []
     private var streamCandidateIndex = 0
     private var currentStreamURL: URL?
@@ -61,6 +61,7 @@ final class PlayerController: ObservableObject {
     private var isSwitchingTracks = false
     private var pendingSeekTarget: TimeInterval?
     private var suppressTimeUpdatesUntil = Date.distantPast
+    private var seekGeneration = 0
 
     private var timeObserver: Any?
     private var itemStatusObserver: NSKeyValueObservation?
@@ -93,13 +94,17 @@ final class PlayerController: ObservableObject {
         guard !isSwitchingTracks else { return }
 
         self.session = session
-        queue = songs.isEmpty ? [song] : songs
-        if !queue.contains(song) {
-            queue.insert(song, at: 0)
+        var playbackQueue = songs.isEmpty ? [song] : songs
+        if !playbackQueue.contains(song) {
+            playbackQueue.insert(song, at: 0)
         }
 
         if isShuffleEnabled {
-            rebuildShuffledQueue(keeping: song)
+            queueBeforeShuffle = playbackQueue
+            queue = shuffledPlaybackQueue(from: playbackQueue, keeping: song)
+        } else {
+            queueBeforeShuffle = nil
+            queue = playbackQueue
         }
 
         syncQueueSnapshots()
@@ -140,6 +145,10 @@ final class PlayerController: ObservableObject {
         seek(toSeconds: target, shouldPlayAfterSeek: isPlaying)
     }
 
+    func seek(toElapsed seconds: TimeInterval) {
+        seek(toSeconds: seconds, shouldPlayAfterSeek: isPlaying)
+    }
+
     func next() {
         playRelative(offset: 1, wrap: repeatMode == .all)
     }
@@ -153,9 +162,17 @@ final class PlayerController: ObservableObject {
     }
 
     func toggleShuffle() {
-        isShuffleEnabled.toggle()
         if isShuffleEnabled {
-            rebuildShuffledQueue(keeping: currentSong)
+            if let originalQueue = queueBeforeShuffle {
+                queue = originalQueue
+            }
+            queueBeforeShuffle = nil
+            isShuffleEnabled = false
+        } else {
+            guard !queue.isEmpty else { return }
+            queueBeforeShuffle = queue
+            queue = shuffledPlaybackQueue(from: queue, keeping: currentSong)
+            isShuffleEnabled = true
         }
         syncQueueSnapshots()
         syncRemoteCommandAvailability()
@@ -258,7 +275,7 @@ final class PlayerController: ObservableObject {
     }
 
     private var activeQueue: [EmbyAudioItem] {
-        isShuffleEnabled ? shuffledQueue : queue
+        queue
     }
 
     private func currentPlaybackStreamOptions() -> PlaybackStreamOptions {
@@ -328,6 +345,7 @@ final class PlayerController: ObservableObject {
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
+        seekGeneration += 1
         lastPlaybackProgressReport = .distantPast
         currentAccessLogEventCount = 0
 
@@ -466,6 +484,7 @@ final class PlayerController: ObservableObject {
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
+        seekGeneration += 1
         elapsed = 0
         duration = 0
         lyrics = []
@@ -481,6 +500,9 @@ final class PlayerController: ObservableObject {
         let clamped = max(0, min(seconds, max(duration, 0)))
         guard currentStreamURL != nil else { return }
 
+        seekGeneration += 1
+        let generation = seekGeneration
+
         if currentStreamOptions?.quality.usesTranscoding == true {
             seekTarget = clamped
             pendingSeekTarget = clamped
@@ -491,6 +513,7 @@ final class PlayerController: ObservableObject {
             return
         }
 
+        let currentItem = engine.currentItem
         let targetTime = CMTime(seconds: itemTime(forAbsoluteTime: clamped), preferredTimescale: 600)
         isSeeking = true
         seekTarget = clamped
@@ -499,9 +522,21 @@ final class PlayerController: ObservableObject {
         elapsed = clamped
         syncNowPlaying(force: true)
         reportPlaybackProgress(force: true, position: clamped)
-        engine.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+        engine.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self,
+                      self.seekGeneration == generation,
+                      self.engine.currentItem === currentItem else { return }
+                guard finished else {
+                    let actualElapsed = self.absoluteElapsed(forItemTime: self.engine.currentTime().seconds)
+                    self.elapsed = actualElapsed
+                    self.seekTarget = nil
+                    self.pendingSeekTarget = nil
+                    self.isSeeking = false
+                    self.syncNowPlaying(force: true)
+                    self.reportPlaybackProgress(force: true, position: actualElapsed)
+                    return
+                }
                 if shouldPlayAfterSeek {
                     self.engine.play()
                     self.isPlaying = true
@@ -609,21 +644,36 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func rebuildShuffledQueue(keeping current: EmbyAudioItem?) {
-        shuffledQueue = queue.shuffled()
-        guard let current else { return }
-        shuffledQueue.removeAll { $0 == current }
-        shuffledQueue.insert(current, at: 0)
+    private func shuffledPlaybackQueue(from songs: [EmbyAudioItem], keeping current: EmbyAudioItem?) -> [EmbyAudioItem] {
+        var shuffled = songs.shuffled()
+        guard let current else { return shuffled }
+        shuffled.removeAll { $0 == current }
+        shuffled.insert(current, at: 0)
+        return shuffled
     }
 
     private func applyActiveQueue(_ songs: [EmbyAudioItem]) {
         if isShuffleEnabled {
-            shuffledQueue = songs
-        } else {
-            queue = songs
+            reconcileOriginalQueue(with: songs)
         }
+        queue = songs
         syncQueueSnapshots()
         syncRemoteCommandAvailability()
+    }
+
+    private func reconcileOriginalQueue(with activeSongs: [EmbyAudioItem]) {
+        guard var originalQueue = queueBeforeShuffle else { return }
+
+        let activeIds = Set(activeSongs.map(\.id))
+        originalQueue.removeAll { !activeIds.contains($0.id) }
+
+        var originalIds = Set(originalQueue.map(\.id))
+        for song in activeSongs where !originalIds.contains(song.id) {
+            originalQueue.append(song)
+            originalIds.insert(song.id)
+        }
+
+        queueBeforeShuffle = originalQueue
     }
 
     private func insertIntoUpcoming(_ song: EmbyAudioItem, offsetFromCurrent: Int?) {

@@ -140,6 +140,41 @@ struct EmbyClient {
         return try await fetchAudiobookEpisodes(from: views.filter(\.isAudiobookLibrary), session: embySession)
     }
 
+    func fetchItems(itemIds: [String], session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+        let ids = itemIds
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !ids.isEmpty else { return [] }
+
+        let chunkSize = 80
+        var items: [EmbyAudioItem] = []
+        var startIndex = ids.startIndex
+
+        while startIndex < ids.endIndex {
+            let endIndex = ids.index(startIndex, offsetBy: chunkSize, limitedBy: ids.endIndex) ?? ids.endIndex
+            let chunk = Array(ids[startIndex..<endIndex])
+            var components = URLComponents(
+                url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Items"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "Ids", value: chunk.joined(separator: ",")),
+                URLQueryItem(name: "Fields", value: itemFields),
+                URLQueryItem(name: "Limit", value: "\(chunk.count)")
+            ]
+
+            guard let url = components?.url else { throw EmbyError.invalidURL }
+            var request = URLRequest(url: url)
+            request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+
+            let response: EmbyItemsResponse = try await send(request)
+            items.append(contentsOf: response.items)
+            startIndex = endIndex
+        }
+
+        return items
+    }
+
     func fetchPlaylists(session embySession: EmbySession) async throws -> [MusicPlaylist] {
         let playlistItems = try await fetchPlaylistItems(session: embySession)
         guard !playlistItems.isEmpty else { return [] }

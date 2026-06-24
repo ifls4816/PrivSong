@@ -295,6 +295,9 @@ struct AudiobookDetailView: View {
         .onAppear {
             visibleCount = min(max(visibleCount, pageSize), audiobook.episodes.count)
         }
+        .task(id: audiobook.id) {
+            await store.refreshAudiobookProgress(for: audiobook)
+        }
         .onChange(of: audiobook.episodes.count) { _, count in
             visibleCount = min(pageSize, count)
         }

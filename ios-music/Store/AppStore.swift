@@ -68,6 +68,7 @@ final class AppStore: ObservableObject {
     private var activeSearchToken: UUID?
     private var libraryCacheSavedAt: Date?
     private var dailyRecommendationDay: Int?
+    private var mostPlayedDay: Int?
     private var audiobookEpisodeBookIds: [String: String] = [:]
     private var lastAudiobookProgressSave = Date.distantPast
 
@@ -236,6 +237,7 @@ final class AppStore: ObservableObject {
         )
         dailyRecommendationDay = day
         dailyRecommendedSongs = dailyRecommendation(from: dailySeed, day: day, limit: 50)
+        mostPlayedDay = day
         hasLoadedInitialContent = true
         libraryStatus = "Loaded home content."
 
@@ -271,6 +273,24 @@ final class AppStore: ObservableObject {
         updatedPlaylists[index] = updatedPlaylist
         playlists = updatedPlaylists
         return songs
+    }
+
+    func refreshAudiobookProgress(for audiobook: Audiobook) async {
+        guard let session else { return }
+        let episodeIds = audiobook.episodes.map(\.id)
+        guard !episodeIds.isEmpty else { return }
+
+        do {
+            let refreshedEpisodes = try await client.fetchItems(itemIds: episodeIds, session: session)
+            mergeServerAudiobookProgress(
+                from: refreshedEpisodes,
+                updatesExisting: true,
+                refreshedAt: Date()
+            )
+        } catch is CancellationError {
+        } catch {
+            print("[AppStore] Failed to refresh audiobook progress: \(error.localizedDescription)")
+        }
     }
 
     private func applyFullLibrary(
@@ -499,26 +519,67 @@ final class AppStore: ObservableObject {
     }
 
     private func mergeServerAudiobookProgress(from episodes: [EmbyAudioItem]) {
+        mergeServerAudiobookProgress(from: episodes, updatesExisting: false, refreshedAt: nil)
+    }
+
+    private func mergeServerAudiobookProgress(
+        from episodes: [EmbyAudioItem],
+        updatesExisting: Bool,
+        refreshedAt: Date?
+    ) {
         var updatedProgress = audiobookProgress
         var hasChanges = false
+        let currentSongId = player?.currentSong?.id
 
-        for episode in episodes where updatedProgress[episode.id] == nil {
-            let serverPosition = episode.userData?.playbackPosition ?? 0
-            let serverPlayed = episode.userData?.played == true
-            guard serverPosition > 1 || serverPlayed else { continue }
+        for episode in episodes {
+            guard let serverProgress = serverAudiobookProgress(for: episode, refreshedAt: refreshedAt) else {
+                continue
+            }
+            if let existingProgress = updatedProgress[episode.id] {
+                guard updatesExisting,
+                      episode.id != currentSongId,
+                      shouldReplaceAudiobookProgress(existingProgress, with: serverProgress) else {
+                    continue
+                }
+            }
+            guard updatedProgress[episode.id] != serverProgress else { continue }
 
-            updatedProgress[episode.id] = AudiobookPlaybackProgress(
-                position: serverPlayed ? episode.duration : serverPosition,
-                duration: episode.duration,
-                updatedAt: .distantPast,
-                isFinished: serverPlayed
-            )
+            updatedProgress[episode.id] = serverProgress
             hasChanges = true
         }
 
         guard hasChanges else { return }
         audiobookProgress = updatedProgress
         audiobookProgressStore.save(updatedProgress)
+    }
+
+    private func serverAudiobookProgress(
+        for episode: EmbyAudioItem,
+        refreshedAt: Date?
+    ) -> AudiobookPlaybackProgress? {
+        let serverPosition = episode.userData?.playbackPosition ?? 0
+        let serverPlayed = episode.userData?.played == true
+        guard serverPosition > 1 || serverPlayed else { return nil }
+
+        return AudiobookPlaybackProgress(
+            position: serverPlayed ? episode.duration : serverPosition,
+            duration: episode.duration,
+            updatedAt: refreshedAt ?? episode.userData?.lastPlayedDate ?? .distantPast,
+            isFinished: serverPlayed
+        )
+    }
+
+    private func shouldReplaceAudiobookProgress(
+        _ existingProgress: AudiobookPlaybackProgress,
+        with serverProgress: AudiobookPlaybackProgress
+    ) -> Bool {
+        if existingProgress.updatedAt == .distantPast {
+            return true
+        }
+        if serverProgress.isFinished, !existingProgress.isFinished {
+            return true
+        }
+        return serverProgress.updatedAt >= existingProgress.updatedAt
     }
 
     private func saveAudiobookProgressIfNeeded(force: Bool = false) {
@@ -541,6 +602,8 @@ final class AppStore: ObservableObject {
         dailyRecommendedSongs = []
         recentlyAddedSongs = []
         mostPlayedSongs = []
+        dailyRecommendationDay = nil
+        mostPlayedDay = nil
         hasLoadedInitialContent = false
         libraryCacheSavedAt = nil
         errorMessage = nil
@@ -571,8 +634,10 @@ final class AppStore: ObservableObject {
 
     func refreshDailyRecommendationsIfNeeded() {
         let day = currentRecommendationDay()
-        guard dailyRecommendationDay != day else { return }
-        refreshDailyRecommendations(for: day)
+        if dailyRecommendationDay != day {
+            refreshDailyRecommendations(for: day)
+        }
+        refreshMostPlayedIfNeeded(for: day)
     }
 
     private func updateLibraryStatus() {
@@ -635,6 +700,8 @@ final class AppStore: ObservableObject {
         guard !songs.isEmpty else {
             albums = []; artists = []; albumSections = []; artistSections = []; recentSongs = []
             dailyRecommendedSongs = []; recentlyAddedSongs = []; mostPlayedSongs = []
+            dailyRecommendationDay = nil
+            mostPlayedDay = nil
             return
         }
         albums = songs.musicAlbums
@@ -644,9 +711,10 @@ final class AppStore: ObservableObject {
         let byId = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
         let ordered = recentSongIds.compactMap { byId[$0] }
         recentSongs = ordered.isEmpty ? Array(songs.prefix(20)) : ordered
-        refreshDailyRecommendations(for: currentRecommendationDay())
+        let day = currentRecommendationDay()
+        refreshDailyRecommendations(for: day)
         recentlyAddedSongs = recentlyAdded(from: songs, limit: 50)
-        mostPlayedSongs = mostPlayed(from: songs, fallback: recentSongs, limit: 50)
+        refreshMostPlayedIfNeeded(for: day, force: mostPlayedSongs.isEmpty)
         if playlists.isEmpty {
             playlists = songs.generatedPlaylists
         }
@@ -763,6 +831,12 @@ final class AppStore: ObservableObject {
     private func refreshDailyRecommendations(for day: Int) {
         dailyRecommendationDay = day
         dailyRecommendedSongs = dailyRecommendation(from: songs, day: day, limit: 50)
+    }
+
+    private func refreshMostPlayedIfNeeded(for day: Int, force: Bool = false) {
+        guard force || mostPlayedDay != day else { return }
+        mostPlayedDay = day
+        mostPlayedSongs = mostPlayed(from: songs, fallback: recentSongs, limit: 50)
     }
 
     private func currentRecommendationDay() -> Int {
