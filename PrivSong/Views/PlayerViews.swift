@@ -19,14 +19,14 @@ struct MiniPlayerView: View {
         let artworkSize: CGFloat = 36
         let artworkCornerRadius: CGFloat = 8
         let cornerRadius: CGFloat = isInline ? 26 : 16
-        let titleSize: CGFloat = 15
+        let titleSize: CGFloat = 12.5
         let subtitleSize: CGFloat = 11
         let contentHeight: CGFloat = 48
         let maxAccessoryWidth: CGFloat = 430
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let glassTint = Color.white.opacity(isInline ? 0.08 : 0.06)
-        let glassHighlight = Color.white.opacity(isInline ? 0.34 : 0.26)
-        let glassOutline = Color.primary.opacity(isInline ? 0.08 : 0.1)
+        let glassTint = Color(red: 0.984, green: 0.984, blue: 1.0).opacity(0.86)
+        let glassHighlight = Color.white.opacity(0.28)
+        let glassOutline = Color.primary.opacity(0.08)
 
         HStack(spacing: 10) {
             if song != nil {
@@ -57,7 +57,6 @@ struct MiniPlayerView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
-            .minimumScaleFactor(0.82)
             .frame(height: 34, alignment: .center)
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
@@ -104,11 +103,9 @@ struct MiniPlayerView: View {
         .frame(height: contentHeight)
         .frame(maxWidth: maxAccessoryWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .glassEffect(.regular.tint(glassTint).interactive(), in: shape)
-        .overlay {
-            MiniPlayerGlassSheen(shape: shape)
-                .clipShape(shape)
-                .allowsHitTesting(false)
+        .background {
+            shape
+                .fill(glassTint)
         }
         .overlay {
             shape
@@ -119,8 +116,8 @@ struct MiniPlayerView: View {
                 .strokeBorder(glassOutline, lineWidth: 0.5)
         }
         .clipShape(shape)
-        .shadow(color: .white.opacity(isInline ? 0.14 : 0.08), radius: isInline ? 1 : 0, y: -0.5)
-        .shadow(color: .black.opacity(isInline ? 0.09 : 0.04), radius: isInline ? 14 : 8, y: isInline ? 5 : 3)
+        .shadow(color: .white.opacity(0.1), radius: 0.75, y: -0.5)
+        .shadow(color: .black.opacity(0.06), radius: 10, y: 4)
         .contentShape(shape)
         .transaction { transaction in
             transaction.animation = nil
@@ -136,40 +133,6 @@ struct MiniPlayerView: View {
     private func openPlayer() {
         guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
         expand()
-    }
-}
-
-private struct MiniPlayerGlassSheen<S: Shape>: View {
-    let shape: S
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
-            GeometryReader { proxy in
-                let phase = timeline.date.timeIntervalSinceReferenceDate
-                let width = max(proxy.size.width, 1)
-                let travel = width * 1.4
-                let offset = CGFloat((sin(phase * 0.45) + 1) / 2) * travel - width * 0.7
-
-                shape
-                    .fill(.clear)
-                    .overlay(alignment: .leading) {
-                        LinearGradient(
-                            colors: [
-                                .clear,
-                                .white.opacity(0.10),
-                                .white.opacity(0.20),
-                                .clear
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .rotationEffect(.degrees(18))
-                        .frame(width: width * 0.42, height: proxy.size.height * 2.2)
-                        .offset(x: offset, y: -proxy.size.height * 0.55)
-                    }
-                    .blendMode(.screen)
-            }
-        }
     }
 }
 
