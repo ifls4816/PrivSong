@@ -14,6 +14,7 @@ struct MusicEmbyApp: App {
             diskPath: nil
         )
         UISlider.appearance().minimumTrackTintColor = .musicRed
+        UISlider.appearance().maximumTrackTintColor = .musicSliderTrack
         UISlider.appearance().thumbTintColor = .musicSliderThumb
     }
 
@@ -64,12 +65,6 @@ extension Color {
         }
         return UIColor.white
     })
-    static let musicMiniPlayerBackground = Color(uiColor: UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor(red: 0.125, green: 0.125, blue: 0.145, alpha: 0.90)
-        }
-        return UIColor(white: 1, alpha: 0.86)
-    })
     static let musicSeparatorStroke = Color(uiColor: UIColor { traits in
         if traits.userInterfaceStyle == .dark {
             return UIColor.separator.withAlphaComponent(0.45)
@@ -85,5 +80,11 @@ extension UIColor {
             return UIColor(white: 0.92, alpha: 1)
         }
         return UIColor.white
+    }
+    static let musicSliderTrack = UIColor { traits in
+        if traits.userInterfaceStyle == .dark {
+            return UIColor.secondaryLabel.withAlphaComponent(0.28)
+        }
+        return UIColor.secondaryLabel.withAlphaComponent(0.22)
     }
 }

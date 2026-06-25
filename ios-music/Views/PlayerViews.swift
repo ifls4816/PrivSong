@@ -25,91 +25,86 @@ struct MiniPlayerView: View {
         let maxAccessoryWidth: CGFloat = 430
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
-        ZStack(alignment: .bottom) {
-            HStack(spacing: 10) {
-                if song != nil {
-                    ArtworkView(url: artworkURL, cornerRadius: artworkCornerRadius)
-                        .frame(width: artworkSize, height: artworkSize)
-                        .allowsHitTesting(false)
-                        .transaction { transaction in
-                            transaction.disablesAnimations = true
-                        }
-                } else {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
-                            .fill(.primary.opacity(0.08))
-                        Image(systemName: "music.note")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
+        HStack(spacing: 10) {
+            if song != nil {
+                ArtworkView(url: artworkURL, cornerRadius: artworkCornerRadius)
                     .frame(width: artworkSize, height: artworkSize)
-                }
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(song?.name ?? "暂无歌曲")
-                        .font(.system(size: titleSize, weight: .semibold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Text(miniSubtitle(for: song))
-                        .font(.system(size: subtitleSize))
+                    .allowsHitTesting(false)
+                    .transaction { transaction in
+                        transaction.disablesAnimations = true
+                    }
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
+                        .fill(.primary.opacity(0.08))
+                    Image(systemName: "music.note")
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 }
-                .minimumScaleFactor(0.82)
-                .frame(height: 34, alignment: .center)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .layoutPriority(1)
-
-                Spacer(minLength: 8)
-
-                Button {
-                    if player.currentSong != nil {
-                        player.togglePlayPause()
-                    } else if let song {
-                        store.play(song: song, in: store.songs)
-                    }
-                } label: {
-                    ZStack {
-                        if player.currentSong != nil && (player.isBuffering || player.isSeeking) {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.primary)
-                        } else {
-                            Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                                .font(.title3)
-                                .foregroundStyle(.primary.opacity(song == nil ? 0.35 : 1))
-                        }
-                    }
-                    .frame(width: 36, height: 36)
-                }
-                .buttonStyle(.plain)
-                .disabled(song == nil)
-
-                Button {
-                    player.next()
-                } label: {
-                    Image(systemName: "forward.fill")
-                        .font(.title3)
-                        .frame(width: 36, height: 36)
-                        .foregroundStyle(.primary.opacity(player.currentSong == nil ? 0.35 : 1))
-                }
-                .buttonStyle(.plain)
-                .disabled(player.currentSong == nil)
+                .frame(width: artworkSize, height: artworkSize)
             }
-            .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(song?.name ?? "暂无歌曲")
+                    .font(.system(size: titleSize, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(miniSubtitle(for: song))
+                    .font(.system(size: subtitleSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .minimumScaleFactor(0.82)
+            .frame(height: 34, alignment: .center)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: contentHeight)
+            .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            Button {
+                if player.currentSong != nil {
+                    player.togglePlayPause()
+                } else if let song {
+                    store.play(song: song, in: store.songs)
+                }
+            } label: {
+                ZStack {
+                    if player.currentSong != nil && (player.isBuffering || player.isSeeking) {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.primary)
+                    } else {
+                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.title3)
+                            .foregroundStyle(.primary.opacity(song == nil ? 0.35 : 1))
+                    }
+                }
+                .frame(width: 36, height: 36)
+            }
+            .buttonStyle(.plain)
+            .disabled(song == nil)
+
+            Button {
+                player.next()
+            } label: {
+                Image(systemName: "forward.fill")
+                    .font(.title3)
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(.primary.opacity(player.currentSong == nil ? 0.35 : 1))
+            }
+            .buttonStyle(.plain)
+            .disabled(player.currentSong == nil)
         }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: contentHeight)
         .frame(maxWidth: maxAccessoryWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background(Color.musicMiniPlayerBackground, in: shape)
-        .overlay(alignment: .bottom) {
-            MiniPlayerProgressView(
-                timeline: player.timeline,
-                isVisible: !isInline,
-                hasCurrentSong: player.currentSong != nil
-            )
+        .background(.bar, in: shape)
+        .overlay {
+            shape
+                .strokeBorder(Color.musicSeparatorStroke.opacity(isInline ? 0.45 : 0.62), lineWidth: 0.5)
         }
         .clipShape(shape)
         .shadow(color: .black.opacity(isInline ? 0.05 : 0), radius: isInline ? 8 : 0, y: isInline ? 3 : 0)
@@ -128,28 +123,6 @@ struct MiniPlayerView: View {
     private func openPlayer() {
         guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
         expand()
-    }
-}
-
-private struct MiniPlayerProgressView: View {
-    @ObservedObject var timeline: PlaybackTimeline
-    let isVisible: Bool
-    let hasCurrentSong: Bool
-
-    var body: some View {
-        if isVisible {
-            ProgressView(value: progress)
-                .tint(.secondary.opacity(0.7))
-                .padding(.horizontal, 12)
-                .padding(.bottom, 1)
-                .frame(height: 3)
-                .allowsHitTesting(false)
-        }
-    }
-
-    private var progress: Double {
-        guard hasCurrentSong, timeline.duration > 0 else { return 0 }
-        return min(max(timeline.elapsed / timeline.duration, 0), 1)
     }
 }
 
@@ -236,7 +209,7 @@ struct NowPlayingView: View {
         let compactHeight = pageHeight < 760
         let artworkSlotSize = min(contentWidth * (compactHeight ? 0.92 : 1.0), compactHeight ? 312 : 352)
         let playingArtworkSize = artworkSlotSize * (compactHeight ? 0.84 : 0.86)
-        let artworkSize = player.isPlaying ? playingArtworkSize : playingArtworkSize * (compactHeight ? 0.82 : 0.84)
+        let pausedArtworkScale = compactHeight ? CGFloat(0.82) : CGFloat(0.84)
         let upperHeight = min(artworkSlotSize + (compactHeight ? 58 : 92), compactHeight ? 370 : 444)
         let topOffset: CGFloat = compactHeight ? 22 : 28
         let titleGap: CGFloat = compactHeight ? 22 : 32
@@ -246,7 +219,13 @@ struct NowPlayingView: View {
         return VStack(spacing: 0) {
             Color.clear.frame(height: topOffset)
 
-            upperContent(song: song, width: contentWidth, height: upperHeight, artworkSize: artworkSize)
+            upperContent(
+                song: song,
+                width: contentWidth,
+                height: upperHeight,
+                artworkSize: playingArtworkSize,
+                pausedArtworkScale: pausedArtworkScale
+            )
 
             Color.clear.frame(height: titleGap)
 
@@ -321,21 +300,25 @@ struct NowPlayingView: View {
     }
 
     @ViewBuilder
-    private func upperContent(song: EmbyAudioItem, width: CGFloat, height: CGFloat, artworkSize: CGFloat) -> some View {
+    private func upperContent(
+        song: EmbyAudioItem,
+        width: CGFloat,
+        height: CGFloat,
+        artworkSize: CGFloat,
+        pausedArtworkScale: CGFloat
+    ) -> some View {
         switch mode {
         case .nowPlaying:
             let isArtworkExpanded = player.isPlaying
+            let artworkScale = isArtworkExpanded ? CGFloat(1) : pausedArtworkScale
             ArtworkView(url: store.imageURL(for: song), cornerRadius: 10)
                 .aspectRatio(1, contentMode: .fill)
                 .frame(width: artworkSize, height: artworkSize)
                 .clipped()
-                .shadow(
-                    color: .black.opacity(isArtworkExpanded ? 0.30 : 0.20),
-                    radius: isArtworkExpanded ? 22 : 16,
-                    y: isArtworkExpanded ? 12 : 8
-                )
+                .scaleEffect(artworkScale)
+                .shadow(color: .black.opacity(0.26), radius: 20, y: 10)
                 .frame(width: width, height: height, alignment: .center)
-                .animation(.spring(response: 0.48, dampingFraction: 0.76, blendDuration: 0.08), value: isArtworkExpanded)
+                .animation(.smooth(duration: 0.32, extraBounce: 0), value: isArtworkExpanded)
         case .lyrics:
             LyricsPanelView(
                 song: song,
@@ -653,7 +636,7 @@ private struct PlaybackProgressControls: View {
                 }
             }
             .tint(Color.musicRed)
-            .disabled(!isPlaybackActive || duration <= 0)
+            .allowsHitTesting(isPlaybackActive && duration > 0)
 
             HStack {
                 Text(playbackTimeText(elapsed))
@@ -762,7 +745,7 @@ private struct SystemVolumeSlider: UIViewRepresentable {
                 }
                 foundSlider = true
                 slider.minimumTrackTintColor = .musicRed
-                slider.maximumTrackTintColor = UIColor.secondaryLabel.withAlphaComponent(0.24)
+                slider.maximumTrackTintColor = .musicSliderTrack
                 slider.thumbTintColor = .musicSliderThumb
                 slider.clipsToBounds = false
                 slider.layer.masksToBounds = false
