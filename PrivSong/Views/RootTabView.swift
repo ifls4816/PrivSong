@@ -27,12 +27,6 @@ struct RootTabView: View {
                         .transition(.opacity)
                 }
             }
-            .overlay {
-                if store.session != nil, !store.hasLoadedInitialContent, store.isLoading {
-                    LaunchLoadingView()
-                        .transition(.opacity)
-                }
-            }
             .onAppear {
                 selectedTab = store.startsOnBrowse ? .browse : .home
             }
@@ -148,87 +142,6 @@ private struct HighRefreshRateView: UIViewRepresentable {
         func stop() {
             displayLink?.invalidate()
             displayLink = nil
-        }
-    }
-}
-
-private struct LaunchLoadingView: View {
-    @State private var isAnimating = false
-
-    var body: some View {
-        ZStack {
-            LaunchLoadingBackground()
-
-            VStack(spacing: 18) {
-                Spacer(minLength: 44)
-
-                VStack(spacing: 16) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 30, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                            .frame(width: 104, height: 104)
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                                    .strokeBorder(.white.opacity(0.25), lineWidth: 1)
-                            }
-                            .shadow(color: .black.opacity(0.18), radius: 24, y: 16)
-
-                        Image(systemName: "music.note.list")
-                            .font(.system(size: 44, weight: .semibold))
-                            .foregroundStyle(.white, .white.opacity(0.72))
-                            .symbolEffect(.pulse, value: isAnimating)
-                    }
-                    .scaleEffect(isAnimating ? 1.03 : 0.98)
-
-                    ProgressView()
-                        .controlSize(.large)
-                        .tint(.white)
-                }
-
-                Spacer(minLength: 80)
-            }
-            .padding(.horizontal, 28)
-            .padding(.vertical, 34)
-        }
-        .ignoresSafeArea()
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.35).repeatForever(autoreverses: true)) {
-                isAnimating = true
-            }
-        }
-    }
-}
-
-private struct LaunchLoadingBackground: View {
-    var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(red: 0.07, green: 0.07, blue: 0.09),
-                    Color(red: 0.42, green: 0.06, blue: 0.13),
-                    Color(red: 0.07, green: 0.12, blue: 0.15)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-
-            VStack(spacing: 0) {
-                LinearGradient(
-                    colors: [
-                        Color.musicRed.opacity(0.72),
-                        Color(red: 1.0, green: 0.36, blue: 0.28).opacity(0.30),
-                        .clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: 310)
-
-                Spacer(minLength: 0)
-            }
-
-            Rectangle()
-                .fill(.black.opacity(0.12))
         }
     }
 }

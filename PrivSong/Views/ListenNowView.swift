@@ -14,15 +14,15 @@ struct ListenNowView: View {
     }
 
     private var showsLibraryCategorySkeleton: Bool {
-        store.hasLoadedInitialContent && !store.hasLibraryCategoryContent && store.isLoading
+        !store.hasLibraryCategoryContent && store.isLoading
     }
 
     private var showsPlaylistSkeleton: Bool {
-        store.hasLoadedInitialContent && store.playlists.isEmpty && store.isLoading
+        store.playlists.isEmpty && store.isLoading
     }
 
     private var showsHomeEmptyState: Bool {
-        !store.hasHomeContent && !showsLibraryCategorySkeleton && !showsPlaylistSkeleton
+        !store.hasHomeContent && !store.isLoading
     }
 
     var body: some View {
@@ -77,9 +77,6 @@ struct ListenNowView: View {
                         ContentUnavailableView("有声书不可用", systemImage: "book.closed")
                     }
                 }
-            }
-            .refreshable {
-                await store.refreshLibrary()
             }
             .onChange(of: pendingRoute) { _, route in
                 guard let route else { return }
@@ -320,9 +317,9 @@ struct PlaylistArtworkGrid: View {
             let tile = (min(size.width, size.height) - 2) / 2
 
             ZStack {
-                if artworkURLs.count <= 1 {
-                    ArtworkView(url: artworkURLs.first, cornerRadius: 12)
-                } else {
+                ArtworkView(url: artworkURLs.first, cornerRadius: 12)
+
+                if artworkURLs.count > 1 {
                     VStack(spacing: 2) {
                         HStack(spacing: 2) {
                             artworkTile(at: 0, size: tile)
@@ -343,10 +340,10 @@ struct PlaylistArtworkGrid: View {
     @ViewBuilder
     private func artworkTile(at index: Int, size: CGFloat) -> some View {
         if artworkURLs.indices.contains(index) {
-            ArtworkView(url: artworkURLs[index], cornerRadius: 3)
+            ArtworkView(url: artworkURLs[index], cornerRadius: 3, showsPlaceholder: false)
                 .frame(width: size, height: size)
         } else {
-            ArtworkView(url: nil, cornerRadius: 3)
+            Color.clear
                 .frame(width: size, height: size)
         }
     }
@@ -355,11 +352,17 @@ struct PlaylistArtworkGrid: View {
 struct BrowseView: View {
     @EnvironmentObject private var store: AppStore
 
+    private var showsBrowseSkeleton: Bool {
+        !store.hasBrowseContent && store.isLoading
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    if !store.hasBrowseContent {
+                    if showsBrowseSkeleton {
+                        BrowseSkeletonContent()
+                    } else if !store.hasBrowseContent {
                         ContentUnavailableView("暂无发现内容", systemImage: "sparkles", description: Text(store.libraryStatus))
                             .frame(maxWidth: .infinity)
                             .padding(.top, 120)
@@ -384,9 +387,6 @@ struct BrowseView: View {
             .mainPageToolbar("发现")
             .onAppear {
                 store.refreshDailyRecommendationsIfNeeded()
-            }
-            .refreshable {
-                await store.refreshLibrary()
             }
         }
     }
@@ -517,7 +517,7 @@ private struct LibraryCategoryCard: View {
 private struct LibraryCategorySkeletonSection: View {
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
-            ForEach(0..<5, id: \.self) { _ in
+            ForEach(0..<4, id: \.self) { _ in
                 LibraryCategorySkeletonCard()
             }
         }
@@ -588,6 +588,98 @@ private struct PlaylistSkeletonRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+}
+
+private struct BrowseSkeletonContent: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 26) {
+            DailyRecommendationSkeletonCard()
+            HorizontalMusicSkeletonSection()
+            MostPlayedSkeletonSection()
+        }
+    }
+}
+
+private struct DailyRecommendationSkeletonCard: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .fill(Color.musicCardBackground)
+
+            HStack(alignment: .center, spacing: 18) {
+                VStack(alignment: .leading, spacing: 12) {
+                    SkeletonBlock(cornerRadius: 4)
+                        .frame(width: 72, height: 12)
+                    SkeletonBlock(cornerRadius: 8)
+                        .frame(width: 178, height: 30)
+                    SkeletonBlock(cornerRadius: 8)
+                        .frame(width: 128, height: 24)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ZStack {
+                    SkeletonBlock(cornerRadius: 14)
+                        .frame(width: 116, height: 116)
+                        .rotationEffect(.degrees(-7))
+                        .offset(x: 18, y: -18)
+                    SkeletonBlock(cornerRadius: 14)
+                        .frame(width: 116, height: 116)
+                        .rotationEffect(.degrees(7))
+                        .offset(x: -10, y: 18)
+                }
+                .frame(width: 134, height: 178)
+            }
+            .padding(24)
+        }
+        .frame(height: 226)
+    }
+}
+
+private struct HorizontalMusicSkeletonSection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SkeletonBlock(cornerRadius: 7)
+                .frame(width: 112, height: 24)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 18) {
+                    ForEach(0..<4, id: \.self) { _ in
+                        VStack(alignment: .leading, spacing: 7) {
+                            SkeletonBlock(cornerRadius: 6)
+                                .frame(width: 138, height: 138)
+                            SkeletonBlock(cornerRadius: 5)
+                                .frame(width: 116, height: 14)
+                            SkeletonBlock(cornerRadius: 4)
+                                .frame(width: 82, height: 11)
+                        }
+                        .frame(width: 138, alignment: .leading)
+                    }
+                }
+            }
+            .scrollClipDisabled()
+        }
+    }
+}
+
+private struct MostPlayedSkeletonSection: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SkeletonBlock(cornerRadius: 7)
+                .frame(width: 112, height: 24)
+
+            VStack(spacing: 0) {
+                ForEach(0..<5, id: \.self) { index in
+                    PlaylistSkeletonRow()
+
+                    if index < 4 {
+                        Divider()
+                            .padding(.leading, 90)
+                    }
+                }
+            }
+            .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
     }
 }
 

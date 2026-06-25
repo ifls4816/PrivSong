@@ -6,12 +6,14 @@ import UIKit
 struct ArtworkView: View {
     let url: URL?
     var cornerRadius: CGFloat = 8
+    var showsPlaceholder = true
     @State private var image: UIImage?
     @State private var displayedURL: URL?
 
-    init(url: URL?, cornerRadius: CGFloat = 8) {
+    init(url: URL?, cornerRadius: CGFloat = 8, showsPlaceholder: Bool = true) {
         self.url = url
         self.cornerRadius = cornerRadius
+        self.showsPlaceholder = showsPlaceholder
 
         let exactImage = url.flatMap { ArtworkImageCache.shared.image(for: $0) }
         let cachedImage = exactImage ?? url.flatMap { ArtworkImageCache.shared.fallbackImage(for: $0) }
@@ -28,8 +30,10 @@ struct ArtworkView: View {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
-                } else {
+                } else if showsPlaceholder {
                     placeholder
+                } else {
+                    Color.clear
                 }
             }
             .frame(width: side, height: side)

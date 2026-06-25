@@ -24,6 +24,9 @@ struct MiniPlayerView: View {
         let contentHeight: CGFloat = 48
         let maxAccessoryWidth: CGFloat = 430
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let glassTint = Color.white.opacity(isInline ? 0.08 : 0.06)
+        let glassHighlight = Color.white.opacity(isInline ? 0.34 : 0.26)
+        let glassOutline = Color.primary.opacity(isInline ? 0.08 : 0.1)
 
         HStack(spacing: 10) {
             if song != nil {
@@ -101,13 +104,23 @@ struct MiniPlayerView: View {
         .frame(height: contentHeight)
         .frame(maxWidth: maxAccessoryWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background(.bar, in: shape)
+        .glassEffect(.regular.tint(glassTint).interactive(), in: shape)
+        .overlay {
+            MiniPlayerGlassSheen(shape: shape)
+                .clipShape(shape)
+                .allowsHitTesting(false)
+        }
         .overlay {
             shape
-                .strokeBorder(Color.musicSeparatorStroke.opacity(isInline ? 0.45 : 0.62), lineWidth: 0.5)
+                .strokeBorder(glassHighlight, lineWidth: 0.65)
+        }
+        .overlay {
+            shape
+                .strokeBorder(glassOutline, lineWidth: 0.5)
         }
         .clipShape(shape)
-        .shadow(color: .black.opacity(isInline ? 0.05 : 0), radius: isInline ? 8 : 0, y: isInline ? 3 : 0)
+        .shadow(color: .white.opacity(isInline ? 0.14 : 0.08), radius: isInline ? 1 : 0, y: -0.5)
+        .shadow(color: .black.opacity(isInline ? 0.09 : 0.04), radius: isInline ? 14 : 8, y: isInline ? 5 : 3)
         .contentShape(shape)
         .transaction { transaction in
             transaction.animation = nil
@@ -123,6 +136,40 @@ struct MiniPlayerView: View {
     private func openPlayer() {
         guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
         expand()
+    }
+}
+
+private struct MiniPlayerGlassSheen<S: Shape>: View {
+    let shape: S
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1 / 30)) { timeline in
+            GeometryReader { proxy in
+                let phase = timeline.date.timeIntervalSinceReferenceDate
+                let width = max(proxy.size.width, 1)
+                let travel = width * 1.4
+                let offset = CGFloat((sin(phase * 0.45) + 1) / 2) * travel - width * 0.7
+
+                shape
+                    .fill(.clear)
+                    .overlay(alignment: .leading) {
+                        LinearGradient(
+                            colors: [
+                                .clear,
+                                .white.opacity(0.10),
+                                .white.opacity(0.20),
+                                .clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .rotationEffect(.degrees(18))
+                        .frame(width: width * 0.42, height: proxy.size.height * 2.2)
+                        .offset(x: offset, y: -proxy.size.height * 0.55)
+                    }
+                    .blendMode(.screen)
+            }
+        }
     }
 }
 
