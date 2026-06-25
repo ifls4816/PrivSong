@@ -404,7 +404,7 @@ struct SignInView: View {
                         VStack(spacing: 0) {
                             SignInInputRow(
                                 title: "服务器",
-                                placeholder: "http://192.168.1.10:8096",
+                                placeholder: "http://192.168.x.x:8080",
                                 icon: "server.rack",
                                 tint: .blue,
                                 kind: .server,

@@ -1,15 +1,14 @@
-# MusicEmby
+# PrivSong (私音)
 
 Native iOS 26+ music client for Emby, built with SwiftUI and AVPlayer.
 
 ## Run
 
-Open `ios-music.xcodeproj` in Xcode 26 or later, choose an iOS 26+ iPhone simulator or device, then run the `ios-music` scheme.
+Open `PrivSong.xcodeproj` in Xcode 26 or later, choose an iOS 26+ iPhone simulator or device, then run the `PrivSong` scheme.
 
 The sign-in screen accepts Emby server addresses such as:
 
 ```text
-http://192.168.1.10:8096
 https://music.example.com
 ```
 

@@ -11,9 +11,6 @@
 		1A0000010000000000000002 /* EmbyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000102 /* EmbyModels.swift */; };
 		1A0000010000000000000003 /* EmbyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000103 /* EmbyClient.swift */; };
 		1A0000010000000000000004 /* PlayerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000104 /* PlayerController.swift */; };
-		1A0000010000000000000010 /* AudioSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000110 /* AudioSessionCoordinator.swift */; };
-		1A0000010000000000000011 /* NowPlayingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000111 /* NowPlayingCoordinator.swift */; };
-		1A0000010000000000000012 /* RemoteCommandCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000112 /* RemoteCommandCoordinator.swift */; };
 		1A0000010000000000000005 /* AppStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000105 /* AppStore.swift */; };
 		1A0000010000000000000006 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000106 /* RootTabView.swift */; };
 		1A0000010000000000000007 /* MusicDetailViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000107 /* MusicDetailViews.swift */; };
@@ -24,20 +21,20 @@
 		1A000001000000000000000C /* ArtworkView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010C /* ArtworkView.swift */; };
 		1A000001000000000000000D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010D /* Assets.xcassets */; };
 		1A000001000000000000000F /* MainPageChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000010F /* MainPageChrome.swift */; };
+		1A0000010000000000000010 /* AudioSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000110 /* AudioSessionCoordinator.swift */; };
+		1A0000010000000000000011 /* NowPlayingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000111 /* NowPlayingCoordinator.swift */; };
+		1A0000010000000000000012 /* RemoteCommandCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000112 /* RemoteCommandCoordinator.swift */; };
 		1A0000010000000000000014 /* LibraryIndexViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000114 /* LibraryIndexViews.swift */; };
 		1A0000010000000000000015 /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000115 /* CarPlaySceneDelegate.swift */; };
 		1A0000010000000000000016 /* CarPlayCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000116 /* CarPlayCoordinator.swift */; };
+		1A0000010000000000000017 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000402 /* InfoPlist.strings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		1A0000010000000000000101 /* MusicEmbyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicEmbyApp.swift; sourceTree = "<group>"; };
-		1A0000010000000000000113 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A0000010000000000000102 /* EmbyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbyModels.swift; sourceTree = "<group>"; };
 		1A0000010000000000000103 /* EmbyClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbyClient.swift; sourceTree = "<group>"; };
 		1A0000010000000000000104 /* PlayerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerController.swift; sourceTree = "<group>"; };
-		1A0000010000000000000110 /* AudioSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionCoordinator.swift; sourceTree = "<group>"; };
-		1A0000010000000000000111 /* NowPlayingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingCoordinator.swift; sourceTree = "<group>"; };
-		1A0000010000000000000112 /* RemoteCommandCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCommandCoordinator.swift; sourceTree = "<group>"; };
 		1A0000010000000000000105 /* AppStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStore.swift; sourceTree = "<group>"; };
 		1A0000010000000000000106 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
 		1A0000010000000000000107 /* MusicDetailViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicDetailViews.swift; sourceTree = "<group>"; };
@@ -47,12 +44,18 @@
 		1A000001000000000000010B /* PlayerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerViews.swift; sourceTree = "<group>"; };
 		1A000001000000000000010C /* ArtworkView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArtworkView.swift; sourceTree = "<group>"; };
 		1A000001000000000000010D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		1A000001000000000000010E /* ios-music.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "ios-music.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		1A000001000000000000010E /* PrivSong.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PrivSong.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A000001000000000000010F /* MainPageChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainPageChrome.swift; sourceTree = "<group>"; };
+		1A0000010000000000000110 /* AudioSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSessionCoordinator.swift; sourceTree = "<group>"; };
+		1A0000010000000000000111 /* NowPlayingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingCoordinator.swift; sourceTree = "<group>"; };
+		1A0000010000000000000112 /* RemoteCommandCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteCommandCoordinator.swift; sourceTree = "<group>"; };
+		1A0000010000000000000113 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1A0000010000000000000114 /* LibraryIndexViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryIndexViews.swift; sourceTree = "<group>"; };
 		1A0000010000000000000115 /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
 		1A0000010000000000000116 /* CarPlayCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayCoordinator.swift; sourceTree = "<group>"; };
-		1A0000010000000000000117 /* ios-music.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ios-music.entitlements"; sourceTree = "<group>"; };
+		1A0000010000000000000117 /* PrivSong.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PrivSong.entitlements; sourceTree = "<group>"; };
+		1A0000010000000000000118 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/InfoPlist.strings; sourceTree = "<group>"; };
+		1A0000010000000000000119 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -69,17 +72,18 @@
 		1A0000010000000000000301 = {
 			isa = PBXGroup;
 			children = (
-				1A0000010000000000000302 /* ios-music */,
+				1A0000010000000000000302 /* PrivSong */,
 				1A0000010000000000000309 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		1A0000010000000000000302 /* ios-music */ = {
+		1A0000010000000000000302 /* PrivSong */ = {
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000101 /* MusicEmbyApp.swift */,
 				1A0000010000000000000113 /* Info.plist */,
-				1A0000010000000000000117 /* ios-music.entitlements */,
+				1A0000010000000000000117 /* PrivSong.entitlements */,
+				1A0000010000000000000402 /* InfoPlist.strings */,
 				1A0000010000000000000303 /* Models */,
 				1A0000010000000000000304 /* Networking */,
 				1A0000010000000000000305 /* Playback */,
@@ -88,7 +92,7 @@
 				1A0000010000000000000307 /* Views */,
 				1A000001000000000000010D /* Assets.xcassets */,
 			);
-			path = "ios-music";
+			path = PrivSong;
 			sourceTree = "<group>";
 		};
 		1A0000010000000000000303 /* Models */ = {
@@ -118,15 +122,6 @@
 			path = Playback;
 			sourceTree = "<group>";
 		};
-		1A000001000000000000030A /* CarPlay */ = {
-			isa = PBXGroup;
-			children = (
-				1A0000010000000000000115 /* CarPlaySceneDelegate.swift */,
-				1A0000010000000000000116 /* CarPlayCoordinator.swift */,
-			);
-			path = CarPlay;
-			sourceTree = "<group>";
-		};
 		1A0000010000000000000306 /* Store */ = {
 			isa = PBXGroup;
 			children = (
@@ -154,17 +149,38 @@
 		1A0000010000000000000309 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				1A000001000000000000010E /* ios-music.app */,
+				1A000001000000000000010E /* PrivSong.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
+		1A000001000000000000030A /* CarPlay */ = {
+			isa = PBXGroup;
+			children = (
+				1A0000010000000000000115 /* CarPlaySceneDelegate.swift */,
+				1A0000010000000000000116 /* CarPlayCoordinator.swift */,
+			);
+			path = CarPlay;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
+/* Begin PBXVariantGroup section */
+		1A0000010000000000000402 /* InfoPlist.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				1A0000010000000000000118 /* en */,
+				1A0000010000000000000119 /* zh-Hans */,
+			);
+			name = InfoPlist.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
+
 /* Begin PBXNativeTarget section */
-		1A0000010000000000000401 /* ios-music */ = {
+		1A0000010000000000000401 /* PrivSong */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 1A0000010000000000000802 /* Build configuration list for PBXNativeTarget "ios-music" */;
+			buildConfigurationList = 1A0000010000000000000802 /* Build configuration list for PBXNativeTarget "PrivSong" */;
 			buildPhases = (
 				1A0000010000000000000501 /* Sources */,
 				1A0000010000000000000201 /* Frameworks */,
@@ -174,9 +190,9 @@
 			);
 			dependencies = (
 			);
-			name = "ios-music";
-			productName = "ios-music";
-			productReference = 1A000001000000000000010E /* ios-music.app */;
+			name = PrivSong;
+			productName = PrivSong;
+			productReference = 1A000001000000000000010E /* PrivSong.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -194,13 +210,14 @@
 					};
 				};
 			};
-			buildConfigurationList = 1A0000010000000000000801 /* Build configuration list for PBXProject "ios-music" */;
+			buildConfigurationList = 1A0000010000000000000801 /* Build configuration list for PBXProject "PrivSong" */;
 			compatibilityVersion = "Xcode 16.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				en,
 				Base,
+				"zh-Hans",
 			);
 			mainGroup = 1A0000010000000000000301;
 			minimizedProjectReferenceProxies = 1;
@@ -208,7 +225,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				1A0000010000000000000401 /* ios-music */,
+				1A0000010000000000000401 /* PrivSong */,
 			);
 		};
 /* End PBXProject section */
@@ -219,6 +236,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1A000001000000000000000D /* Assets.xcassets in Resources */,
+				1A0000010000000000000017 /* InfoPlist.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -377,21 +395,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "ios-music/ios-music.entitlements";
+				CODE_SIGN_ENTITLEMENTS = PrivSong/PrivSong.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = UPD89D99AH;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "ios-music/Info.plist";
+				INFOPLIST_FILE = PrivSong/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "local.ifls.ios-music";
+				PRODUCT_BUNDLE_IDENTIFIER = local.ifls.PrivSong;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
@@ -403,21 +421,21 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = "ios-music/ios-music.entitlements";
+				CODE_SIGN_ENTITLEMENTS = PrivSong/PrivSong.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = UPD89D99AH;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "ios-music/Info.plist";
+				INFOPLIST_FILE = PrivSong/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "local.ifls.ios-music";
+				PRODUCT_BUNDLE_IDENTIFIER = local.ifls.PrivSong;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
@@ -428,7 +446,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		1A0000010000000000000801 /* Build configuration list for PBXProject "ios-music" */ = {
+		1A0000010000000000000801 /* Build configuration list for PBXProject "PrivSong" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1A0000010000000000000701 /* Debug */,
@@ -437,7 +455,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		1A0000010000000000000802 /* Build configuration list for PBXNativeTarget "ios-music" */ = {
+		1A0000010000000000000802 /* Build configuration list for PBXNativeTarget "PrivSong" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				1A0000010000000000000703 /* Debug */,
