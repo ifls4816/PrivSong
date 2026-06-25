@@ -135,6 +135,20 @@ struct EmbyClient {
         )
     }
 
+    func fetchMostPlayedSongs(session embySession: EmbySession, limit: Int = 50) async throws -> [EmbyAudioItem] {
+        let views = try await fetchViews(session: embySession)
+        let musicViews = views.filter(\.isMusicLibrary)
+        guard !musicViews.isEmpty else { return [] }
+
+        return try await fetchSongSample(
+            from: musicViews,
+            session: embySession,
+            sortBy: "PlayCount",
+            sortOrder: "Descending",
+            limit: limit
+        )
+    }
+
     func fetchAudiobookEpisodes(session embySession: EmbySession) async throws -> [EmbyAudioItem] {
         let views = try await fetchViews(session: embySession)
         return try await fetchAudiobookEpisodes(from: views.filter(\.isAudiobookLibrary), session: embySession)

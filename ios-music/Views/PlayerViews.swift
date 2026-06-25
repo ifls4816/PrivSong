@@ -14,20 +14,21 @@ struct MiniPlayerView: View {
         let song = player.currentSong ?? store.lastPlayedSong
         let isInline = accessoryPlacement == .inline
         let artworkURL = song.flatMap { store.imageURL(for: $0, size: 160) }
-        let verticalPadding: CGFloat = isInline ? 6 : 8
-        let horizontalPadding: CGFloat = isInline ? 10 : 12
-        let artworkSize: CGFloat = isInline ? 32 : 38
+        let verticalPadding: CGFloat = 6
+        let horizontalPadding: CGFloat = 12
+        let artworkSize: CGFloat = 36
+        let artworkCornerRadius: CGFloat = 8
         let cornerRadius: CGFloat = isInline ? 26 : 16
-        let titleSize: CGFloat = isInline ? 14 : 15
-        let subtitleSize: CGFloat = isInline ? 10.5 : 11
-        let contentHeight: CGFloat = isInline ? 44 : 56
-        let maxAccessoryWidth: CGFloat = isInline ? 360 : 430
+        let titleSize: CGFloat = 15
+        let subtitleSize: CGFloat = 11
+        let contentHeight: CGFloat = 48
+        let maxAccessoryWidth: CGFloat = 430
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         ZStack(alignment: .bottom) {
             HStack(spacing: 10) {
                 if song != nil {
-                    ArtworkView(url: artworkURL, cornerRadius: isInline ? 7 : 8)
+                    ArtworkView(url: artworkURL, cornerRadius: artworkCornerRadius)
                         .frame(width: artworkSize, height: artworkSize)
                         .allowsHitTesting(false)
                         .transaction { transaction in
@@ -35,10 +36,10 @@ struct MiniPlayerView: View {
                         }
                 } else {
                     ZStack {
-                        RoundedRectangle(cornerRadius: isInline ? 7 : 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
                             .fill(.primary.opacity(0.08))
                         Image(systemName: "music.note")
-                            .font(.system(size: isInline ? 13 : 15, weight: .semibold))
+                            .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
                     .frame(width: artworkSize, height: artworkSize)
@@ -55,6 +56,7 @@ struct MiniPlayerView: View {
                         .lineLimit(1)
                 }
                 .minimumScaleFactor(0.82)
+                .frame(height: 34, alignment: .center)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
 
@@ -93,13 +95,13 @@ struct MiniPlayerView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(player.currentSong == nil)
-                .opacity(isInline ? 0.9 : 1)
             }
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: contentHeight)
         }
-        .frame(maxWidth: maxAccessoryWidth)
+        .frame(maxWidth: maxAccessoryWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color.musicMiniPlayerBackground, in: shape)
         .overlay(alignment: .bottom) {
@@ -110,7 +112,7 @@ struct MiniPlayerView: View {
             )
         }
         .clipShape(shape)
-        .shadow(color: .black.opacity(isInline ? 0.05 : 0.08), radius: isInline ? 8 : 14, y: isInline ? 3 : 6)
+        .shadow(color: .black.opacity(isInline ? 0.05 : 0), radius: isInline ? 8 : 0, y: isInline ? 3 : 0)
         .contentShape(shape)
         .transaction { transaction in
             transaction.animation = nil
@@ -279,7 +281,7 @@ struct NowPlayingView: View {
         let screenWidth = safeDimension(screenWidth)
         let height = safeDimension(height)
         let transportHeight: CGFloat = 62
-        let volumeHeight: CGFloat = 20
+        let volumeHeight: CGFloat = 32
         let bottomBarHeight: CGFloat = compactHeight ? 56 : 62
         let availableGap = max(0, height - transportHeight - volumeHeight - bottomBarHeight)
         let targetTopGap = compactHeight ? CGFloat(24) : CGFloat(30)
@@ -481,20 +483,25 @@ struct NowPlayingView: View {
     }
 
     private var volumeControl: some View {
-        HStack(spacing: 10) {
+        let iconOffsetY: CGFloat = -0.4
+
+        return HStack(alignment: .center, spacing: 10) {
             Image(systemName: "speaker.fill")
                 .font(.system(size: 11, weight: .semibold))
-                .frame(width: 18, height: 20)
+                .frame(width: 18, height: 32, alignment: .center)
+                .offset(y: iconOffsetY)
             SystemVolumeSlider()
                 .frame(maxWidth: .infinity)
-                .frame(height: 20)
+                .frame(height: 32)
                 .transaction { transaction in
                     transaction.disablesAnimations = true
                 }
             Image(systemName: "speaker.wave.2.fill")
                 .font(.system(size: 12, weight: .semibold))
-                .frame(width: 18, height: 20)
+                .frame(width: 18, height: 32, alignment: .center)
+                .offset(y: iconOffsetY)
         }
+        .frame(height: 32, alignment: .center)
         .frame(maxWidth: .infinity)
         .foregroundStyle(.secondary)
     }
@@ -705,9 +712,9 @@ private struct SystemVolumeSlider: UIViewRepresentable {
     }
 
     func makeUIView(context: Context) -> MPVolumeView {
-        let view = MPVolumeView(frame: .zero)
+        let view = CenteredMPVolumeView(frame: .zero)
         view.showsVolumeSlider = true
-        view.clipsToBounds = true
+        view.clipsToBounds = false
         view.setContentHuggingPriority(.defaultLow, for: .horizontal)
         view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         styleIfNeeded(view, context: context)
@@ -715,7 +722,6 @@ private struct SystemVolumeSlider: UIViewRepresentable {
     }
 
     func updateUIView(_ view: MPVolumeView, context: Context) {
-        guard !context.coordinator.didStyleSlider else { return }
         view.showsVolumeSlider = true
         styleIfNeeded(view, context: context)
     }
@@ -725,9 +731,28 @@ private struct SystemVolumeSlider: UIViewRepresentable {
         var didStyleSlider = false
     }
 
+    private final class CenteredMPVolumeView: MPVolumeView {
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            clipsToBounds = false
+            for subview in subviews {
+                guard let slider = subview as? UISlider else {
+                    subview.isHidden = true
+                    subview.isUserInteractionEnabled = false
+                    continue
+                }
+                slider.frame = bounds
+                slider.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                slider.clipsToBounds = false
+                slider.layer.masksToBounds = false
+            }
+        }
+    }
+
     private func styleIfNeeded(_ view: MPVolumeView, context: Context) {
         UIView.performWithoutAnimation {
             view.tintColor = .musicRed
+            view.clipsToBounds = false
             var foundSlider = false
             for subview in view.subviews {
                 guard let slider = subview as? UISlider else {
@@ -739,6 +764,8 @@ private struct SystemVolumeSlider: UIViewRepresentable {
                 slider.minimumTrackTintColor = .musicRed
                 slider.maximumTrackTintColor = UIColor.secondaryLabel.withAlphaComponent(0.24)
                 slider.thumbTintColor = .musicSliderThumb
+                slider.clipsToBounds = false
+                slider.layer.masksToBounds = false
                 slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
                 slider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
                 slider.frame = view.bounds
@@ -1018,55 +1045,59 @@ struct LyricsPanelView: View {
         let activeIndex = activeLyricIndex
         let activeID = activeLyricId(for: activeIndex)
 
-        return ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
-                        let isActive = activeIndex == index
-                        Button {
-                            player.seek(toLyric: line)
-                        } label: {
-                            Text(line.text)
-                                .font(.system(size: isActive ? 24 : 19, weight: .bold))
-                                .lineSpacing(2)
-                                .multilineTextAlignment(.leading)
-                                .foregroundStyle(isActive ? .primary : .secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
+        return GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                            let isActive = activeIndex == index
+                            Button {
+                                player.seek(toLyric: line)
+                            } label: {
+                                Text(line.text)
+                                    .font(.system(size: isActive ? 24 : 19, weight: .bold))
+                                    .lineSpacing(2)
+                                    .multilineTextAlignment(.leading)
+                                    .foregroundStyle(isActive ? .primary : .secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                            }
+                            .id(line.id)
+                            .buttonStyle(.plain)
+                            .disabled(line.time == nil)
                         }
-                        .id(line.id)
-                        .buttonStyle(.plain)
-                        .disabled(line.time == nil)
+                    }
+                    .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(minHeight: max(geometry.size.height, 1), alignment: .center)
+                }
+                .scrollIndicators(.hidden)
+                .onAppear {
+                    refreshTimedLyricIndexCache()
+                    DispatchQueue.main.async {
+                        scrollToActiveLyric(activeID, using: proxy, animated: false)
                     }
                 }
-                .padding(.vertical, 12)
-            }
-            .scrollIndicators(.hidden)
-            .onAppear {
-                refreshTimedLyricIndexCache()
-                DispatchQueue.main.async {
-                    scrollToActiveLyric(activeID, using: proxy, animated: false)
+                .onChange(of: song.id) { _, _ in
+                    refreshTimedLyricIndexCache()
+                    DispatchQueue.main.async {
+                        scrollToActiveLyric(activeID, using: proxy, animated: false)
+                    }
                 }
-            }
-            .onChange(of: song.id) { _, _ in
-                refreshTimedLyricIndexCache()
-                DispatchQueue.main.async {
-                    scrollToActiveLyric(activeID, using: proxy, animated: false)
+                .onChange(of: lyricsScrollVersion) { _, _ in
+                    refreshTimedLyricIndexCache()
+                    DispatchQueue.main.async {
+                        scrollToActiveLyric(activeID, using: proxy, animated: false)
+                    }
                 }
-            }
-            .onChange(of: lyricsScrollVersion) { _, _ in
-                refreshTimedLyricIndexCache()
-                DispatchQueue.main.async {
-                    scrollToActiveLyric(activeID, using: proxy, animated: false)
-                }
-            }
-            .onChange(of: activeID) { _, id in
-                guard let id else { return }
-                let now = Date()
-                guard now.timeIntervalSince(lastAutoScrollAt) >= autoScrollInterval else { return }
-                lastAutoScrollAt = now
-                withAnimation(.easeInOut(duration: 0.28)) {
-                    proxy.scrollTo(id, anchor: .center)
+                .onChange(of: activeID) { _, id in
+                    guard let id else { return }
+                    let now = Date()
+                    guard now.timeIntervalSince(lastAutoScrollAt) >= autoScrollInterval else { return }
+                    lastAutoScrollAt = now
+                    withAnimation(.easeInOut(duration: 0.28)) {
+                        proxy.scrollTo(id, anchor: .center)
+                    }
                 }
             }
         }

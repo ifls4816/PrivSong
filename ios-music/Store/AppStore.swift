@@ -68,7 +68,6 @@ final class AppStore: ObservableObject {
     private var activeSearchToken: UUID?
     private var libraryCacheSavedAt: Date?
     private var dailyRecommendationDay: Int?
-    private var mostPlayedDay: Int?
     private var audiobookEpisodeBookIds: [String: String] = [:]
     private var lastAudiobookProgressSave = Date.distantPast
 
@@ -248,13 +247,9 @@ final class AppStore: ObservableObject {
         playlists = content.playlists
         audiobookEpisodes = content.audiobookEpisodes
         recentlyAddedSongs = content.recentlyAddedSongs
+        mostPlayedSongs = content.mostPlayedSongs
 
         let day = currentRecommendationDay()
-        if mostPlayedDay != day || mostPlayedSongs.isEmpty {
-            mostPlayedSongs = content.mostPlayedSongs.isEmpty ? content.recentlyAddedSongs : content.mostPlayedSongs
-            mostPlayedDay = day
-        }
-
         let dailySeed = firstNonEmptySongList(
             content.dailySeedSongs,
             content.recentlyAddedSongs,
@@ -320,11 +315,15 @@ final class AppStore: ObservableObject {
     private func applyFullLibrary(
         songs: [EmbyAudioItem],
         playlists: [MusicPlaylist],
-        audiobookEpisodes: [EmbyAudioItem]
+        audiobookEpisodes: [EmbyAudioItem],
+        mostPlayedSongs: [EmbyAudioItem]? = nil
     ) {
         self.songs = songs
         self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
         self.audiobookEpisodes = audiobookEpisodes
+        if let mostPlayedSongs {
+            self.mostPlayedSongs = mostPlayedSongs
+        }
         self.hasLoadedInitialContent = true
         self.libraryCacheSavedAt = Date()
         self.saveLibrarySnapshot()
@@ -332,10 +331,22 @@ final class AppStore: ObservableObject {
     }
 
     private func fetchAndApplyFullLibrary(session: EmbySession) async throws {
-        let songs = try await client.fetchSongs(session: session)
-        let playlists = (try? await client.fetchPlaylists(session: session)) ?? []
-        let audiobookEpisodes = (try? await client.fetchAudiobookEpisodes(session: session)) ?? []
-        applyFullLibrary(songs: songs, playlists: playlists, audiobookEpisodes: audiobookEpisodes)
+        async let songs = client.fetchSongs(session: session)
+        async let playlists = client.fetchPlaylists(session: session)
+        async let audiobookEpisodes = client.fetchAudiobookEpisodes(session: session)
+        async let mostPlayedSongs = client.fetchMostPlayedSongs(session: session, limit: 50)
+
+        let loadedSongs = try await songs
+        let loadedPlaylists = (try? await playlists) ?? []
+        let loadedAudiobookEpisodes = (try? await audiobookEpisodes) ?? []
+        let loadedMostPlayedSongs = (try? await mostPlayedSongs) ?? self.mostPlayedSongs
+
+        applyFullLibrary(
+            songs: loadedSongs,
+            playlists: loadedPlaylists,
+            audiobookEpisodes: loadedAudiobookEpisodes,
+            mostPlayedSongs: loadedMostPlayedSongs
+        )
     }
 
     func refreshLibrary() async {
@@ -642,7 +653,6 @@ final class AppStore: ObservableObject {
         recentlyAddedSongs = []
         mostPlayedSongs = []
         dailyRecommendationDay = nil
-        mostPlayedDay = nil
         hasLoadedInitialContent = false
         libraryCacheSavedAt = nil
         errorMessage = nil
@@ -676,7 +686,6 @@ final class AppStore: ObservableObject {
         if dailyRecommendationDay != day {
             refreshDailyRecommendations(for: day)
         }
-        refreshMostPlayedIfNeeded(for: day)
     }
 
     private func updateLibraryStatus() {
@@ -740,7 +749,6 @@ final class AppStore: ObservableObject {
             albums = []; artists = []; albumSections = []; artistSections = []; recentSongs = []
             dailyRecommendedSongs = []; recentlyAddedSongs = []; mostPlayedSongs = []
             dailyRecommendationDay = nil
-            mostPlayedDay = nil
             return
         }
         albums = songs.musicAlbums
@@ -751,7 +759,6 @@ final class AppStore: ObservableObject {
         let day = currentRecommendationDay()
         refreshDailyRecommendations(for: day)
         recentlyAddedSongs = recentlyAdded(from: songs, limit: 50)
-        refreshMostPlayedIfNeeded(for: day, force: mostPlayedSongs.isEmpty)
         if playlists.isEmpty {
             playlists = songs.generatedPlaylists
         }
@@ -818,6 +825,9 @@ final class AppStore: ObservableObject {
         hasLoadedInitialContent = true
         libraryCacheSavedAt = snapshot.savedAt
         updateLibraryStatusFromCache()
+        Task {
+            await refreshMostPlayedSongsFromServer()
+        }
         return true
     }
 
@@ -881,10 +891,14 @@ final class AppStore: ObservableObject {
         dailyRecommendedSongs = dailyRecommendation(from: songs, day: day, limit: 50)
     }
 
-    private func refreshMostPlayedIfNeeded(for day: Int, force: Bool = false) {
-        guard force || mostPlayedDay != day else { return }
-        mostPlayedDay = day
-        mostPlayedSongs = mostPlayed(from: songs, fallback: recentSongs, limit: 50)
+    private func refreshMostPlayedSongsFromServer() async {
+        guard let session else { return }
+        do {
+            mostPlayedSongs = try await client.fetchMostPlayedSongs(session: session, limit: 50)
+        } catch is CancellationError {
+        } catch {
+            print("[AppStore] Failed to refresh most played songs: \(error.localizedDescription)")
+        }
     }
 
     private func currentRecommendationDay() -> Int {
@@ -906,21 +920,6 @@ final class AppStore: ObservableObject {
             return Array(sorted.prefix(limit))
         }
         return Array(songs.prefix(limit))
-    }
-
-    private func mostPlayed(from songs: [EmbyAudioItem], fallback: [EmbyAudioItem], limit: Int) -> [EmbyAudioItem] {
-        let played = songs.filter { ($0.userData?.playCount ?? 0) > 0 }
-        if !played.isEmpty {
-            return Array(played.sorted {
-                let leftCount = $0.userData?.playCount ?? 0
-                let rightCount = $1.userData?.playCount ?? 0
-                if leftCount != rightCount {
-                    return leftCount > rightCount
-                }
-                return ($0.userData?.lastPlayedDate ?? .distantPast) > ($1.userData?.lastPlayedDate ?? .distantPast)
-            }.prefix(limit))
-        }
-        return Array((fallback.isEmpty ? songs : fallback).prefix(limit))
     }
 
     private func deterministicScore(for id: String, day: Int) -> UInt64 {
