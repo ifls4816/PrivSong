@@ -118,7 +118,25 @@ private struct SongRowContextPreview: View {
         SongRowContent(song: song, imageURL: imageURL)
             .padding(.horizontal, SongRowLayout.cardHorizontalPadding)
             .frame(width: width, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: SongRowLayout.contextPreviewCornerRadius, style: .continuous))
+            .liquidGlassContextPreview(cornerRadius: SongRowLayout.contextPreviewCornerRadius)
+    }
+}
+
+extension View {
+    func liquidGlassContextPreview(cornerRadius: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        return self
+            .background {
+                shape
+                    .fill(Color.white.opacity(0.08))
+            }
+            .glassEffect(.regular.tint(Color.white.opacity(0.18)).interactive(), in: shape)
+            .overlay {
+                shape
+                    .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.8)
+            }
+            .shadow(color: Color.black.opacity(0.10), radius: 18, x: 0, y: 10)
     }
 }
 

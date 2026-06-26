@@ -374,7 +374,7 @@ private struct HomePlaylistRowContextPreview: View {
     var body: some View {
         HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
             .frame(width: width, alignment: .leading)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius, style: .continuous))
+            .liquidGlassContextPreview(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius)
     }
 }
 
