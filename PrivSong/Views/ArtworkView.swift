@@ -256,7 +256,7 @@ enum ArtworkDiskCache {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
         return base
-            .appendingPathComponent("MusicEmby", isDirectory: true)
+            .appendingPathComponent("PrivSong", isDirectory: true)
             .appendingPathComponent("ArtworkCache", isDirectory: true)
     }
 }

@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		1A0000010000000000000001 /* MusicEmbyApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000101 /* MusicEmbyApp.swift */; };
+		1A0000010000000000000001 /* PrivSongApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000101 /* PrivSongApp.swift */; };
 		1A0000010000000000000002 /* EmbyModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000102 /* EmbyModels.swift */; };
 		1A0000010000000000000003 /* EmbyClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000103 /* EmbyClient.swift */; };
 		1A0000010000000000000004 /* PlayerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000104 /* PlayerController.swift */; };
@@ -31,7 +31,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		1A0000010000000000000101 /* MusicEmbyApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicEmbyApp.swift; sourceTree = "<group>"; };
+		1A0000010000000000000101 /* PrivSongApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrivSongApp.swift; sourceTree = "<group>"; };
 		1A0000010000000000000102 /* EmbyModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbyModels.swift; sourceTree = "<group>"; };
 		1A0000010000000000000103 /* EmbyClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmbyClient.swift; sourceTree = "<group>"; };
 		1A0000010000000000000104 /* PlayerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerController.swift; sourceTree = "<group>"; };
@@ -80,7 +80,7 @@
 		1A0000010000000000000302 /* PrivSong */ = {
 			isa = PBXGroup;
 			children = (
-				1A0000010000000000000101 /* MusicEmbyApp.swift */,
+				1A0000010000000000000101 /* PrivSongApp.swift */,
 				1A0000010000000000000113 /* Info.plist */,
 				1A0000010000000000000117 /* PrivSong.entitlements */,
 				1A0000010000000000000402 /* InfoPlist.strings */,
@@ -247,7 +247,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				1A0000010000000000000001 /* MusicEmbyApp.swift in Sources */,
+				1A0000010000000000000001 /* PrivSongApp.swift in Sources */,
 				1A0000010000000000000002 /* EmbyModels.swift in Sources */,
 				1A0000010000000000000003 /* EmbyClient.swift in Sources */,
 				1A0000010000000000000004 /* PlayerController.swift in Sources */,

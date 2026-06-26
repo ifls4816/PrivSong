@@ -1292,7 +1292,7 @@ struct EmbyClient {
         }()
 
         var parts = [
-            #"MediaBrowser Client="MusicEmby""#,
+            #"MediaBrowser Client="PrivSong""#,
             #"Device="iPhone""#,
             #"DeviceId="\#(deviceId)""#,
             #"Version="1.0.0""#

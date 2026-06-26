@@ -1153,7 +1153,7 @@ private struct LibrarySnapshotStore {
     private var applicationSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MusicEmby", isDirectory: true)
+        return base.appendingPathComponent("PrivSong", isDirectory: true)
     }
 }
 
@@ -1214,7 +1214,7 @@ private struct InitialHomeContentSnapshotStore {
     private var applicationSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MusicEmby", isDirectory: true)
+        return base.appendingPathComponent("PrivSong", isDirectory: true)
     }
 }
 
@@ -1271,7 +1271,7 @@ private struct AudiobookProgressStore {
     private var applicationSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MusicEmby", isDirectory: true)
+        return base.appendingPathComponent("PrivSong", isDirectory: true)
     }
 
     private struct Snapshot: Codable {

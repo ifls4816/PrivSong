@@ -73,7 +73,7 @@ final class PlayerController: ObservableObject {
     private let remoteCommands = RemoteCommandCoordinator.shared
     private let client = EmbyClient()
     private let pathMonitor = NWPathMonitor()
-    private let pathMonitorQueue = DispatchQueue(label: "MusicEmby.NetworkPathMonitor")
+    private let pathMonitorQueue = DispatchQueue(label: "PrivSong.NetworkPathMonitor")
     private let audioCache = CurrentSongAudioCache()
     private let queueSnapshotStore = PlaybackQueueSnapshotStore()
 
@@ -1634,7 +1634,9 @@ enum PlaybackAudioCache {
     private static var directoryURL: URL {
         let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MusicEmby/CurrentPlaybackAudio", isDirectory: true)
+        return base
+            .appendingPathComponent("PrivSong", isDirectory: true)
+            .appendingPathComponent("CurrentPlaybackAudio", isDirectory: true)
     }
 
     private static func sanitizedPathComponent(_ value: String) -> String {
@@ -1796,7 +1798,7 @@ private struct PlaybackQueueSnapshotStore {
     private var applicationSupportDirectory: URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("MusicEmby", isDirectory: true)
+        return base.appendingPathComponent("PrivSong", isDirectory: true)
     }
 }
 

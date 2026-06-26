@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 @main
-struct MusicEmbyApp: App {
+struct PrivSongApp: App {
     @StateObject private var store = SharedAppEnvironment.shared.store
     @StateObject private var player = SharedAppEnvironment.shared.player
 
