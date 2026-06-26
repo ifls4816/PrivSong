@@ -498,7 +498,7 @@ private struct CollectionPlaybackButtons: View {
                 .font(.body.weight(.semibold))
                 .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.bordered)
             .disabled(isDisabled)
 
             Button(action: shuffle) {
@@ -509,7 +509,7 @@ private struct CollectionPlaybackButtons: View {
                 .font(.body.weight(.semibold))
                 .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .disabled(isDisabled)
         }
     }
@@ -522,17 +522,6 @@ private struct AudiobookPlaybackButtons: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Button(action: play) {
-                HStack(spacing: 7) {
-                    Image(systemName: "play.fill")
-                    Text("继续播放")
-                }
-                .font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(isDisabled)
-
             Button(action: restart) {
                 HStack(spacing: 7) {
                     Image(systemName: "gobackward")
@@ -542,6 +531,17 @@ private struct AudiobookPlaybackButtons: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.bordered)
+            .disabled(isDisabled)
+
+            Button(action: play) {
+                HStack(spacing: 7) {
+                    Image(systemName: "play.fill")
+                    Text("继续播放")
+                }
+                .font(.body.weight(.semibold))
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
             .disabled(isDisabled)
         }
     }
