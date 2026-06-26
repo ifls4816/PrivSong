@@ -75,10 +75,12 @@ final class PlayerController: ObservableObject {
     private let pathMonitor = NWPathMonitor()
     private let pathMonitorQueue = DispatchQueue(label: "MusicEmby.NetworkPathMonitor")
     private let audioCache = CurrentSongAudioCache()
+    private let queueSnapshotStore = PlaybackQueueSnapshotStore()
 
     private var session: EmbySession?
     private var queue: [EmbyAudioItem] = []
     private var queueBeforeShuffle: [EmbyAudioItem]?
+    private var restoredQueueCurrentSongID: String?
     private var streamCandidates: [URL] = []
     private var streamCandidateIndex = 0
     private var currentStreamURL: URL?
@@ -126,6 +128,20 @@ final class PlayerController: ObservableObject {
         configurePlayerObservers()
         configureAudioSessionObservers()
         configureNetworkPathMonitor()
+        restorePlaybackQueueSnapshot()
+    }
+
+    func setSession(_ session: EmbySession?) {
+        self.session = session
+    }
+
+    func clearPersistedQueue() {
+        queue = []
+        queueBeforeShuffle = nil
+        restoredQueueCurrentSongID = nil
+        queueSnapshotStore.clear()
+        syncQueueSnapshots(persists: false)
+        syncRemoteCommandAvailability()
     }
 
     func play(
@@ -146,6 +162,7 @@ final class PlayerController: ObservableObject {
 
         let shouldShuffle = shuffle ?? isShuffleEnabled
         isShuffleEnabled = shouldShuffle
+        restoredQueueCurrentSongID = nil
         if shouldShuffle {
             queueBeforeShuffle = playbackQueue
             queue = shuffledPlaybackQueue(from: playbackQueue, keeping: song)
@@ -252,9 +269,12 @@ final class PlayerController: ObservableObject {
 
     func removeUpcomingQueueItem(at index: Int) {
         let songs = activeQueue
-        guard let currentSong,
-              let currentIndex = songs.firstIndex(of: currentSong) else { return }
-        let removeIndex = songs.index(after: currentIndex) + index
+        let removeIndex: Int
+        if let currentIndex = currentQueueReferenceIndex(in: songs) {
+            removeIndex = songs.index(after: currentIndex) + index
+        } else {
+            removeIndex = index
+        }
         guard songs.indices.contains(removeIndex) else { return }
 
         var updated = songs
@@ -264,8 +284,10 @@ final class PlayerController: ObservableObject {
 
     func clearUpcomingQueue() {
         let songs = activeQueue
-        guard let currentSong,
-              let currentIndex = songs.firstIndex(of: currentSong) else { return }
+        guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
+            applyActiveQueue([])
+            return
+        }
         applyActiveQueue(Array(songs[...currentIndex]))
     }
 
@@ -273,8 +295,7 @@ final class PlayerController: ObservableObject {
         guard sourceIndex != destinationIndex else { return }
 
         let songs = activeQueue
-        guard let currentSong,
-              let currentIndex = songs.firstIndex(of: currentSong) else {
+        guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
             applyActiveQueue(reordered(songs, moving: sourceIndex, to: destinationIndex))
             return
         }
@@ -299,6 +320,7 @@ final class PlayerController: ObservableObject {
         case .one:
             repeatMode = .none
         }
+        persistQueueSnapshot()
         syncRemoteCommandAvailability()
     }
 
@@ -393,6 +415,7 @@ final class PlayerController: ObservableObject {
             : normalizedStartPosition
         isSwitchingTracks = true
         currentSong = song
+        restoredQueueCurrentSongID = nil
         elapsed = initialPosition
         duration = max(knownDuration, initialPosition)
         isPlaying = autoplay
@@ -750,16 +773,20 @@ final class PlayerController: ObservableObject {
 
     private func insertIntoUpcoming(_ song: EmbyAudioItem, offsetFromCurrent: Int?) {
         guard song.id != currentSong?.id else { return }
+        guard song.id != restoredQueueCurrentSongID else { return }
         var songs = activeQueue
-        guard let currentSong,
-              let currentIndex = songs.firstIndex(of: currentSong) else {
+        guard currentQueueReferenceIndex(in: songs) != nil else {
             songs.append(song)
             applyActiveQueue(songs)
             return
         }
 
         songs.removeAll { $0.id == song.id }
-        let baseIndex = songs.firstIndex(of: currentSong) ?? currentIndex
+        guard let baseIndex = currentQueueReferenceIndex(in: songs) else {
+            songs.append(song)
+            applyActiveQueue(songs)
+            return
+        }
         let insertionIndex: Int
         if let offsetFromCurrent {
             insertionIndex = min(songs.index(baseIndex, offsetBy: offsetFromCurrent), songs.endIndex)
@@ -770,18 +797,70 @@ final class PlayerController: ObservableObject {
         applyActiveQueue(songs)
     }
 
-    private func syncQueueSnapshots() {
+    private func currentQueueReferenceIndex(in songs: [EmbyAudioItem]) -> Int? {
+        if let currentSong,
+           let index = songs.firstIndex(of: currentSong) {
+            return index
+        }
+        guard let restoredQueueCurrentSongID else { return nil }
+        return songs.firstIndex { $0.id == restoredQueueCurrentSongID }
+    }
+
+    private func syncQueueSnapshots(persists: Bool = true) {
         let songs = activeQueue
         queueSnapshot = songs
 
-        guard let currentSong,
-              let currentIndex = songs.firstIndex(of: currentSong) else {
+        guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
             upcomingQueueSnapshot = songs
+            if persists {
+                persistQueueSnapshot()
+            }
             return
         }
 
         let nextIndex = songs.index(after: currentIndex)
         upcomingQueueSnapshot = nextIndex < songs.endIndex ? Array(songs[nextIndex...]) : []
+        if persists {
+            persistQueueSnapshot()
+        }
+    }
+
+    private func restorePlaybackQueueSnapshot() {
+        guard let snapshot = queueSnapshotStore.load(),
+              !snapshot.queue.isEmpty else { return }
+
+        queue = snapshot.queue
+        queueBeforeShuffle = snapshot.isShuffleEnabled ? snapshot.queueBeforeShuffle : nil
+        isShuffleEnabled = snapshot.isShuffleEnabled
+        repeatMode = snapshot.repeatMode
+        if let currentSongID = snapshot.currentSongID,
+           snapshot.queue.contains(where: { $0.id == currentSongID }) {
+            restoredQueueCurrentSongID = currentSongID
+        } else {
+            restoredQueueCurrentSongID = nil
+        }
+
+        syncQueueSnapshots(persists: false)
+        syncRemoteCommandAvailability()
+    }
+
+    private func persistQueueSnapshot() {
+        guard !queue.isEmpty else {
+            queueSnapshotStore.clear()
+            return
+        }
+
+        let currentSongID = (currentSong?.id ?? restoredQueueCurrentSongID).flatMap { id in
+            queue.contains { $0.id == id } ? id : nil
+        }
+
+        queueSnapshotStore.save(
+            queue: queue,
+            queueBeforeShuffle: queueBeforeShuffle,
+            currentSongID: currentSongID,
+            isShuffleEnabled: isShuffleEnabled,
+            repeatMode: repeatMode
+        )
     }
 
     private func reordered(_ songs: [EmbyAudioItem], moving sourceIndex: Int, to destinationIndex: Int) -> [EmbyAudioItem] {
@@ -1631,7 +1710,7 @@ private extension NWPath {
     }
 }
 
-enum RepeatMode {
+enum RepeatMode: String, Codable {
     case none
     case all
     case one
@@ -1643,6 +1722,81 @@ enum RepeatMode {
         case .one:
             "repeat.1"
         }
+    }
+}
+
+private struct PlaybackQueueSnapshot: Codable {
+    let version: Int
+    let savedAt: Date
+    let queue: [EmbyAudioItem]
+    let queueBeforeShuffle: [EmbyAudioItem]?
+    let currentSongID: String?
+    let isShuffleEnabled: Bool
+    let repeatMode: RepeatMode
+}
+
+private struct PlaybackQueueSnapshotStore {
+    private let version = 1
+    private let fileName = "playback-queue-snapshot.json"
+
+    func load() -> PlaybackQueueSnapshot? {
+        let url = snapshotURL
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let snapshot = try? decoder.decode(PlaybackQueueSnapshot.self, from: data),
+              snapshot.version == version else {
+            return nil
+        }
+        return snapshot
+    }
+
+    func save(
+        queue: [EmbyAudioItem],
+        queueBeforeShuffle: [EmbyAudioItem]?,
+        currentSongID: String?,
+        isShuffleEnabled: Bool,
+        repeatMode: RepeatMode
+    ) {
+        let snapshot = PlaybackQueueSnapshot(
+            version: version,
+            savedAt: Date(),
+            queue: queue,
+            queueBeforeShuffle: queueBeforeShuffle,
+            currentSongID: currentSongID,
+            isShuffleEnabled: isShuffleEnabled,
+            repeatMode: repeatMode
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+
+        do {
+            let directory = applicationSupportDirectory
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let data = try encoder.encode(snapshot)
+            try data.write(to: snapshotURL, options: [.atomic])
+        } catch {
+            print("[PlaybackQueueSnapshotStore] Failed to save queue: \(error.localizedDescription)")
+        }
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: snapshotURL)
+    }
+
+    private var snapshotURL: URL {
+        applicationSupportDirectory.appendingPathComponent(fileName)
+    }
+
+    private var applicationSupportDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("MusicEmby", isDirectory: true)
     }
 }
 

@@ -74,6 +74,7 @@ final class AppStore: ObservableObject {
     weak var player: PlayerController? {
         didSet {
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
+            player?.setSession(session)
             player?.onPlaybackPositionChanged = { [weak self] item, position, duration, isFinished in
                 self?.recordAudiobookPlayback(
                     item: item,
@@ -219,6 +220,7 @@ final class AppStore: ObservableObject {
         await perform {
             let session = try await client.authenticate(server: server, username: username, password: password)
             self.session = session
+            self.player?.setSession(session)
             self.persist(session)
             try await self.fetchAndApplyInitialHomeContent(session: session)
         }
@@ -643,6 +645,8 @@ final class AppStore: ObservableObject {
 
     func signOut() {
         session = nil
+        player?.setSession(nil)
+        player?.clearPersistedQueue()
         songs = []
         playlists = []
         audiobookEpisodes = []
@@ -796,6 +800,7 @@ final class AppStore: ObservableObject {
             return
         }
         session = restored
+        player?.setSession(restored)
 
         if restoreLibrarySnapshot() {
             return
