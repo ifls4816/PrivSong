@@ -687,13 +687,6 @@ final class AppStore: ObservableObject {
             : "Cache cleared. Current library remains in memory."
     }
 
-    func refreshDailyRecommendationsIfNeeded() {
-        let day = currentRecommendationDay()
-        if dailyRecommendationDay != day {
-            refreshDailyRecommendations(for: day)
-        }
-    }
-
     private func updateLibraryStatus() {
         if songs.isEmpty, audiobooks.isEmpty {
             libraryStatus = "Connected, but Emby returned 0 audio items."

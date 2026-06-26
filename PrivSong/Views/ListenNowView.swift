@@ -385,9 +385,6 @@ struct BrowseView: View {
             .scrollContentBackground(.hidden)
             .background(Color.musicPageBackground.ignoresSafeArea())
             .mainPageToolbar("发现")
-            .onAppear {
-                store.refreshDailyRecommendationsIfNeeded()
-            }
         }
     }
 
