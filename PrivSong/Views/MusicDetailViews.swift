@@ -436,7 +436,10 @@ private struct MusicCollectionDetailView: View {
             CollectionPlaybackButtons(
                 isDisabled: songs.isEmpty,
                 play: { play(songs.first) },
-                shuffle: { play(songs.randomElement()) }
+                shuffle: {
+                    guard let randomSong = songs.randomElement() else { return }
+                    store.play(song: randomSong, in: songs, shuffle: true)
+                }
             )
         }
         .frame(maxWidth: .infinity)
@@ -474,7 +477,7 @@ private struct SongListPlaybackControls: View {
             },
             shuffle: {
                 guard let randomSong = songs.randomElement() else { return }
-                store.play(song: randomSong, in: songs)
+                store.play(song: randomSong, in: songs, shuffle: true)
             }
         )
     }

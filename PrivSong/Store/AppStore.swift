@@ -162,7 +162,8 @@ final class AppStore: ObservableObject {
         song: EmbyAudioItem,
         in songs: [EmbyAudioItem],
         startPosition: TimeInterval = 0,
-        durationOverride: TimeInterval? = nil
+        durationOverride: TimeInterval? = nil,
+        shuffle: Bool? = nil
     ) {
         guard let session else { return }
         registerPlayback(song: song)
@@ -171,7 +172,8 @@ final class AppStore: ObservableObject {
             in: songs,
             session: session,
             startPosition: startPosition,
-            durationOverride: durationOverride
+            durationOverride: durationOverride,
+            shuffle: shuffle
         )
     }
 

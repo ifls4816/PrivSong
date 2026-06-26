@@ -133,7 +133,8 @@ final class PlayerController: ObservableObject {
         in songs: [EmbyAudioItem],
         session: EmbySession,
         startPosition: TimeInterval = 0,
-        durationOverride: TimeInterval? = nil
+        durationOverride: TimeInterval? = nil,
+        shuffle: Bool? = nil
     ) {
         guard !isSwitchingTracks else { return }
 
@@ -143,7 +144,9 @@ final class PlayerController: ObservableObject {
             playbackQueue.insert(song, at: 0)
         }
 
-        if isShuffleEnabled {
+        let shouldShuffle = shuffle ?? isShuffleEnabled
+        isShuffleEnabled = shouldShuffle
+        if shouldShuffle {
             queueBeforeShuffle = playbackQueue
             queue = shuffledPlaybackQueue(from: playbackQueue, keeping: song)
         } else {

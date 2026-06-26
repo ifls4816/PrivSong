@@ -590,9 +590,8 @@ final class CarPlayCoordinator: NSObject {
                 image: UIImage(systemName: "shuffle") ?? UIImage()
             ) { [weak self] _ in
                 Task { @MainActor in
-                    let shuffledSongs = songs.shuffled()
-                    guard let first = shuffledSongs.first else { return }
-                    self?.store.play(song: first, in: shuffledSongs)
+                    guard let randomSong = songs.randomElement() else { return }
+                    self?.store.play(song: randomSong, in: songs, shuffle: true)
                     self?.showNowPlayingAfterPlaybackStarts()
                 }
             }
