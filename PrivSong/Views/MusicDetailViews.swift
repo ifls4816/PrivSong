@@ -1,7 +1,14 @@
 import SwiftUI
 
+private enum SongRowLayout {
+    static let cardHorizontalPadding: CGFloat = 12
+    static let cardCornerRadius: CGFloat = 18
+    static let contextPreviewCornerRadius: CGFloat = 18
+}
+
 struct SongRow: View {
     @EnvironmentObject private var store: AppStore
+    @State private var rowWidth: CGFloat?
 
     let song: EmbyAudioItem
     let imageURL: URL?
@@ -11,69 +18,15 @@ struct SongRow: View {
         Button {
             play(song)
         } label: {
-            HStack(spacing: 12) {
-                ArtworkView(url: imageURL, cornerRadius: 5)
-                    .frame(width: 44, height: 44)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(song.name)
-                        .font(.system(size: 15, weight: .semibold))
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
-                    HStack(spacing: 6) {
-                        if let tagText = song.audioInfoTagText {
-                            Text(tagText)
-                                .font(.system(size: 9.5, weight: .bold))
-                                .foregroundStyle(Color.musicRed)
-                                .lineLimit(1)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
-                                .background(Color.musicRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                        .strokeBorder(Color.musicRed.opacity(0.32), lineWidth: 0.8)
-                                }
-                        }
-
-                        Text(song.artistLine)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                Text(song.duration.musicDurationText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
+            SongRowContent(song: song, imageURL: imageURL)
         }
         .buttonStyle(.plain)
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button {
-                store.addToQueueEnd(song)
-            } label: {
-                Label("加入队列", systemImage: "text.badge.plus")
-            }
-            .tint(.blue)
-
-            Button {
-                store.playNext(song)
-            } label: {
-                Label("下一首", systemImage: "text.line.first.and.arrowtriangle.forward")
-            }
-            .tint(.green)
-
-            Button {
-                store.toggleFavorite(song)
-            } label: {
-                Label("喜欢", systemImage: store.isFavorite(song) ? "star.fill" : "star")
-            }
-            .tint(.musicRed)
+        .contentShape(.interaction, Rectangle())
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: SongRowLayout.contextPreviewCornerRadius, style: .continuous))
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.width
+        } action: { newWidth in
+            rowWidth = newWidth
         }
         .contextMenu {
             Button {
@@ -93,11 +46,79 @@ struct SongRow: View {
             } label: {
                 Label(store.isFavorite(song) ? "取消喜欢" : "喜欢", systemImage: store.isFavorite(song) ? "star.slash" : "star")
             }
+        } preview: {
+            SongRowContextPreview(
+                song: song,
+                imageURL: imageURL,
+                width: rowWidth.map { $0 + SongRowLayout.cardHorizontalPadding * 2 }
+            )
         }
     }
 
     private func play(_ song: EmbyAudioItem) {
         store.play(song: song, in: songs ?? store.songs)
+    }
+}
+
+private struct SongRowContent: View {
+    let song: EmbyAudioItem
+    let imageURL: URL?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ArtworkView(url: imageURL, cornerRadius: 5)
+                .frame(width: 44, height: 44)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(song.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                HStack(spacing: 6) {
+                    if let tagText = song.audioInfoTagText {
+                        Text(tagText)
+                            .font(.system(size: 9.5, weight: .bold))
+                            .foregroundStyle(Color.musicRed)
+                            .lineLimit(1)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.musicRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .strokeBorder(Color.musicRed.opacity(0.32), lineWidth: 0.8)
+                            }
+                    }
+
+                    Text(song.artistLine)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Text(song.duration.musicDurationText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct SongRowContextPreview: View {
+    let song: EmbyAudioItem
+    let imageURL: URL?
+    let width: CGFloat?
+
+    var body: some View {
+        SongRowContent(song: song, imageURL: imageURL)
+            .padding(.horizontal, SongRowLayout.cardHorizontalPadding)
+            .frame(width: width, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: SongRowLayout.contextPreviewCornerRadius, style: .continuous))
     }
 }
 
@@ -632,8 +653,8 @@ struct SongRowsCard: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, SongRowLayout.cardHorizontalPadding)
         .padding(.vertical, 8)
-        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: SongRowLayout.cardCornerRadius, style: .continuous))
     }
 }
