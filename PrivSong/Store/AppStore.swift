@@ -298,6 +298,55 @@ final class AppStore: ObservableObject {
         return songs
     }
 
+    func fetchRealtimeMusicFolders() async throws -> [MusicFolder] {
+        guard let session else { return [] }
+        return try await client.fetchMusicFolders(session: session)
+    }
+
+    func fetchRealtimeFolderSongs(folderId: String) async throws -> [EmbyAudioItem] {
+        guard let session else { return [] }
+        return try await client.fetchFolderSongs(folderId: folderId, session: session)
+    }
+
+    func fetchRealtimePlaylistSummaries() async throws -> [MusicPlaylist] {
+        guard let session else { return [] }
+        return try await client.fetchPlaylistSummaries(session: session)
+    }
+
+    func createRealtimePlaylist(name: String, songs: [EmbyAudioItem]) async throws -> MusicPlaylist {
+        guard let session else { throw EmbyError.invalidResponse }
+        return try await client.createPlaylist(name: name, songs: songs, session: session)
+    }
+
+    func replaceRealtimePlaylist(playlistId: String, songs: [EmbyAudioItem]) async throws {
+        guard let session else { throw EmbyError.invalidResponse }
+        try await client.replacePlaylistSongs(playlistId: playlistId, songs: songs, session: session)
+    }
+
+    func deletePlaylist(playlistId: String) async throws {
+        guard let session else { throw EmbyError.invalidResponse }
+        try await client.deletePlaylist(playlistId: playlistId, session: session)
+        playlists.removeAll { $0.id == playlistId }
+    }
+
+    func renamePlaylist(playlistId: String, name: String) async throws {
+        guard let session else { throw EmbyError.invalidResponse }
+        try await client.renamePlaylist(playlistId: playlistId, name: name, session: session)
+        guard let index = playlists.firstIndex(where: { $0.id == playlistId }) else { return }
+        let playlist = playlists[index]
+        var updatedPlaylists = playlists
+        updatedPlaylists[index] = MusicPlaylist(
+            id: playlist.id,
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            description: playlist.description,
+            songs: playlist.songs,
+            songCount: playlist.songCount
+        )
+        playlists = updatedPlaylists.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+    }
+
     func refreshAudiobookProgress(for audiobook: Audiobook) async {
         guard let session else { return }
         let episodeIds = audiobook.episodes.map(\.id)

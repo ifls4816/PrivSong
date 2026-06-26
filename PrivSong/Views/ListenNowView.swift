@@ -6,6 +6,10 @@ struct ListenNowView: View {
     @State private var path: [HomeRoute] = []
     @State private var visiblePlaylistCount = 30
     @State private var isLoadingNextPlaylistPage = false
+    @State private var editingPlaylist: MusicPlaylist?
+    @State private var playlistPendingDelete: MusicPlaylist?
+    @State private var playlistErrorMessage: String?
+    @State private var isShowingPlaylistError = false
 
     private let playlistPageSize = 30
 
@@ -83,7 +87,41 @@ struct ListenNowView: View {
                 path.append(route)
                 pendingRoute = nil
             }
+            .sheet(item: $editingPlaylist) { playlist in
+                PlaylistEditSheet(playlist: playlist)
+                    .environmentObject(store)
+            }
+            .confirmationDialog(
+                "删除歌单？",
+                isPresented: isShowingDeleteConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("删除", role: .destructive) {
+                    Task { await deletePendingPlaylist() }
+                }
+                Button("取消", role: .cancel) {
+                    playlistPendingDelete = nil
+                }
+            } message: {
+                Text("删除后将从 Emby 服务器移除该歌单。")
+            }
+            .alert("歌单编辑失败", isPresented: $isShowingPlaylistError) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(playlistErrorMessage ?? "")
+            }
         }
+    }
+
+    private var isShowingDeleteConfirmation: Binding<Bool> {
+        Binding(
+            get: { playlistPendingDelete != nil },
+            set: { isPresented in
+                if !isPresented {
+                    playlistPendingDelete = nil
+                }
+            }
+        )
     }
 
     private var libraryCategorySection: some View {
@@ -136,6 +174,18 @@ struct ListenNowView: View {
                     )
                 }
                 .buttonStyle(.plain)
+
+                NavigationLink {
+                    MusicFolderLibraryView()
+                } label: {
+                    LibraryCategoryCard(
+                        title: "文件夹",
+                        subtitle: "Emby 目录",
+                        icon: "folder.fill",
+                        color: Color.musicRed
+                    )
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -151,12 +201,18 @@ struct ListenNowView: View {
 
             LazyVStack(spacing: 0) {
                 ForEach(Array(visiblePlaylists.enumerated()), id: \.element.id) { index, playlist in
-                    Button {
-                        path.append(.playlist(playlist.id))
-                    } label: {
-                        HomePlaylistRow(playlist: playlist)
-                    }
-                    .buttonStyle(.plain)
+                    SwipeableHomePlaylistRow(
+                        playlist: playlist,
+                        open: {
+                            path.append(.playlist(playlist.id))
+                        },
+                        edit: {
+                            editingPlaylist = playlist
+                        },
+                        delete: {
+                            playlistPendingDelete = playlist
+                        }
+                    )
                     .onAppear {
                         loadNextPlaylistPageIfNeeded(appearingIndex: index)
                     }
@@ -197,6 +253,17 @@ struct ListenNowView: View {
             isLoadingNextPlaylistPage = false
         }
     }
+
+    private func deletePendingPlaylist() async {
+        guard let playlist = playlistPendingDelete else { return }
+        playlistPendingDelete = nil
+        do {
+            try await store.deletePlaylist(playlistId: playlist.id)
+        } catch {
+            playlistErrorMessage = error.localizedDescription
+            isShowingPlaylistError = true
+        }
+    }
 }
 
 enum HomeRoute: Hashable {
@@ -234,6 +301,133 @@ struct HomePlaylistRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+    }
+}
+
+private struct SwipeableHomePlaylistRow: View {
+    let playlist: MusicPlaylist
+    let open: () -> Void
+    let edit: () -> Void
+    let delete: () -> Void
+
+    private let horizontalThreshold: CGFloat = 56
+
+    var body: some View {
+        HomePlaylistRow(playlist: playlist)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
+            .simultaneousGesture(swipeGesture)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .contextMenu {
+                if playlist.isServerEditable {
+                    Button {
+                        edit()
+                    } label: {
+                        Label("编辑", systemImage: "pencil")
+                    }
+
+                    Button(role: .destructive) {
+                        delete()
+                    } label: {
+                        Label("删除", systemImage: "trash")
+                    }
+                }
+            }
+    }
+
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+            .onEnded { value in
+                guard playlist.isServerEditable else { return }
+
+                let horizontalDistance = value.translation.width
+                let verticalDistance = value.translation.height
+                guard abs(horizontalDistance) >= horizontalThreshold,
+                      abs(horizontalDistance) > abs(verticalDistance) * 1.2 else {
+                    return
+                }
+
+                if horizontalDistance < 0 {
+                    edit()
+                } else {
+                    delete()
+                }
+            }
+    }
+}
+
+private struct PlaylistEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var store: AppStore
+
+    let playlist: MusicPlaylist
+
+    @State private var name: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+
+    init(playlist: MusicPlaylist) {
+        self.playlist = playlist
+        _name = State(initialValue: playlist.name)
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !trimmedName.isEmpty && trimmedName != playlist.name && !isSaving
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("名称") {
+                    TextField("歌单名称", text: $name)
+                        .textInputAutocapitalization(.never)
+                        .submitLabel(.done)
+                }
+
+                if let errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("编辑歌单")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        dismiss()
+                    }
+                    .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSaving ? "保存中" : "保存") {
+                        Task { await save() }
+                    }
+                    .disabled(!canSave)
+                }
+            }
+        }
+    }
+
+    private func save() async {
+        guard canSave else { return }
+
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            try await store.renamePlaylist(playlistId: playlist.id, name: trimmedName)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 

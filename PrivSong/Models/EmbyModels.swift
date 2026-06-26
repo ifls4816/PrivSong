@@ -169,6 +169,21 @@ struct EmbyPlaylistItem: Identifiable, Decodable, Hashable {
     }
 }
 
+struct EmbyPlaylistCreationResponse: Decodable {
+    let id: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id"
+        case playlistId = "PlaylistId"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id)
+            ?? container.decodeIfPresent(String.self, forKey: .playlistId)
+    }
+}
+
 struct EmbyLibraryView: Identifiable, Decodable, Hashable {
     let id: String
     let name: String
@@ -195,6 +210,12 @@ struct EmbyLibraryView: Identifiable, Decodable, Hashable {
             name.localizedCaseInsensitiveContains("有声书") ||
             name.localizedCaseInsensitiveContains("听书")
     }
+}
+
+struct MusicFolder: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let songCount: Int?
 }
 
 struct EmbyAudioItem: Identifiable, Codable, Hashable {
@@ -580,6 +601,10 @@ struct MusicPlaylist: Identifiable, Codable, Hashable {
 
     var hasCompleteSongList: Bool {
         songCount.map { $0 <= songs.count } ?? true
+    }
+
+    var isServerEditable: Bool {
+        !["recent", "long", "short"].contains(id)
     }
 }
 

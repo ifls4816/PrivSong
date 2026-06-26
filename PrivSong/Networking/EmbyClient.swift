@@ -239,6 +239,126 @@ struct EmbyClient {
         }
     }
 
+    func fetchMusicFolders(session embySession: EmbySession) async throws -> [MusicFolder] {
+        let views = try await fetchViews(session: embySession)
+        let musicViews = views.filter(\.isMusicLibrary)
+        guard !musicViews.isEmpty else { return [] }
+
+        var folders: [MusicFolder] = []
+        var seen = Set<String>()
+        for view in musicViews {
+            let children = try await fetchDirectoryItems(parentId: view.id, session: embySession)
+            for child in children where child.canContainAudio && seen.insert(child.id).inserted {
+                folders.append(MusicFolder(id: child.id, name: child.name, songCount: nil))
+            }
+        }
+
+        return folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    func fetchFolderSongs(folderId: String, session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+        let children = try await fetchDirectoryItems(parentId: folderId, session: embySession)
+        return uniqueSongs(children.filter { $0.isAudio && !$0.isAudiobookAudio })
+    }
+
+    func createPlaylist(name: String, songs: [EmbyAudioItem], session embySession: EmbySession) async throws -> MusicPlaylist {
+        let playlistName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !playlistName.isEmpty else { throw EmbyError.invalidPlaylistName }
+
+        let songIds = songs.map(\.id)
+        let initialItemIds = Array(songIds.prefix(80))
+        let remainingItemIds = Array(songIds.dropFirst(initialItemIds.count))
+
+        var components = URLComponents(
+            url: embySession.serverURL.appending(path: "Playlists"),
+            resolvingAgainstBaseURL: false
+        )
+        var queryItems = [
+            URLQueryItem(name: "UserId", value: embySession.userId),
+            URLQueryItem(name: "Name", value: playlistName),
+            URLQueryItem(name: "MediaType", value: "Audio")
+        ]
+        if !initialItemIds.isEmpty {
+            queryItems.append(URLQueryItem(name: "Ids", value: initialItemIds.joined(separator: ",")))
+        }
+        components?.queryItems = queryItems
+        guard let url = components?.url else { throw EmbyError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+
+        let response: EmbyPlaylistCreationResponse = try await send(request)
+        guard let playlistId = response.id, !playlistId.isEmpty else {
+            throw EmbyError.invalidResponse
+        }
+
+        try await addPlaylistItems(playlistId: playlistId, itemIds: remainingItemIds, session: embySession)
+        return MusicPlaylist(
+            id: playlistId,
+            name: playlistName,
+            description: "\(songs.count) 首歌曲",
+            songs: songs,
+            songCount: songs.count
+        )
+    }
+
+    func replacePlaylistSongs(playlistId: String, songs: [EmbyAudioItem], session embySession: EmbySession) async throws {
+        let currentEntries = try await fetchPlaylistEntries(playlistId: playlistId, session: embySession)
+        let currentEntryIds = currentEntries.compactMap(\.playlistItemId)
+        let previousItemIds = currentEntries.map(\.itemId)
+
+        guard currentEntries.isEmpty || currentEntryIds.count == currentEntries.count else {
+            throw EmbyError.missingPlaylistItemIds
+        }
+
+        var removedExistingItems = false
+        do {
+            if !currentEntryIds.isEmpty {
+                try await removePlaylistItems(playlistId: playlistId, entryIds: currentEntryIds, session: embySession)
+            }
+            removedExistingItems = true
+            try await addPlaylistItems(playlistId: playlistId, itemIds: songs.map(\.id), session: embySession)
+        } catch {
+            if removedExistingItems {
+                try? await removeAllPlaylistItems(playlistId: playlistId, session: embySession)
+                if !previousItemIds.isEmpty {
+                    try? await addPlaylistItems(playlistId: playlistId, itemIds: previousItemIds, session: embySession)
+                }
+            }
+            throw error
+        }
+    }
+
+    func deletePlaylist(playlistId: String, session embySession: EmbySession) async throws {
+        var request = URLRequest(url: embySession.serverURL.appending(path: "Items/\(playlistId)"))
+        request.httpMethod = "DELETE"
+        request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+        try await sendEmpty(request)
+    }
+
+    func renamePlaylist(playlistId: String, name: String, session embySession: EmbySession) async throws {
+        let playlistName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !playlistName.isEmpty else { throw EmbyError.invalidPlaylistName }
+
+        var itemRequest = URLRequest(url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Items/\(playlistId)"))
+        itemRequest.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+        let itemData = try await sendData(itemRequest)
+
+        guard var item = try JSONSerialization.jsonObject(with: itemData) as? [String: Any] else {
+            throw EmbyError.invalidResponse
+        }
+        item["Name"] = playlistName
+        item["SortName"] = playlistName
+
+        var updateRequest = URLRequest(url: embySession.serverURL.appending(path: "Items/\(playlistId)"))
+        updateRequest.httpMethod = "POST"
+        updateRequest.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+        updateRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        updateRequest.httpBody = try JSONSerialization.data(withJSONObject: item)
+        try await sendEmpty(updateRequest)
+    }
+
     private func fetchViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Views"),
@@ -642,6 +762,101 @@ struct EmbyClient {
         return uniqueSongs(songs)
     }
 
+    private func fetchPlaylistEntries(playlistId: String, session embySession: EmbySession) async throws -> [EmbyPlaylistEntry] {
+        let pageLimit = 200
+        var startIndex = 0
+        var entries: [EmbyPlaylistEntry] = []
+        var totalRecordCount: Int?
+
+        repeat {
+            var components = URLComponents(
+                url: embySession.serverURL.appending(path: "Playlists/\(playlistId)/Items"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "UserId", value: embySession.userId),
+                URLQueryItem(name: "Fields", value: "\(itemFields),PlaylistItemId"),
+                URLQueryItem(name: "StartIndex", value: "\(startIndex)"),
+                URLQueryItem(name: "Limit", value: "\(pageLimit)")
+            ]
+            guard let url = components?.url else { throw EmbyError.invalidURL }
+
+            var request = URLRequest(url: url)
+            request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+
+            let response: EmbyPlaylistEntriesResponse = try await send(request)
+            entries.append(contentsOf: response.items)
+            totalRecordCount = response.totalRecordCount
+
+            if response.items.count < pageLimit {
+                break
+            }
+            startIndex += response.items.count
+        } while totalRecordCount.map { entries.count < $0 } ?? true
+
+        return entries
+    }
+
+    private func addPlaylistItems(playlistId: String, itemIds: [String], session embySession: EmbySession) async throws {
+        for chunk in chunks(from: itemIds, size: 80) {
+            var components = URLComponents(
+                url: embySession.serverURL.appending(path: "Playlists/\(playlistId)/Items"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "UserId", value: embySession.userId),
+                URLQueryItem(name: "Ids", value: chunk.joined(separator: ","))
+            ]
+            guard let url = components?.url else { throw EmbyError.invalidURL }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+            try await sendEmpty(request)
+        }
+    }
+
+    private func removePlaylistItems(playlistId: String, entryIds: [String], session embySession: EmbySession) async throws {
+        for chunk in chunks(from: entryIds, size: 80) {
+            var components = URLComponents(
+                url: embySession.serverURL.appending(path: "Playlists/\(playlistId)/Items"),
+                resolvingAgainstBaseURL: false
+            )
+            components?.queryItems = [
+                URLQueryItem(name: "UserId", value: embySession.userId),
+                URLQueryItem(name: "EntryIds", value: chunk.joined(separator: ","))
+            ]
+            guard let url = components?.url else { throw EmbyError.invalidURL }
+
+            var request = URLRequest(url: url)
+            request.httpMethod = "DELETE"
+            request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+            try await sendEmpty(request)
+        }
+    }
+
+    private func removeAllPlaylistItems(playlistId: String, session embySession: EmbySession) async throws {
+        let entries = try await fetchPlaylistEntries(playlistId: playlistId, session: embySession)
+        let entryIds = entries.compactMap(\.playlistItemId)
+        guard entries.isEmpty || entryIds.count == entries.count else {
+            throw EmbyError.missingPlaylistItemIds
+        }
+        try await removePlaylistItems(playlistId: playlistId, entryIds: entryIds, session: embySession)
+    }
+
+    private func chunks(from values: [String], size: Int) -> [[String]] {
+        guard size > 0, !values.isEmpty else { return [] }
+
+        var result: [[String]] = []
+        var startIndex = values.startIndex
+        while startIndex < values.endIndex {
+            let endIndex = values.index(startIndex, offsetBy: size, limitedBy: values.endIndex) ?? values.endIndex
+            result.append(Array(values[startIndex..<endIndex]))
+            startIndex = endIndex
+        }
+        return result
+    }
+
     private func uniqueSongs(_ songs: [EmbyAudioItem]) -> [EmbyAudioItem] {
         var seen = Set<String>()
         return songs.filter { song in
@@ -963,6 +1178,15 @@ struct EmbyClient {
         }
     }
 
+    private func sendData(_ request: URLRequest) async throws -> Data {
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else { throw EmbyError.invalidResponse }
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            throw EmbyError.server(statusCode: httpResponse.statusCode)
+        }
+        return data
+    }
+
     private func sendEmpty(_ request: URLRequest) async throws {
         let (_, response) = try await session.data(for: request)
         guard let httpResponse = response as? HTTPURLResponse else { throw EmbyError.invalidResponse }
@@ -1006,12 +1230,34 @@ struct EmbyClient {
     }
 }
 
+private struct EmbyPlaylistEntriesResponse: Decodable {
+    let items: [EmbyPlaylistEntry]
+    let totalRecordCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case items = "Items"
+        case totalRecordCount = "TotalRecordCount"
+    }
+}
+
+private struct EmbyPlaylistEntry: Decodable {
+    let itemId: String
+    let playlistItemId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case itemId = "Id"
+        case playlistItemId = "PlaylistItemId"
+    }
+}
+
 enum EmbyError: LocalizedError {
     case invalidURL
     case invalidResponse
     case server(statusCode: Int)
     case decoding(String)
     case noPlayableLibrary([String])
+    case invalidPlaylistName
+    case missingPlaylistItemIds
 
     var errorDescription: String? {
         switch self {
@@ -1028,6 +1274,10 @@ enum EmbyError: LocalizedError {
                 return "当前 Emby 用户没有可见媒体库。"
             }
             return "当前 Emby 用户没有可见音乐或有声书库。可见媒体库：\(libraries.joined(separator: ", "))。"
+        case .invalidPlaylistName:
+            return "歌单名称不能为空。"
+        case .missingPlaylistItemIds:
+            return "Emby 未返回可编辑的歌单条目标识，无法编辑该歌单。"
         }
     }
 }
