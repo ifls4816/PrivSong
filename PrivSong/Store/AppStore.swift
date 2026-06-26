@@ -11,6 +11,7 @@ final class AppStore: ObservableObject {
     @Published var isSearching = false
     @Published private(set) var hasLoadedInitialContent = false
     @Published var errorMessage: String?
+    @Published var favoriteErrorMessage: String?
     @Published var libraryStatus = "Not connected"
     @Published var favoriteSongIds: Set<String> = []
     @Published var recentSongIds: [String] = []
@@ -49,6 +50,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var audiobookSections: [IndexedSection<Audiobook>] = []
     @Published private(set) var audiobookProgress: [String: AudiobookPlaybackProgress] = [:]
     @Published private(set) var recentSongs: [EmbyAudioItem] = []
+    @Published private(set) var serverFavoriteSongs: [EmbyAudioItem] = []
     @Published private(set) var dailyRecommendedSongs: [EmbyAudioItem] = []
     @Published private(set) var recentlyAddedSongs: [EmbyAudioItem] = []
     @Published private(set) var mostPlayedSongs: [EmbyAudioItem] = []
@@ -70,6 +72,7 @@ final class AppStore: ObservableObject {
     private var dailyRecommendationDay: Int?
     private var audiobookEpisodeBookIds: [String: String] = [:]
     private var lastAudiobookProgressSave = Date.distantPast
+    private var pendingFavoriteSongIds: Set<String> = []
 
     weak var player: PlayerController? {
         didSet {
@@ -103,7 +106,20 @@ final class AppStore: ObservableObject {
     }
 
     var favoriteSongs: [EmbyAudioItem] {
-        songs.filter { favoriteSongIds.contains($0.id) }
+        var seen = Set<String>()
+        var merged: [EmbyAudioItem] = []
+
+        for song in songs where favoriteSongIds.contains(song.id) && !song.isAudiobookAudio {
+            guard seen.insert(song.id).inserted else { continue }
+            merged.append(song)
+        }
+
+        for song in serverFavoriteSongs where favoriteSongIds.contains(song.id) && !song.isAudiobookAudio {
+            guard seen.insert(song.id).inserted else { continue }
+            merged.append(song)
+        }
+
+        return merged
     }
 
     var playbackQualityPreferences: PlaybackQualityPreferences {
@@ -235,6 +251,7 @@ final class AppStore: ObservableObject {
     private func fetchAndApplyInitialHomeContent(session: EmbySession) async throws {
         let content = try await client.fetchInitialHomeContent(session: session)
         applyInitialHomeContent(content)
+        await refreshFavoritesFromServer(session: session)
     }
 
     private func loadInitialHomeContent(session: EmbySession) async {
@@ -391,6 +408,7 @@ final class AppStore: ObservableObject {
             audiobookEpisodes: loadedAudiobookEpisodes,
             mostPlayedSongs: loadedMostPlayedSongs
         )
+        await refreshFavoritesFromServer(session: session)
     }
 
     func refreshLibrary() async {
@@ -405,6 +423,31 @@ final class AppStore: ObservableObject {
         playlists = refreshedPlaylists.isEmpty ? songs.generatedPlaylists : refreshedPlaylists
         saveLibrarySnapshot()
         updateLibraryStatus()
+    }
+
+    private func refreshFavoritesFromServer(session: EmbySession) async {
+        do {
+            let favoriteSongs = try await client.fetchFavoriteSongs(session: session)
+            applyServerFavoriteSongs(favoriteSongs)
+        } catch is CancellationError {
+        } catch {
+            print("[AppStore] Failed to refresh favorite songs: \(error.localizedDescription)")
+        }
+    }
+
+    private func refreshFavoritesFromServer() async {
+        guard let session else { return }
+        await refreshFavoritesFromServer(session: session)
+    }
+
+    private func applyServerFavoriteSongs(_ songs: [EmbyAudioItem]) {
+        var seen = Set<String>()
+        let musicFavorites = songs.filter { song in
+            song.isAudio && !song.isAudiobookAudio && seen.insert(song.id).inserted
+        }
+        serverFavoriteSongs = musicFavorites
+        favoriteSongIds = Set(musicFavorites.map(\.id))
+        persistFavoriteSongIds()
     }
 
     func search(_ term: String) async {
@@ -489,12 +532,64 @@ final class AppStore: ObservableObject {
     }
 
     func toggleFavorite(_ song: EmbyAudioItem) {
-        if favoriteSongIds.contains(song.id) {
-            favoriteSongIds.remove(song.id)
-        } else {
-            favoriteSongIds.insert(song.id)
+        guard !pendingFavoriteSongIds.contains(song.id) else { return }
+
+        favoriteErrorMessage = nil
+        let shouldFavorite = !favoriteSongIds.contains(song.id)
+        let previousServerSong = serverFavoriteSongs.first { $0.id == song.id }
+        pendingFavoriteSongIds.insert(song.id)
+        applyFavorite(song: song, isFavorite: shouldFavorite)
+
+        Task {
+            guard let session else {
+                rollbackFavorite(song: song, previousServerSong: previousServerSong, wasFavorite: !shouldFavorite)
+                favoriteErrorMessage = "收藏同步失败：未连接到 Emby"
+                return
+            }
+
+            do {
+                try await client.setFavorite(itemId: song.id, isFavorite: shouldFavorite, session: session)
+                pendingFavoriteSongIds.remove(song.id)
+            } catch is CancellationError {
+                pendingFavoriteSongIds.remove(song.id)
+            } catch {
+                rollbackFavorite(song: song, previousServerSong: previousServerSong, wasFavorite: !shouldFavorite)
+                favoriteErrorMessage = "收藏同步失败：\(error.localizedDescription)"
+            }
         }
-        UserDefaults.standard.set(Array(favoriteSongIds), forKey: favoritesKey)
+    }
+
+    private func applyFavorite(song: EmbyAudioItem, isFavorite: Bool) {
+        if isFavorite {
+            favoriteSongIds.insert(song.id)
+            if !song.isAudiobookAudio,
+               !serverFavoriteSongs.contains(where: { $0.id == song.id }) {
+                serverFavoriteSongs.append(song)
+            }
+        } else {
+            favoriteSongIds.remove(song.id)
+            serverFavoriteSongs.removeAll { $0.id == song.id }
+        }
+        persistFavoriteSongIds()
+    }
+
+    private func rollbackFavorite(
+        song: EmbyAudioItem,
+        previousServerSong: EmbyAudioItem?,
+        wasFavorite: Bool
+    ) {
+        pendingFavoriteSongIds.remove(song.id)
+        if wasFavorite {
+            favoriteSongIds.insert(song.id)
+            if !song.isAudiobookAudio,
+               !serverFavoriteSongs.contains(where: { $0.id == song.id }) {
+                serverFavoriteSongs.append(previousServerSong ?? song)
+            }
+        } else {
+            favoriteSongIds.remove(song.id)
+            serverFavoriteSongs.removeAll { $0.id == song.id }
+        }
+        persistFavoriteSongIds()
     }
 
     private func audiobookResumeTarget(
@@ -702,6 +797,9 @@ final class AppStore: ObservableObject {
         audiobookProgress = [:]
         audiobookEpisodeBookIds = [:]
         searchResults = []
+        favoriteSongIds = []
+        serverFavoriteSongs = []
+        pendingFavoriteSongIds = []
         dailyRecommendedSongs = []
         recentlyAddedSongs = []
         mostPlayedSongs = []
@@ -709,6 +807,7 @@ final class AppStore: ObservableObject {
         hasLoadedInitialContent = false
         libraryCacheSavedAt = nil
         errorMessage = nil
+        favoriteErrorMessage = nil
         libraryStatus = "Not connected"
         UserDefaults.standard.removeObject(forKey: sessionKey)
         snapshotStore.clear()
@@ -848,6 +947,7 @@ final class AppStore: ObservableObject {
 
         if restoreInitialHomeSnapshot() {
             Task {
+                await refreshFavoritesFromServer(session: restored)
                 await refreshLibraryIfNeededForToday()
             }
             return
@@ -874,6 +974,7 @@ final class AppStore: ObservableObject {
         updateLibraryStatusFromCache()
         Task {
             await refreshMostPlayedSongsFromServer()
+            await refreshFavoritesFromServer()
         }
         return true
     }
@@ -914,6 +1015,10 @@ final class AppStore: ObservableObject {
     private func saveLibrarySnapshot() {
         guard !songs.isEmpty || !audiobookEpisodes.isEmpty else { return }
         snapshotStore.save(songs: songs, playlists: playlists, audiobookEpisodes: audiobookEpisodes)
+    }
+
+    private func persistFavoriteSongIds() {
+        UserDefaults.standard.set(Array(favoriteSongIds).sorted(), forKey: favoritesKey)
     }
 
     private func restoreLocalState() {

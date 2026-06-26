@@ -30,6 +30,13 @@ struct RootTabView: View {
             .onAppear {
                 selectedTab = store.startsOnBrowse ? .browse : .home
             }
+            .alert("收藏同步失败", isPresented: favoriteErrorBinding) {
+                Button("好") {
+                    store.favoriteErrorMessage = nil
+                }
+            } message: {
+                Text(store.favoriteErrorMessage ?? "")
+            }
             .overlay {
                 if store.prefersHighRefreshRate {
                     HighRefreshRateView()
@@ -37,6 +44,16 @@ struct RootTabView: View {
                         .allowsHitTesting(false)
                 }
             }
+    }
+
+    private var favoriteErrorBinding: Binding<Bool> {
+        Binding {
+            store.favoriteErrorMessage != nil
+        } set: { isPresented in
+            if !isPresented {
+                store.favoriteErrorMessage = nil
+            }
+        }
     }
 
     @ViewBuilder

@@ -471,6 +471,7 @@ struct EmbyUserData: Codable, Hashable {
     let playbackPositionTicks: Int64?
     let playedPercentage: Double?
     let played: Bool?
+    let isFavorite: Bool?
 
     enum CodingKeys: String, CodingKey {
         case playCount = "PlayCount"
@@ -478,6 +479,7 @@ struct EmbyUserData: Codable, Hashable {
         case playbackPositionTicks = "PlaybackPositionTicks"
         case playedPercentage = "PlayedPercentage"
         case played = "Played"
+        case isFavorite = "IsFavorite"
     }
 
     init(from decoder: Decoder) throws {
@@ -487,6 +489,7 @@ struct EmbyUserData: Codable, Hashable {
         playbackPositionTicks = container.decodeInt64IfPresent(forKey: .playbackPositionTicks)
         playedPercentage = container.decodeDoubleIfPresent(forKey: .playedPercentage)
         played = try container.decodeIfPresent(Bool.self, forKey: .played)
+        isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite)
     }
 
     var playbackPosition: TimeInterval {

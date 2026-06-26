@@ -149,6 +149,30 @@ struct EmbyClient {
         )
     }
 
+    func fetchFavoriteSongs(session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+        let views = try await fetchViews(session: embySession)
+        let musicViews = views.filter(\.isMusicLibrary)
+
+        if musicViews.isEmpty {
+            return uniqueSongs(try await fetchFavoriteSongs(parentId: nil, session: embySession))
+                .filter { $0.isAudio && !$0.isAudiobookAudio }
+        }
+
+        var songs: [EmbyAudioItem] = []
+        for view in musicViews {
+            let viewSongs = try await fetchFavoriteSongs(parentId: view.id, session: embySession)
+            songs.append(contentsOf: viewSongs)
+        }
+        return uniqueSongs(songs).filter { $0.isAudio && !$0.isAudiobookAudio }
+    }
+
+    func setFavorite(itemId: String, isFavorite: Bool, session embySession: EmbySession) async throws {
+        var request = URLRequest(url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/FavoriteItems/\(itemId)"))
+        request.httpMethod = isFavorite ? "POST" : "DELETE"
+        request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+        try await sendEmpty(request)
+    }
+
     func fetchAudiobookEpisodes(session embySession: EmbySession) async throws -> [EmbyAudioItem] {
         let views = try await fetchViews(session: embySession)
         return try await fetchAudiobookEpisodes(from: views.filter(\.isAudiobookLibrary), session: embySession)
@@ -629,6 +653,39 @@ struct EmbyClient {
         return Array(sortSampleSongs(unique, sortBy: sortBy, sortOrder: sortOrder).prefix(limit))
     }
 
+    private func fetchFavoriteSongs(parentId: String?, session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+        let pageLimit = 200
+        var startIndex = 0
+        var songs: [EmbyAudioItem] = []
+        var totalRecordCount: Int?
+
+        repeat {
+            let response = try await fetchSongPage(
+                session: embySession,
+                searchTerm: nil,
+                parentId: parentId,
+                filterName: "IncludeItemTypes",
+                filterValue: "Audio",
+                startIndex: startIndex,
+                limit: pageLimit,
+                sortBy: "SortName",
+                sortOrder: "Ascending",
+                extraQueryItems: [
+                    URLQueryItem(name: "Filters", value: "IsFavorite")
+                ]
+            )
+            songs.append(contentsOf: response.items)
+            totalRecordCount = response.totalRecordCount
+
+            if response.items.count < pageLimit {
+                break
+            }
+            startIndex += response.items.count
+        } while totalRecordCount.map { songs.count < $0 } ?? true
+
+        return songs
+    }
+
     private func sortSampleSongs(
         _ songs: [EmbyAudioItem],
         sortBy: String,
@@ -668,7 +725,8 @@ struct EmbyClient {
         startIndex: Int,
         limit: Int,
         sortBy: String,
-        sortOrder: String
+        sortOrder: String,
+        extraQueryItems: [URLQueryItem] = []
     ) async throws -> EmbyItemsResponse {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Items"),
@@ -688,6 +746,7 @@ struct EmbyClient {
         if let parentId {
             queryItems.append(URLQueryItem(name: "ParentId", value: parentId))
         }
+        queryItems.append(contentsOf: extraQueryItems)
         components?.queryItems = queryItems
 
         if let searchTerm, !searchTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
