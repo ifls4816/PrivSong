@@ -218,7 +218,7 @@ struct ListenNowView: View {
                     }
                 }
             }
-            .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: HomePlaylistRowLayout.cardCornerRadius, style: .continuous))
             .frame(maxWidth: .infinity)
 
             if visiblePlaylistCount < store.playlists.count {
@@ -267,12 +267,18 @@ enum HomeRoute: Hashable {
     case audiobook(String)
 }
 
+private enum HomePlaylistRowLayout {
+    static let cardCornerRadius: CGFloat = 18
+    static let contextPreviewCornerRadius: CGFloat = 18
+}
+
 struct HomePlaylistRow: View {
     let playlist: MusicPlaylist
+    let artworkURLs: [URL]
 
     var body: some View {
         HStack(spacing: 12) {
-            PlaylistArtworkGrid(songs: playlist.songs)
+            PlaylistArtworkGrid(artworkURLs: artworkURLs)
                 .frame(width: 58, height: 58)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -294,42 +300,81 @@ struct HomePlaylistRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
     }
 }
 
 private struct LongPressHomePlaylistRow: View {
+    @EnvironmentObject private var store: AppStore
+    @State private var rowWidth: CGFloat?
+
     let playlist: MusicPlaylist
     let open: () -> Void
     let edit: () -> Void
     let delete: () -> Void
 
+    private var artworkURLs: [URL] {
+        playlist.songs
+            .prefix(4)
+            .compactMap { store.imageURL(for: $0, size: 160) }
+    }
+
     var body: some View {
         if playlist.isServerEditable {
-            row
-                .contextMenu {
-                    Button {
-                        edit()
-                    } label: {
-                        Label("编辑", systemImage: "pencil")
-                    }
-
-                    Button(role: .destructive) {
-                        delete()
-                    } label: {
-                        Label("删除", systemImage: "trash")
-                    }
-                }
+            editablePlaylistButton
         } else {
-            row
+            plainPlaylistButton
         }
     }
 
-    private var row: some View {
+    private var editablePlaylistButton: some View {
         Button(action: open) {
-            HomePlaylistRow(playlist: playlist)
+            HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
         }
         .buttonStyle(.plain)
+        .contentShape(.interaction, Rectangle())
+        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius, style: .continuous))
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.width
+        } action: { newWidth in
+            rowWidth = newWidth
+        }
+        .contextMenu {
+            Button {
+                edit()
+            } label: {
+                Label("编辑", systemImage: "pencil")
+            }
+
+            Button(role: .destructive) {
+                delete()
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        } preview: {
+            HomePlaylistRowContextPreview(playlist: playlist, artworkURLs: artworkURLs, width: rowWidth)
+        }
+    }
+
+    private var plainPlaylistButton: some View {
+        Button(action: open) {
+            HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
+        }
+        .buttonStyle(.plain)
+        .contentShape(.interaction, Rectangle())
+    }
+}
+
+private struct HomePlaylistRowContextPreview: View {
+    let playlist: MusicPlaylist
+    let artworkURLs: [URL]
+    let width: CGFloat?
+
+    var body: some View {
+        HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
+            .frame(width: width, alignment: .leading)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius, style: .continuous))
     }
 }
 
@@ -472,14 +517,7 @@ private struct PlaylistDetailLoaderView: View {
 }
 
 struct PlaylistArtworkGrid: View {
-    @EnvironmentObject private var store: AppStore
-    let songs: [EmbyAudioItem]
-
-    private var artworkURLs: [URL] {
-        songs
-            .prefix(4)
-            .compactMap { store.imageURL(for: $0, size: 160) }
-    }
+    let artworkURLs: [URL]
 
     var body: some View {
         GeometryReader { proxy in
