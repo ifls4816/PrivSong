@@ -270,7 +270,7 @@ struct NowPlayingView: View {
         let screenWidth = safeDimension(screenWidth)
         let height = safeDimension(height)
         let transportHeight: CGFloat = 62
-        let volumeHeight: CGFloat = 32
+        let volumeHeight = PlayerVolumeMetrics.height
         let bottomBarHeight: CGFloat = compactHeight ? 56 : 62
         let availableGap = max(0, height - transportHeight - volumeHeight - bottomBarHeight)
         let targetTopGap = compactHeight ? CGFloat(24) : CGFloat(30)
@@ -286,11 +286,12 @@ struct NowPlayingView: View {
             Color.clear.frame(height: topGap)
 
             transportControls(width: contentWidth, song: song)
+                .frame(width: contentWidth, height: transportHeight, alignment: .center)
 
             Color.clear.frame(height: middleGap)
 
             volumeControl
-                .frame(width: contentWidth)
+                .frame(width: contentWidth, height: volumeHeight, alignment: .center)
 
             Color.clear.frame(height: lowerGap)
 
@@ -412,6 +413,7 @@ struct NowPlayingView: View {
             }
             .disabled(player.currentSong == nil)
             .opacity(player.currentSong == nil ? 0.42 : 1)
+            .buttonStyle(.plain)
 
             Button {
                 if player.currentSong == nil {
@@ -434,6 +436,7 @@ struct NowPlayingView: View {
                 }
                 .frame(width: 68, height: 62)
             }
+            .buttonStyle(.plain)
 
             Button {
                 player.next()
@@ -444,6 +447,7 @@ struct NowPlayingView: View {
             }
             .disabled(player.currentSong == nil)
             .opacity(player.currentSong == nil ? 0.42 : 1)
+            .buttonStyle(.plain)
 
             repeatModeButton
         }
@@ -477,24 +481,25 @@ struct NowPlayingView: View {
 
     private var volumeControl: some View {
         let iconOffsetY: CGFloat = -0.4
+        let height = PlayerVolumeMetrics.height
 
         return HStack(alignment: .center, spacing: 10) {
             Image(systemName: "speaker.fill")
                 .font(.system(size: 11, weight: .semibold))
-                .frame(width: 18, height: 32, alignment: .center)
+                .frame(width: 18, height: height, alignment: .center)
                 .offset(y: iconOffsetY)
             SystemVolumeSlider()
                 .frame(maxWidth: .infinity)
-                .frame(height: 32)
+                .frame(height: height)
                 .transaction { transaction in
                     transaction.disablesAnimations = true
                 }
             Image(systemName: "speaker.wave.2.fill")
                 .font(.system(size: 12, weight: .semibold))
-                .frame(width: 18, height: 32, alignment: .center)
+                .frame(width: 18, height: height, alignment: .center)
                 .offset(y: iconOffsetY)
         }
-        .frame(height: 32, alignment: .center)
+        .frame(height: height, alignment: .center)
         .frame(maxWidth: .infinity)
         .foregroundStyle(.secondary)
     }
@@ -699,77 +704,123 @@ private func playbackTimeText(_ value: TimeInterval) -> String {
     return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
 }
 
+private enum PlayerVolumeMetrics {
+    static let height: CGFloat = 32
+}
+
 private struct SystemVolumeSlider: UIViewRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
+    func makeUIView(context: Context) -> VolumeSliderContainer {
+        VolumeSliderContainer()
     }
 
-    func makeUIView(context: Context) -> MPVolumeView {
-        let view = CenteredMPVolumeView(frame: .zero)
-        view.showsVolumeSlider = true
-        view.clipsToBounds = false
-        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        styleIfNeeded(view, context: context)
-        return view
+    func updateUIView(_ view: VolumeSliderContainer, context: Context) {
+        view.refreshIfNeeded()
     }
 
-    func updateUIView(_ view: MPVolumeView, context: Context) {
-        view.showsVolumeSlider = true
-        styleIfNeeded(view, context: context)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: VolumeSliderContainer, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? uiView.bounds.width, height: PlayerVolumeMetrics.height)
+    }
+}
+
+final class VolumeSliderContainer: UIView {
+    private let visibleSlider = UISlider(frame: .zero)
+    private let hiddenVolumeView = MPVolumeView(frame: .zero)
+    private var systemSlider: UISlider?
+    private var volumeObservation: NSKeyValueObservation?
+    private var isPushingVolumeToSystem = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        configure()
     }
 
-    final class Coordinator {
-        var didSyncInitialVolume = false
-        var didStyleSlider = false
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configure()
     }
 
-    private final class CenteredMPVolumeView: MPVolumeView {
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            clipsToBounds = false
-            for subview in subviews {
-                guard let slider = subview as? UISlider else {
-                    subview.isHidden = true
-                    subview.isUserInteractionEnabled = false
-                    continue
-                }
-                slider.frame = bounds
-                slider.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                slider.clipsToBounds = false
-                slider.layer.masksToBounds = false
+    deinit {
+        volumeObservation?.invalidate()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        CGSize(width: UIView.noIntrinsicMetric, height: PlayerVolumeMetrics.height)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        visibleSlider.frame = bounds
+        hiddenVolumeView.frame = CGRect(x: -1000, y: -1000, width: 1, height: 1)
+        refreshSystemSlider()
+    }
+
+    func refreshIfNeeded() {
+        refreshSystemSlider()
+    }
+
+    private func configure() {
+        clipsToBounds = false
+
+        hiddenVolumeView.showsVolumeSlider = true
+        hiddenVolumeView.alpha = 0.01
+        hiddenVolumeView.isUserInteractionEnabled = false
+        hiddenVolumeView.clipsToBounds = false
+        hiddenVolumeView.setContentHuggingPriority(.required, for: .vertical)
+        hiddenVolumeView.setContentCompressionResistancePriority(.required, for: .vertical)
+
+        visibleSlider.minimumValue = 0
+        visibleSlider.maximumValue = 1
+        visibleSlider.value = AVAudioSession.sharedInstance().outputVolume
+        visibleSlider.minimumTrackTintColor = .musicRed
+        visibleSlider.maximumTrackTintColor = .musicSliderTrack
+        visibleSlider.thumbTintColor = .musicSliderThumb
+        visibleSlider.clipsToBounds = false
+        visibleSlider.layer.masksToBounds = false
+        visibleSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        visibleSlider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        visibleSlider.addTarget(self, action: #selector(volumeChanged(_:)), for: .valueChanged)
+
+        addSubview(hiddenVolumeView)
+        addSubview(visibleSlider)
+
+        volumeObservation = AVAudioSession.sharedInstance().observe(
+            \.outputVolume,
+            options: [.initial, .new]
+        ) { [weak self] session, _ in
+            DispatchQueue.main.async {
+                self?.syncVisibleVolume(session.outputVolume)
             }
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshSystemSlider()
+            self?.syncVisibleVolume(AVAudioSession.sharedInstance().outputVolume)
         }
     }
 
-    private func styleIfNeeded(_ view: MPVolumeView, context: Context) {
-        UIView.performWithoutAnimation {
-            view.tintColor = .musicRed
-            view.clipsToBounds = false
-            var foundSlider = false
-            for subview in view.subviews {
-                guard let slider = subview as? UISlider else {
-                    subview.isHidden = true
-                    subview.isUserInteractionEnabled = false
-                    continue
-                }
-                foundSlider = true
-                slider.minimumTrackTintColor = .musicRed
-                slider.maximumTrackTintColor = .musicSliderTrack
-                slider.thumbTintColor = .musicSliderThumb
-                slider.clipsToBounds = false
-                slider.layer.masksToBounds = false
-                slider.setContentHuggingPriority(.defaultLow, for: .horizontal)
-                slider.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-                slider.frame = view.bounds
-                slider.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                if !context.coordinator.didSyncInitialVolume {
-                    slider.setValue(AVAudioSession.sharedInstance().outputVolume, animated: false)
-                }
-            }
-            context.coordinator.didStyleSlider = foundSlider
-            context.coordinator.didSyncInitialVolume = context.coordinator.didSyncInitialVolume || foundSlider
+    private func refreshSystemSlider() {
+        guard let slider = hiddenVolumeView.subviews.compactMap({ $0 as? UISlider }).first else {
+            return
         }
+        systemSlider = slider
+        slider.isHidden = true
+        slider.isUserInteractionEnabled = false
+    }
+
+    private func syncVisibleVolume(_ value: Float) {
+        guard !visibleSlider.isTracking, !isPushingVolumeToSystem else { return }
+        visibleSlider.value = value
+    }
+
+    @objc
+    private func volumeChanged(_ sender: UISlider) {
+        refreshSystemSlider()
+        guard let slider = systemSlider else { return }
+        isPushingVolumeToSystem = true
+        slider.setValue(sender.value, animated: false)
+        slider.sendActions(for: .valueChanged)
+        slider.sendActions(for: .touchUpInside)
+        isPushingVolumeToSystem = false
     }
 }
 
