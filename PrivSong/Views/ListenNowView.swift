@@ -8,6 +8,7 @@ struct ListenNowView: View {
     @State private var isLoadingNextPlaylistPage = false
     @State private var editingPlaylist: MusicPlaylist?
     @State private var playlistPendingDelete: MusicPlaylist?
+    @State private var isDeleteConfirmationPresented = false
     @State private var playlistErrorMessage: String?
     @State private var isShowingPlaylistError = false
 
@@ -91,19 +92,16 @@ struct ListenNowView: View {
                 PlaylistEditSheet(playlist: playlist)
                     .environmentObject(store)
             }
-            .confirmationDialog(
-                "删除歌单？",
-                isPresented: isShowingDeleteConfirmation,
-                titleVisibility: .visible
-            ) {
+            .alert("删除歌单？", isPresented: $isDeleteConfirmationPresented) {
                 Button("删除", role: .destructive) {
-                    Task { await deletePendingPlaylist() }
+                    guard let playlist = playlistPendingDelete else { return }
+                    Task { await deletePlaylist(playlist) }
                 }
                 Button("取消", role: .cancel) {
                     playlistPendingDelete = nil
                 }
             } message: {
-                Text("删除后将从 Emby 服务器移除该歌单。")
+                Text(deleteConfirmationMessage)
             }
             .alert("歌单编辑失败", isPresented: $isShowingPlaylistError) {
                 Button("好", role: .cancel) {}
@@ -113,15 +111,11 @@ struct ListenNowView: View {
         }
     }
 
-    private var isShowingDeleteConfirmation: Binding<Bool> {
-        Binding(
-            get: { playlistPendingDelete != nil },
-            set: { isPresented in
-                if !isPresented {
-                    playlistPendingDelete = nil
-                }
-            }
-        )
+    private var deleteConfirmationMessage: String {
+        if let playlistPendingDelete {
+            return "确定要删除「\(playlistPendingDelete.name)」吗？删除后将从 Emby 服务器移除该歌单。"
+        }
+        return "删除后将从 Emby 服务器移除该歌单。"
     }
 
     private var libraryCategorySection: some View {
@@ -201,7 +195,7 @@ struct ListenNowView: View {
 
             LazyVStack(spacing: 0) {
                 ForEach(Array(visiblePlaylists.enumerated()), id: \.element.id) { index, playlist in
-                    SwipeableHomePlaylistRow(
+                    LongPressHomePlaylistRow(
                         playlist: playlist,
                         open: {
                             path.append(.playlist(playlist.id))
@@ -211,6 +205,7 @@ struct ListenNowView: View {
                         },
                         delete: {
                             playlistPendingDelete = playlist
+                            isDeleteConfirmationPresented = true
                         }
                     )
                     .onAppear {
@@ -254,8 +249,7 @@ struct ListenNowView: View {
         }
     }
 
-    private func deletePendingPlaylist() async {
-        guard let playlist = playlistPendingDelete else { return }
+    private func deletePlaylist(_ playlist: MusicPlaylist) async {
         playlistPendingDelete = nil
         do {
             try await store.deletePlaylist(playlistId: playlist.id)
@@ -304,23 +298,16 @@ struct HomePlaylistRow: View {
     }
 }
 
-private struct SwipeableHomePlaylistRow: View {
+private struct LongPressHomePlaylistRow: View {
     let playlist: MusicPlaylist
     let open: () -> Void
     let edit: () -> Void
     let delete: () -> Void
 
-    private let horizontalThreshold: CGFloat = 56
-
     var body: some View {
-        HomePlaylistRow(playlist: playlist)
-            .contentShape(Rectangle())
-            .onTapGesture(perform: open)
-            .simultaneousGesture(swipeGesture)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isButton)
-            .contextMenu {
-                if playlist.isServerEditable {
+        if playlist.isServerEditable {
+            row
+                .contextMenu {
                     Button {
                         edit()
                     } label: {
@@ -333,27 +320,16 @@ private struct SwipeableHomePlaylistRow: View {
                         Label("删除", systemImage: "trash")
                     }
                 }
-            }
+        } else {
+            row
+        }
     }
 
-    private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 20, coordinateSpace: .local)
-            .onEnded { value in
-                guard playlist.isServerEditable else { return }
-
-                let horizontalDistance = value.translation.width
-                let verticalDistance = value.translation.height
-                guard abs(horizontalDistance) >= horizontalThreshold,
-                      abs(horizontalDistance) > abs(verticalDistance) * 1.2 else {
-                    return
-                }
-
-                if horizontalDistance < 0 {
-                    edit()
-                } else {
-                    delete()
-                }
-            }
+    private var row: some View {
+        Button(action: open) {
+            HomePlaylistRow(playlist: playlist)
+        }
+        .buttonStyle(.plain)
     }
 }
 

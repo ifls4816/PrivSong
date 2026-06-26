@@ -331,10 +331,25 @@ struct EmbyClient {
     }
 
     func deletePlaylist(playlistId: String, session embySession: EmbySession) async throws {
-        var request = URLRequest(url: embySession.serverURL.appending(path: "Items/\(playlistId)"))
-        request.httpMethod = "DELETE"
+        var components = URLComponents(
+            url: embySession.serverURL.appending(path: "Items/Delete"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "Ids", value: playlistId),
+            URLQueryItem(name: "X-Emby-Token", value: embySession.accessToken)
+        ]
+        guard let url = components?.url else { throw EmbyError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
         request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
         try await sendEmpty(request)
+
+        let playlists = try await fetchPlaylistSummaries(session: embySession)
+        guard !playlists.contains(where: { $0.id == playlistId }) else {
+            throw EmbyError.playlistDeleteFailed
+        }
     }
 
     func renamePlaylist(playlistId: String, name: String, session embySession: EmbySession) async throws {
@@ -1258,6 +1273,7 @@ enum EmbyError: LocalizedError {
     case noPlayableLibrary([String])
     case invalidPlaylistName
     case missingPlaylistItemIds
+    case playlistDeleteFailed
 
     var errorDescription: String? {
         switch self {
@@ -1278,6 +1294,8 @@ enum EmbyError: LocalizedError {
             return "歌单名称不能为空。"
         case .missingPlaylistItemIds:
             return "Emby 未返回可编辑的歌单条目标识，无法编辑该歌单。"
+        case .playlistDeleteFailed:
+            return "Emby 已响应删除请求，但歌单仍然存在，请检查当前用户是否有删除该歌单的权限。"
         }
     }
 }

@@ -315,36 +315,27 @@ final class AppStore: ObservableObject {
 
     func createRealtimePlaylist(name: String, songs: [EmbyAudioItem]) async throws -> MusicPlaylist {
         guard let session else { throw EmbyError.invalidResponse }
-        return try await client.createPlaylist(name: name, songs: songs, session: session)
+        let playlist = try await client.createPlaylist(name: name, songs: songs, session: session)
+        try await refreshPlaylistsFromServer(session: session)
+        return playlist
     }
 
     func replaceRealtimePlaylist(playlistId: String, songs: [EmbyAudioItem]) async throws {
         guard let session else { throw EmbyError.invalidResponse }
         try await client.replacePlaylistSongs(playlistId: playlistId, songs: songs, session: session)
+        try await refreshPlaylistsFromServer(session: session)
     }
 
     func deletePlaylist(playlistId: String) async throws {
         guard let session else { throw EmbyError.invalidResponse }
         try await client.deletePlaylist(playlistId: playlistId, session: session)
-        playlists.removeAll { $0.id == playlistId }
+        try await refreshPlaylistsFromServer(session: session)
     }
 
     func renamePlaylist(playlistId: String, name: String) async throws {
         guard let session else { throw EmbyError.invalidResponse }
         try await client.renamePlaylist(playlistId: playlistId, name: name, session: session)
-        guard let index = playlists.firstIndex(where: { $0.id == playlistId }) else { return }
-        let playlist = playlists[index]
-        var updatedPlaylists = playlists
-        updatedPlaylists[index] = MusicPlaylist(
-            id: playlist.id,
-            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
-            description: playlist.description,
-            songs: playlist.songs,
-            songCount: playlist.songCount
-        )
-        playlists = updatedPlaylists.sorted {
-            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-        }
+        try await refreshPlaylistsFromServer(session: session)
     }
 
     func refreshAudiobookProgress(for audiobook: Audiobook) async {
@@ -407,6 +398,13 @@ final class AppStore: ObservableObject {
         await perform {
             try await self.fetchAndApplyFullLibrary(session: session)
         }
+    }
+
+    private func refreshPlaylistsFromServer(session: EmbySession) async throws {
+        let refreshedPlaylists = try await client.fetchPlaylists(session: session)
+        playlists = refreshedPlaylists.isEmpty ? songs.generatedPlaylists : refreshedPlaylists
+        saveLibrarySnapshot()
+        updateLibraryStatus()
     }
 
     func search(_ term: String) async {
