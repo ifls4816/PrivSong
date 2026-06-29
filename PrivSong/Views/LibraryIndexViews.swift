@@ -446,40 +446,69 @@ private struct MusicFolderSongSelectionView: View {
         .refreshable {
             await loadSongs()
         }
-        .safeAreaInset(edge: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             selectionBar
         }
     }
 
     private var selectionBar: some View {
-        HStack(spacing: 12) {
+        let shape = Capsule(style: .continuous)
+
+        return HStack(spacing: 8) {
             Button {
                 toggleAllSelected()
             } label: {
-                Text(isAllSelected ? "取消全选" : "全选")
-                    .font(.body.weight(.semibold))
+                Label(isAllSelected ? "取消全选" : "中选全部", systemImage: isAllSelected ? "checkmark.circle.fill" : "checkmark.circle")
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.capsule)
+            .controlSize(.regular)
 
-            Text("已选 \(selectedSongIds.count) 首")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
-                .lineLimit(1)
+            Label {
+                Text("已选 \(selectedSongIds.count) 首")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .monospacedDigit()
+            } icon: {
+                Image(systemName: "music.note.list")
+            }
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .padding(.horizontal, 8)
+            .background(.thinMaterial, in: Capsule(style: .continuous))
 
             Button {
                 isShowingPlaylistWriter = true
             } label: {
-                Text("写入歌单")
-                    .font(.body.weight(.semibold))
+                Label("写入歌单", systemImage: "text.badge.plus")
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.capsule)
+            .controlSize(.regular)
+            .tint(Color.musicRed)
             .disabled(selectedSongIds.isEmpty)
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 12)
-        .background(.regularMaterial)
+        .padding(8)
+        .background {
+            shape
+                .fill(Color.white.opacity(0.06))
+        }
+        .glassEffect(.regular.tint(Color.white.opacity(0.14)).interactive(), in: shape)
+        .overlay {
+            shape
+                .strokeBorder(Color.white.opacity(0.20), lineWidth: 0.7)
+        }
+        .shadow(color: Color.black.opacity(0.16), radius: 18, x: 0, y: 10)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 8)
     }
 
     private func loadSongs() async {
