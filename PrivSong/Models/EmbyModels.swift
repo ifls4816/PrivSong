@@ -50,63 +50,11 @@ enum OnlinePlaybackQuality: String, CaseIterable, Codable, Identifiable, Hashabl
         guard let bitrate else { return "无损（不转码）" }
         return "\(title) (\(bitrate / 1_000) kbps)"
     }
-
-    var usesTranscoding: Bool {
-        bitrate != nil
-    }
-}
-
-enum AudioTranscodeFormat: String, Hashable {
-    case aac
-
-    var codec: String {
-        "aac"
-    }
-
-    var transcodingContainer: String {
-        "aac"
-    }
-
-    var containerQueryValue: String {
-        "aac"
-    }
-
-    var fileExtension: String {
-        transcodingContainer
-    }
-}
-
-enum PlaybackNetworkKind: String, Hashable {
-    case wifi
-    case cellular
 }
 
 struct PlaybackQualityPreferences: Equatable {
     var cellularQuality: OnlinePlaybackQuality = .standard
     var wifiQuality: OnlinePlaybackQuality = .lossless
-    var transcodeFormat: AudioTranscodeFormat = .aac
-
-    func quality(for networkKind: PlaybackNetworkKind) -> OnlinePlaybackQuality {
-        switch networkKind {
-        case .wifi:
-            return wifiQuality
-        case .cellular:
-            return cellularQuality
-        }
-    }
-}
-
-struct PlaybackStreamOptions: Hashable {
-    let quality: OnlinePlaybackQuality
-    let transcodeFormat: AudioTranscodeFormat
-    let networkKind: PlaybackNetworkKind
-
-    func cacheFileExtension(for item: EmbyAudioItem) -> String {
-        if quality.usesTranscoding {
-            return transcodeFormat.fileExtension
-        }
-        return item.audioCacheFileExtension
-    }
 }
 
 struct EmbyAuthResponse: Decodable {

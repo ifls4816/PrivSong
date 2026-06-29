@@ -1,18 +1,12 @@
 import AVFoundation
 import Combine
 import Foundation
-import Network
 import UIKit
 
 struct LyricLine: Identifiable, Hashable, Sendable {
     let id: Int
     let time: TimeInterval?
     let text: String
-}
-
-private enum StreamTimebase {
-    case relativeToStartOffset
-    case absolute
 }
 
 private let seekBackwardTolerance: TimeInterval = 0.35
@@ -72,8 +66,6 @@ final class PlayerController: ObservableObject {
     private let nowPlaying = NowPlayingCoordinator.shared
     private let remoteCommands = RemoteCommandCoordinator.shared
     private let client = EmbyClient()
-    private let pathMonitor = NWPathMonitor()
-    private let pathMonitorQueue = DispatchQueue(label: "PrivSong.NetworkPathMonitor")
     private let audioCache = CurrentSongAudioCache()
     private let queueSnapshotStore = PlaybackQueueSnapshotStore()
 
@@ -84,16 +76,10 @@ final class PlayerController: ObservableObject {
     private var streamCandidates: [URL] = []
     private var streamCandidateIndex = 0
     private var currentStreamURL: URL?
-    private var streamStartOffset: TimeInterval = 0
-    private var currentStreamTimebase: StreamTimebase?
-    private var currentStreamOptions: PlaybackStreamOptions?
     private var currentDurationOverride: TimeInterval?
     private var currentPlaySessionId: String?
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
     private var lastPlaybackProgressReport = Date.distantPast
-    private var lastTranscodedStreamRefresh = Date.distantPast
-    private var currentNetworkKind: PlaybackNetworkKind = .wifi
-    private var playbackQualityPreferences = PlaybackQualityPreferences()
     private var activeAudioCacheKey: PlaybackAudioCache.Key?
     private var currentArtwork: UIImage?
     private var lastNowPlayingSync = Date.distantPast
@@ -109,7 +95,6 @@ final class PlayerController: ObservableObject {
     private var itemPlaybackLikelyToKeepUpObserver: NSKeyValueObservation?
     private var timeControlStatusObserver: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
-    private var accessLogObserver: NSObjectProtocol?
     private var playbackStalledObserver: NSObjectProtocol?
     private var interruptionObserver: NSObjectProtocol?
     private var routeChangeObserver: NSObjectProtocol?
@@ -118,7 +103,6 @@ final class PlayerController: ObservableObject {
     private var sleepTimerTask: Task<Void, Never>?
     private var audioCacheTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
-    private var currentAccessLogEventCount = 0
 
     init() {
         engine.automaticallyWaitsToMinimizeStalling = true
@@ -127,7 +111,6 @@ final class PlayerController: ObservableObject {
         configureRemoteCommands()
         configurePlayerObservers()
         configureAudioSessionObservers()
-        configureNetworkPathMonitor()
         restorePlaybackQueueSnapshot()
     }
 
@@ -190,30 +173,7 @@ final class PlayerController: ObservableObject {
     }
 
     func setPlaybackQualityPreferences(_ preferences: PlaybackQualityPreferences) {
-        let previousOptions = currentPlaybackStreamOptions()
-        playbackQualityPreferences = preferences
-        let updatedOptions = currentPlaybackStreamOptions()
-        if previousOptions.transcodeFormat != updatedOptions.transcodeFormat,
-           currentSong != nil,
-           currentStreamURL != nil {
-            stopPlaybackForConfigurationChange()
-            return
-        }
-
-        guard previousOptions != updatedOptions,
-              let currentSong,
-              let session,
-              currentStreamURL != nil else { return }
-
-        let resumePosition = elapsed
-        let shouldResume = isPlaying || engine.timeControlStatus == .playing
-        start(
-            song: currentSong,
-            session: session,
-            autoplay: shouldResume,
-            startPosition: resumePosition,
-            durationOverride: currentDurationOverride
-        )
+        _ = preferences
     }
 
     func seek(to progress: Double) {
@@ -359,29 +319,8 @@ final class PlayerController: ObservableObject {
         queue
     }
 
-    private func currentPlaybackStreamOptions() -> PlaybackStreamOptions {
-        PlaybackStreamOptions(
-            quality: playbackQualityPreferences.quality(for: currentNetworkKind),
-            transcodeFormat: playbackQualityPreferences.transcodeFormat,
-            networkKind: currentNetworkKind
-        )
-    }
-
-    private func playbackReportMethod(for options: PlaybackStreamOptions, isUsingLocalFile: Bool) -> EmbyPlaybackReportMethod {
-        if isUsingLocalFile {
-            return .directPlay
-        }
-        return options.quality.usesTranscoding ? .transcode : .directStream
-    }
-
-    private func configureNetworkPathMonitor() {
-        currentNetworkKind = pathMonitor.currentPath.playbackNetworkKind
-        pathMonitor.pathUpdateHandler = { [weak self] path in
-            Task { @MainActor in
-                self?.currentNetworkKind = path.playbackNetworkKind
-            }
-        }
-        pathMonitor.start(queue: pathMonitorQueue)
+    private func playbackReportMethod(isUsingLocalFile: Bool) -> EmbyPlaybackReportMethod {
+        isUsingLocalFile ? .directPlay : .directStream
     }
 
     private func cacheCurrentSong(from sourceURL: URL?, cacheKey: PlaybackAudioCache.Key) {
@@ -427,43 +366,31 @@ final class PlayerController: ObservableObject {
         isBuffering = true
         lastNowPlayingSync = .distantPast
         currentStreamURL = nil
-        streamStartOffset = 0
-        currentStreamTimebase = nil
-        currentStreamOptions = nil
         currentDurationOverride = durationOverride
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
         seekGeneration += 1
         lastPlaybackProgressReport = .distantPast
-        currentAccessLogEventCount = 0
 
-        let streamOptions = currentPlaybackStreamOptions()
-        currentStreamOptions = streamOptions
-        streamStartOffset = streamOptions.quality.usesTranscoding ? initialPosition : 0
-        let cacheKey = PlaybackAudioCache.Key(session: session, item: song, options: streamOptions)
+        let cacheKey = PlaybackAudioCache.Key(session: session, item: song)
         let playSessionId = UUID().uuidString
         activeAudioCacheKey = cacheKey
         currentPlaySessionId = playSessionId
         streamCandidates = client.playbackURLCandidates(
             for: song,
             session: session,
-            options: streamOptions,
-            playSessionId: playSessionId,
-            startTime: streamStartOffset
+            playSessionId: playSessionId
         )
         streamCandidateIndex = 0
         syncQueueSnapshots()
 
         audioSession.activate()
-        let allowsLocalCachePlayback = !streamOptions.quality.usesTranscoding
-        let cachedURL = allowsLocalCachePlayback ? PlaybackAudioCache.cachedFileURL(for: cacheKey) : nil
+        let cachedURL = PlaybackAudioCache.cachedFileURL(for: cacheKey)
         let initialURL = cachedURL ?? streamCandidates.first
-        currentPlaybackReportMethod = playbackReportMethod(for: streamOptions, isUsingLocalFile: cachedURL != nil)
+        currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedURL != nil)
         replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
-        if allowsLocalCachePlayback {
-            cacheCurrentSong(from: streamStartOffset == 0 ? streamCandidates.first : nil, cacheKey: cacheKey)
-        }
+        cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
         loadArtwork(for: song, session: session)
         loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
         reportPlaybackStarted(position: initialPosition)
@@ -491,8 +418,6 @@ final class PlayerController: ObservableObject {
             streamCandidateIndex = candidateIndex
         }
         currentStreamURL = url
-        currentStreamTimebase = nil
-        currentAccessLogEventCount = 0
 
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
@@ -507,7 +432,7 @@ final class PlayerController: ObservableObject {
             let clampedStartTime = max(0, startTime)
             isSeeking = true
             item.seek(
-                to: CMTime(seconds: itemTime(forAbsoluteTime: clampedStartTime), preferredTimescale: 600),
+                to: CMTime(seconds: clampedStartTime, preferredTimescale: 600),
                 toleranceBefore: .zero,
                 toleranceAfter: .zero
             ) { [weak self] _ in
@@ -568,9 +493,6 @@ final class PlayerController: ObservableObject {
         currentStreamURL = nil
         streamCandidates = []
         streamCandidateIndex = 0
-        streamStartOffset = 0
-        currentStreamTimebase = nil
-        currentStreamOptions = nil
         currentDurationOverride = nil
         activeAudioCacheKey = nil
         seekTarget = nil
@@ -595,18 +517,8 @@ final class PlayerController: ObservableObject {
         seekGeneration += 1
         let generation = seekGeneration
 
-        if currentStreamOptions?.quality.usesTranscoding == true {
-            seekTarget = clamped
-            pendingSeekTarget = clamped
-            elapsed = clamped
-            syncNowPlaying(force: true)
-            reportPlaybackProgress(force: true, position: clamped)
-            refreshTranscodedStream(at: clamped, autoplay: shouldPlayAfterSeek, statusText: "正在跳转")
-            return
-        }
-
         let currentItem = engine.currentItem
-        let targetTime = CMTime(seconds: itemTime(forAbsoluteTime: clamped), preferredTimescale: 600)
+        let targetTime = CMTime(seconds: clamped, preferredTimescale: 600)
         isSeeking = true
         seekTarget = clamped
         pendingSeekTarget = clamped
@@ -620,10 +532,7 @@ final class PlayerController: ObservableObject {
                       self.seekGeneration == generation,
                       self.engine.currentItem === currentItem else { return }
                 guard finished else {
-                    let actualElapsed = self.resolvedElapsed(
-                        forItemTime: self.engine.currentTime().seconds,
-                        reference: clamped
-                    )
+                    let actualElapsed = self.playbackElapsed(for: self.engine.currentTime().seconds)
                     self.elapsed = actualElapsed
                     self.seekTarget = nil
                     self.pendingSeekTarget = nil
@@ -686,11 +595,6 @@ final class PlayerController: ObservableObject {
         let message = error?.localizedDescription ?? "unknown error"
         print("[Player] AVPlayerItem failed: \(message)")
 
-        if currentStreamOptions?.quality.usesTranscoding == true,
-           refreshTranscodedStreamAfterInterruption(reason: "item failure") {
-            return
-        }
-
         if currentStreamURL?.isFileURL == true {
             guard streamCandidates.indices.contains(streamCandidateIndex) else {
                 isPlaying = false
@@ -703,7 +607,7 @@ final class PlayerController: ObservableObject {
 
             playbackStatusText = "正在切换播放源"
             isBuffering = true
-            currentPlaybackReportMethod = playbackReportMethod(for: currentPlaybackStreamOptions(), isUsingLocalFile: false)
+            currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: false)
             reportPlaybackProgress(force: true)
             replaceCurrentItem(
                 with: streamCandidates[streamCandidateIndex],
@@ -734,7 +638,7 @@ final class PlayerController: ObservableObject {
             startAt: elapsed,
             candidateIndex: nextIndex
         )
-        if streamStartOffset == 0, let activeAudioCacheKey {
+        if let activeAudioCacheKey {
             cacheCurrentSong(from: streamCandidates[nextIndex], cacheKey: activeAudioCacheKey)
         }
     }
@@ -925,20 +829,6 @@ final class PlayerController: ObservableObject {
             }
         }
 
-        accessLogObserver = NotificationCenter.default.addObserver(
-            forName: .AVPlayerItemNewAccessLogEntry,
-            object: nil,
-            queue: .main
-        ) { [weak self] notification in
-            guard let itemId = (notification.object as? AVPlayerItem).map(ObjectIdentifier.init) else {
-                return
-            }
-
-            Task { @MainActor in
-                self?.handleAccessLogEntry(for: itemId)
-            }
-        }
-
         playbackStalledObserver = NotificationCenter.default.addObserver(
             forName: .AVPlayerItemPlaybackStalled,
             object: nil,
@@ -988,7 +878,7 @@ final class PlayerController: ObservableObject {
                       observedItem === self.engine.currentItem else { return }
                 switch observedItem.status {
                 case .readyToPlay:
-                    self.duration = self.absoluteDuration(for: observedItem.duration.seconds)
+                    self.duration = self.playbackDuration(for: observedItem.duration.seconds)
                     if self.isSeeking, let pendingSeekTarget = self.pendingSeekTarget {
                         self.elapsed = pendingSeekTarget
                         self.isSeeking = false
@@ -1019,9 +909,6 @@ final class PlayerController: ObservableObject {
                       self.engine.rate == 0 else { return }
                 self.isBuffering = true
                 self.playbackStatusText = "正在缓冲"
-                if self.currentStreamOptions?.quality.usesTranscoding == true {
-                    self.refreshTranscodedStreamAfterInterruption(reason: "buffer empty")
-                }
             }
         }
 
@@ -1038,10 +925,7 @@ final class PlayerController: ObservableObject {
     private func handlePeriodicTime(_ time: CMTime) {
         guard !isSeeking else { return }
 
-        let newElapsed = resolvedElapsed(
-            forItemTime: time.seconds,
-            reference: pendingSeekTarget ?? seekTarget ?? elapsed
-        )
+        let newElapsed = playbackElapsed(for: time.seconds)
         if let pendingSeekTarget {
             if Date() < suppressTimeUpdatesUntil {
                 let isOutsideSeekWindow = abs(newElapsed - pendingSeekTarget) > 0.45
@@ -1058,9 +942,6 @@ final class PlayerController: ObservableObject {
 
         let previousElapsed = elapsed
         elapsed = newElapsed
-        if refreshLongRunningCellularTranscodeIfNeeded() {
-            return
-        }
         if engine.rate > 0 || newElapsed > previousElapsed + 0.05 {
             clearTransientPlaybackStatus()
         }
@@ -1068,7 +949,7 @@ final class PlayerController: ObservableObject {
         if let itemDuration = engine.currentItem?.duration.seconds,
            itemDuration.isFinite,
            itemDuration > 0 {
-            duration = absoluteDuration(for: itemDuration)
+            duration = playbackDuration(for: itemDuration)
         }
 
         syncPlaybackStateFromEngine(forceNowPlaying: false)
@@ -1101,169 +982,28 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func itemTime(forAbsoluteTime absoluteTime: TimeInterval) -> TimeInterval {
-        max(0, absoluteTime - streamStartOffset)
-    }
-
-    private func resolvedElapsed(forItemTime itemTime: TimeInterval, reference: TimeInterval?) -> TimeInterval {
-        let normalizedItemTime = itemTime.validDuration(fallback: 0)
-        updateStreamTimebaseIfNeeded(forItemTime: normalizedItemTime, reference: reference)
-        return absoluteElapsed(forNormalizedItemTime: normalizedItemTime)
-    }
-
-    private func updateStreamTimebaseIfNeeded(forItemTime itemTime: TimeInterval, reference: TimeInterval?) {
-        guard currentStreamTimebase == nil,
-              streamStartOffset > 1,
-              let reference else { return }
-
-        let relativeElapsed = streamStartOffset + itemTime
-        let absoluteElapsed = itemTime
-        let relativeDelta = abs(relativeElapsed - reference)
-        let absoluteDelta = abs(absoluteElapsed - reference)
-
-        if absoluteDelta + 0.25 < relativeDelta {
-            currentStreamTimebase = .absolute
-        } else if relativeDelta + 0.25 < absoluteDelta {
-            currentStreamTimebase = .relativeToStartOffset
-        }
-    }
-
-    private var currentStreamUsesHLS: Bool {
-        guard let currentStreamURL else { return false }
-        let absoluteString = currentStreamURL.absoluteString.lowercased()
-        return currentStreamURL.pathExtension.localizedCaseInsensitiveCompare("m3u8") == .orderedSame ||
-            absoluteString.contains("transcodingprotocol=hls")
-    }
-
-    private func handleAccessLogEntry(for itemId: ObjectIdentifier) {
-        guard currentStreamOptions?.quality.usesTranscoding == true,
-              !currentStreamUsesHLS,
-              let currentItem = engine.currentItem,
-              ObjectIdentifier(currentItem) == itemId else { return }
-
-        let eventCount = currentItem.accessLog()?.events.count ?? 0
-        let previousEventCount = currentAccessLogEventCount
-        currentAccessLogEventCount = eventCount
-
-        guard previousEventCount > 0,
-              eventCount > previousEventCount,
-              elapsed > 10 else { return }
-
-        _ = refreshTranscodedStreamAfterInterruption(reason: "stream reconnect")
-    }
-
     private func handlePlaybackStalled(for itemId: ObjectIdentifier) {
-        guard currentStreamOptions?.quality.usesTranscoding == true,
-              let currentItem = engine.currentItem,
+        guard let currentItem = engine.currentItem,
               ObjectIdentifier(currentItem) == itemId else { return }
 
         isBuffering = true
         playbackStatusText = "正在缓冲"
-        _ = refreshTranscodedStreamAfterInterruption(reason: "playback stalled")
     }
 
-    @discardableResult
-    private func refreshLongRunningCellularTranscodeIfNeeded() -> Bool {
-        let isCellularTranscode = currentNetworkKind == .cellular ||
-            currentStreamOptions?.networkKind == .cellular
-        let isPlayingNow = isPlaying ||
-            engine.timeControlStatus == .playing ||
-            engine.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
-            engine.rate > 0
-
-        guard isCellularTranscode,
-              currentStreamOptions?.quality.usesTranscoding == true,
-              !currentStreamUsesHLS,
-              isPlayingNow,
-              !isSwitchingTracks,
-              !isSeeking,
-              elapsed - streamStartOffset >= 115 else { return false }
-
-        return refreshTranscodedStreamAfterInterruption(reason: "long cellular transcode stream")
+    private func playbackElapsed(for itemTime: TimeInterval) -> TimeInterval {
+        let elapsed = itemTime.validDuration(fallback: 0)
+        guard duration > 0 else { return max(0, elapsed) }
+        return max(0, min(elapsed, duration))
     }
 
-    @discardableResult
-    private func refreshTranscodedStreamAfterInterruption(reason: String) -> Bool {
-        let shouldKeepPlaying = isPlaying ||
-            engine.timeControlStatus == .playing ||
-            engine.timeControlStatus == .waitingToPlayAtSpecifiedRate ||
-            engine.rate > 0
-        guard currentStreamOptions?.quality.usesTranscoding == true,
-              shouldKeepPlaying,
-              !isSwitchingTracks,
-              !isSeeking,
-              elapsed > 1 else { return false }
-
-        let now = Date()
-        guard now.timeIntervalSince(lastTranscodedStreamRefresh) > 8 else { return false }
-        lastTranscodedStreamRefresh = now
-
-        print("[Player] Refreshing transcoded stream after \(reason) at \(elapsed.musicDurationText)")
-        refreshTranscodedStream(
-            at: elapsed,
-            autoplay: shouldKeepPlaying,
-            statusText: "正在恢复播放"
-        )
-        return true
-    }
-
-    private func refreshTranscodedStream(at position: TimeInterval, autoplay: Bool, statusText: String) {
-        guard let currentSong,
-              let session,
-              let streamOptions = currentStreamOptions,
-              streamOptions.quality.usesTranscoding else { return }
-
-        let clamped = max(0, min(position, max(duration, currentSong.duration)))
-        let playSessionId = currentPlaySessionId ?? UUID().uuidString
-        currentPlaySessionId = playSessionId
-        lastTranscodedStreamRefresh = Date()
-        streamStartOffset = clamped
-        streamCandidateIndex = 0
-        streamCandidates = client.playbackURLCandidates(
-            for: currentSong,
-            session: session,
-            options: streamOptions,
-            playSessionId: playSessionId,
-            startTime: clamped
-        )
-        currentPlaybackReportMethod = playbackReportMethod(for: streamOptions, isUsingLocalFile: false)
-        isSwitchingTracks = true
-        isSeeking = true
-        isBuffering = true
-        playbackStatusText = statusText
-
-        replaceCurrentItem(
-            with: streamCandidates.first,
-            autoplay: autoplay,
-            startAt: clamped,
-            candidateIndex: 0
-        )
-    }
-
-    private func absoluteElapsed(forItemTime itemTime: TimeInterval) -> TimeInterval {
-        absoluteElapsed(forNormalizedItemTime: itemTime.validDuration(fallback: 0))
-    }
-
-    private func absoluteElapsed(forNormalizedItemTime itemTime: TimeInterval) -> TimeInterval {
-        let absoluteTime: TimeInterval
-        if currentStreamTimebase == .absolute {
-            absoluteTime = itemTime
-        } else {
-            absoluteTime = streamStartOffset + itemTime
-        }
-        guard duration > 0 else { return max(0, absoluteTime) }
-        return max(0, min(absoluteTime, duration))
-    }
-
-    private func absoluteDuration(for itemDuration: TimeInterval) -> TimeInterval {
-        let absoluteDuration = streamStartOffset + itemDuration.validDuration(fallback: 0)
+    private func playbackDuration(for itemDuration: TimeInterval) -> TimeInterval {
+        let playbackDuration = itemDuration.validDuration(fallback: 0)
         let knownDuration = max(currentSong?.duration ?? 0, currentDurationOverride ?? 0)
         if knownDuration > 0 {
-            guard duration > knownDuration else { return knownDuration }
-            return max(duration, absoluteDuration)
+            return max(knownDuration, playbackDuration)
         }
 
-        return max(absoluteDuration, duration)
+        return max(playbackDuration, duration)
     }
 
     private func syncNowPlaying(force: Bool) {
@@ -1581,17 +1321,13 @@ enum PlaybackAudioCache {
         let serverHash: String
         let userId: String
         let itemId: String
-        let quality: OnlinePlaybackQuality
-        let format: AudioTranscodeFormat
         let fileExtension: String
 
-        init(session: EmbySession, item: EmbyAudioItem, options: PlaybackStreamOptions) {
+        init(session: EmbySession, item: EmbyAudioItem) {
             serverHash = PlaybackAudioCache.stableHash(session.serverURL.absoluteString)
             userId = session.userId
             itemId = item.id
-            quality = options.quality
-            format = options.transcodeFormat
-            fileExtension = options.cacheFileExtension(for: item)
+            fileExtension = item.audioCacheFileExtension
         }
 
         var fileName: String {
@@ -1600,8 +1336,8 @@ enum PlaybackAudioCache {
                 serverHash,
                 userId,
                 itemId,
-                quality.rawValue,
-                format.rawValue
+                "lossless",
+                "aac"
             ]
             .map(PlaybackAudioCache.sanitizedPathComponent)
             .joined(separator: "-")
@@ -1697,18 +1433,6 @@ actor CurrentSongAudioCache {
         guard fileSize > 0 else {
             throw URLError(.zeroByteResource)
         }
-    }
-}
-
-private extension NWPath {
-    var playbackNetworkKind: PlaybackNetworkKind {
-        if usesInterfaceType(.wifi) || usesInterfaceType(.wiredEthernet) {
-            return .wifi
-        }
-        if usesInterfaceType(.cellular) {
-            return .cellular
-        }
-        return .wifi
     }
 }
 
