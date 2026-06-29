@@ -284,6 +284,7 @@ struct MusicFolderLibraryView: View {
         }
         .navigationTitle("文件夹")
         .toolbarTitleDisplayMode(.large)
+        .toolbarVisibility(.hidden, for: .tabBar)
         .task {
             await loadFolders()
         }
@@ -310,7 +311,7 @@ struct MusicFolderLibraryView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
             .padding(.top, 14)
-            .padding(.bottom, 130)
+            .padding(.bottom, 24)
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
@@ -414,6 +415,7 @@ private struct MusicFolderSongSelectionView: View {
         }
         .navigationTitle(folder.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarVisibility(.hidden, for: .tabBar)
         .task {
             await loadSongs()
         }
@@ -437,7 +439,7 @@ private struct MusicFolderSongSelectionView: View {
             SelectableSongRowsCard(songs: songs, selectedSongIds: $selectedSongIds)
                 .padding(.horizontal, 18)
                 .padding(.top, 18)
-                .padding(.bottom, 96)
+                .padding(.bottom, 16)
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())

@@ -5,6 +5,7 @@ struct RootTabView: View {
     @EnvironmentObject private var store: AppStore
     @State private var isPlayerExpanded = false
     @State private var selectedTab: AppTab = .home
+    @State private var homePath: [HomeRoute] = []
     @State private var pendingHomeRoute: HomeRoute?
     @State private var routeAfterPlayerDismiss: HomeRoute?
 
@@ -59,17 +60,25 @@ struct RootTabView: View {
     @ViewBuilder
     private var tabs: some View {
         baseTabs
-            .tabViewBottomAccessory {
-                MiniPlayerView {
-                    isPlayerExpanded = true
-                }
+            .tabViewBottomAccessory(isEnabled: !hidesRootBottomChrome) {
+                miniPlayerAccessory
             }
+    }
+
+    private var hidesRootBottomChrome: Bool {
+        selectedTab == .home && homePath.last?.hidesRootBottomChrome == true
+    }
+
+    private var miniPlayerAccessory: some View {
+        MiniPlayerView {
+            isPlayerExpanded = true
+        }
     }
 
     private var baseTabs: some View {
         TabView(selection: $selectedTab) {
             Tab("主页", systemImage: "house.fill", value: AppTab.home) {
-                ListenNowView(pendingRoute: $pendingHomeRoute)
+                ListenNowView(path: $homePath, pendingRoute: $pendingHomeRoute)
             }
 
             Tab("发现", systemImage: "safari.fill", value: AppTab.browse) {

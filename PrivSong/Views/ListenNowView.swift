@@ -2,8 +2,8 @@ import SwiftUI
 
 struct ListenNowView: View {
     @EnvironmentObject private var store: AppStore
+    @Binding private var path: [HomeRoute]
     @Binding private var pendingRoute: HomeRoute?
-    @State private var path: [HomeRoute] = []
     @State private var visiblePlaylistCount = 30
     @State private var isLoadingNextPlaylistPage = false
     @State private var editingPlaylist: MusicPlaylist?
@@ -14,7 +14,8 @@ struct ListenNowView: View {
 
     private let playlistPageSize = 30
 
-    init(pendingRoute: Binding<HomeRoute?> = .constant(nil)) {
+    init(path: Binding<[HomeRoute]> = .constant([]), pendingRoute: Binding<HomeRoute?> = .constant(nil)) {
+        _path = path
         _pendingRoute = pendingRoute
     }
 
@@ -81,6 +82,8 @@ struct ListenNowView: View {
                     } else {
                         ContentUnavailableView("有声书不可用", systemImage: "book.closed")
                     }
+                case .folderLibrary:
+                    MusicFolderLibraryView()
                 }
             }
             .onChange(of: pendingRoute) { _, route in
@@ -109,6 +112,11 @@ struct ListenNowView: View {
                 Text(playlistErrorMessage ?? "")
             }
         }
+        .toolbarVisibility(homeTabBarVisibility, for: .tabBar)
+    }
+
+    private var homeTabBarVisibility: Visibility {
+        path.last?.hidesRootBottomChrome == true ? .hidden : .visible
     }
 
     private var deleteConfirmationMessage: String {
@@ -169,9 +177,7 @@ struct ListenNowView: View {
                 }
                 .buttonStyle(.plain)
 
-                NavigationLink {
-                    MusicFolderLibraryView()
-                } label: {
+                NavigationLink(value: HomeRoute.folderLibrary) {
                     LibraryCategoryCard(
                         title: "文件夹",
                         subtitle: "Emby 目录",
@@ -265,6 +271,16 @@ enum HomeRoute: Hashable {
     case artist(String)
     case album(String)
     case audiobook(String)
+    case folderLibrary
+
+    var hidesRootBottomChrome: Bool {
+        switch self {
+        case .folderLibrary:
+            return true
+        case .playlist, .artist, .album, .audiobook:
+            return false
+        }
+    }
 }
 
 private enum HomePlaylistRowLayout {
