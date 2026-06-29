@@ -200,7 +200,8 @@ final class AppStore: ObservableObject {
             song: target.episode,
             in: audiobook.episodes,
             startPosition: target.position,
-            durationOverride: target.duration
+            durationOverride: target.duration,
+            shuffle: false
         )
     }
 
