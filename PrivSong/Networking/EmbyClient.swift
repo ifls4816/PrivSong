@@ -360,8 +360,7 @@ struct EmbyClient {
             resolvingAgainstBaseURL: false
         )
         components?.queryItems = [
-            URLQueryItem(name: "Ids", value: playlistId),
-            URLQueryItem(name: "X-Emby-Token", value: embySession.accessToken)
+            URLQueryItem(name: "Ids", value: playlistId)
         ]
         guard let url = components?.url else { throw EmbyError.invalidURL }
 
@@ -951,9 +950,9 @@ struct EmbyClient {
         for item: EmbyAudioItem,
         session embySession: EmbySession,
         playSessionId requestedPlaySessionId: String? = nil
-    ) -> [URL] {
+    ) -> [AuthenticatedURL] {
         let playSessionId = requestedPlaySessionId ?? UUID().uuidString
-        let candidates = [
+        let candidates: [AuthenticatedURL?] = [
             directAudioStreamURL(
                 for: item,
                 session: embySession,
@@ -963,10 +962,10 @@ struct EmbyClient {
         ]
 
         var seen = Set<String>()
-        return candidates.compactMap { $0 }.filter { seen.insert($0.absoluteString).inserted }
+        return candidates.compactMap { $0 }.filter { seen.insert($0.url.absoluteString).inserted }
     }
 
-    func originalAudioStreamURL(for item: EmbyAudioItem, session embySession: EmbySession) -> URL? {
+    func originalAudioStreamURL(for item: EmbyAudioItem, session embySession: EmbySession) -> AuthenticatedURL? {
         directAudioStreamURL(
             for: item,
             session: embySession,
@@ -1036,29 +1035,25 @@ struct EmbyClient {
         for item: EmbyAudioItem,
         session embySession: EmbySession,
         playSessionId: String
-    ) -> URL? {
+    ) -> AuthenticatedURL? {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Audio/\(item.id)/stream"),
             resolvingAgainstBaseURL: false
         )
         let queryItems = [
-            URLQueryItem(name: "api_key", value: embySession.accessToken),
             URLQueryItem(name: "Static", value: "true"),
             URLQueryItem(name: "PlaySessionId", value: playSessionId)
         ]
         components?.queryItems = queryItems
-        return components?.url
+        return components?.url.map { authenticatedURL($0, session: embySession) }
     }
 
-    private func downloadURL(for item: EmbyAudioItem, session embySession: EmbySession) -> URL? {
-        var components = URLComponents(
+    private func downloadURL(for item: EmbyAudioItem, session embySession: EmbySession) -> AuthenticatedURL? {
+        let components = URLComponents(
             url: embySession.serverURL.appending(path: "Items/\(item.id)/Download"),
             resolvingAgainstBaseURL: false
         )
-        components?.queryItems = [
-            URLQueryItem(name: "api_key", value: embySession.accessToken)
-        ]
-        return components?.url
+        return components?.url.map { authenticatedURL($0, session: embySession) }
     }
 
     private func sendPlaybackReport(
@@ -1097,7 +1092,7 @@ struct EmbyClient {
         try await sendEmpty(request)
     }
 
-    func imageURL(for item: EmbyAudioItem, session embySession: EmbySession, size: Int = 600) -> URL? {
+    func imageURL(for item: EmbyAudioItem, session embySession: EmbySession, size: Int = 600) -> AuthenticatedURL? {
         let imageItemId: String?
         if item.imageTags?["Primary"] != nil {
             imageItemId = item.id
@@ -1119,10 +1114,18 @@ struct EmbyClient {
         components?.queryItems = [
             URLQueryItem(name: "maxHeight", value: "\(size)"),
             URLQueryItem(name: "maxWidth", value: "\(size)"),
-            URLQueryItem(name: "quality", value: "90"),
-            URLQueryItem(name: "api_key", value: embySession.accessToken)
+            URLQueryItem(name: "quality", value: "90")
         ]
-        return components?.url
+        return components?.url.map { authenticatedURL($0, session: embySession) }
+    }
+
+    private func authenticatedURL(_ url: URL, session embySession: EmbySession) -> AuthenticatedURL {
+        AuthenticatedURL(
+            url: url,
+            httpHeaders: [
+                "X-Emby-Authorization": authorizationHeader(accessToken: embySession.accessToken)
+            ]
+        )
     }
 
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {

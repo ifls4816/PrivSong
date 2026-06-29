@@ -11,7 +11,7 @@ struct SongRow: View {
     @State private var rowWidth: CGFloat?
 
     let song: EmbyAudioItem
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
     var songs: [EmbyAudioItem]?
 
     var body: some View {
@@ -62,7 +62,7 @@ struct SongRow: View {
 
 private struct SongRowContent: View {
     let song: EmbyAudioItem
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -111,7 +111,7 @@ private struct SongRowContent: View {
 
 private struct SongRowContextPreview: View {
     let song: EmbyAudioItem
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
     let width: CGFloat?
 
     var body: some View {
@@ -418,7 +418,7 @@ private struct MusicCollectionDetailView: View {
 
     let title: String
     let subtitle: String
-    let artworkURL: URL?
+    let artworkURL: AuthenticatedURL?
     let songs: [EmbyAudioItem]
     let play: (EmbyAudioItem?) -> Void
 

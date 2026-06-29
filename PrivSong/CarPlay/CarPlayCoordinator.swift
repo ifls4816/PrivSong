@@ -383,23 +383,23 @@ final class CarPlayCoordinator: NSObject {
             return placeholderImage(systemName: card.placeholderSystemImageName)
         }
 
-        if let cached = ArtworkImageCache.shared.image(for: imageURL) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL) {
+        if let cached = ArtworkImageCache.shared.image(for: imageURL.url) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL.url) {
             return preparedCardImage(cached)
         }
 
-        if let diskData = await ArtworkDiskCache.data(for: imageURL),
+        if let diskData = await ArtworkDiskCache.data(for: imageURL.url),
            let diskImage = UIImage(data: diskData) {
-            ArtworkImageCache.shared.insert(diskImage, for: imageURL)
+            ArtworkImageCache.shared.insert(diskImage, for: imageURL.url)
             return preparedCardImage(diskImage)
         }
 
         do {
-            let (data, _) = try await URLSession.shared.data(from: imageURL)
+            let (data, _) = try await URLSession.shared.data(for: imageURL.request)
             guard !Task.isCancelled, let image = UIImage(data: data) else {
                 return placeholderImage(systemName: card.placeholderSystemImageName)
             }
-            ArtworkImageCache.shared.insert(image, for: imageURL)
-            await ArtworkDiskCache.insert(data, for: imageURL)
+            ArtworkImageCache.shared.insert(image, for: imageURL.url)
+            await ArtworkDiskCache.insert(data, for: imageURL.url)
             return preparedCardImage(image)
         } catch {
             return placeholderImage(systemName: card.placeholderSystemImageName)
@@ -408,7 +408,7 @@ final class CarPlayCoordinator: NSObject {
 
     private func initialCardImage(for card: CarPlayCardDescriptor) -> UIImage {
         guard let imageURL = card.imageURL,
-              let cached = ArtworkImageCache.shared.image(for: imageURL) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL) else {
+              let cached = ArtworkImageCache.shared.image(for: imageURL.url) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL.url) else {
             return placeholderImage(systemName: card.placeholderSystemImageName)
         }
         return preparedCardImage(cached)
@@ -720,7 +720,7 @@ final class CarPlayCoordinator: NSObject {
 private struct CarPlayCardDescriptor {
     let title: String
     let subtitle: String?
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
     let placeholderSystemImageName: String
     let tintColor: UIColor?
 }

@@ -537,7 +537,7 @@ private struct SelectableSongRowsCard: View {
 
 private struct SelectableSongRow: View {
     let song: EmbyAudioItem
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
     let isSelected: Bool
     let toggle: () -> Void
 

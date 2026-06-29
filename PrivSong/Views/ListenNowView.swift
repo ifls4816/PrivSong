@@ -274,7 +274,7 @@ private enum HomePlaylistRowLayout {
 
 struct HomePlaylistRow: View {
     let playlist: MusicPlaylist
-    let artworkURLs: [URL]
+    let artworkURLs: [AuthenticatedURL]
 
     var body: some View {
         HStack(spacing: 12) {
@@ -314,7 +314,7 @@ private struct LongPressHomePlaylistRow: View {
     let edit: () -> Void
     let delete: () -> Void
 
-    private var artworkURLs: [URL] {
+    private var artworkURLs: [AuthenticatedURL] {
         playlist.songs
             .prefix(4)
             .compactMap { store.imageURL(for: $0, size: 160) }
@@ -368,7 +368,7 @@ private struct LongPressHomePlaylistRow: View {
 
 private struct HomePlaylistRowContextPreview: View {
     let playlist: MusicPlaylist
-    let artworkURLs: [URL]
+    let artworkURLs: [AuthenticatedURL]
     let width: CGFloat?
 
     var body: some View {
@@ -517,7 +517,7 @@ private struct PlaylistDetailLoaderView: View {
 }
 
 struct PlaylistArtworkGrid: View {
-    let artworkURLs: [URL]
+    let artworkURLs: [AuthenticatedURL]
 
     var body: some View {
         GeometryReader { proxy in
@@ -994,7 +994,7 @@ struct SectionHeader<Destination: View>: View {
 struct CompactMusicCard: View {
     let title: String
     let subtitle: String
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
     let action: () -> Void
 
     var body: some View {

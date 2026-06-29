@@ -831,10 +831,10 @@ final class VolumeSliderContainer: UIView {
 private struct PlayerPageBackground: View {
     @Environment(\.colorScheme) private var colorScheme
 
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
 
     @State private var palette: BackdropPalette?
-    @State private var loadedImageURL: URL?
+    @State private var loadedImageURL: AuthenticatedURL?
 
     var body: some View {
         let isDark = colorScheme == .dark
@@ -868,7 +868,7 @@ private struct PlayerPageBackground: View {
     }
 
     @MainActor
-    private func updatePalette(for imageURL: URL?) async {
+    private func updatePalette(for imageURL: AuthenticatedURL?) async {
         guard loadedImageURL != imageURL else { return }
         loadedImageURL = imageURL
 
@@ -906,22 +906,22 @@ private struct PaletteColor: Equatable, Sendable {
 }
 
 private enum ColorExtractor {
-    static func palette(for imageURL: URL) async -> BackdropPalette? {
-        let request = URLRequest(url: imageURL)
+    static func palette(for imageURL: AuthenticatedURL) async -> BackdropPalette? {
+        let request = imageURL.request
 
         if let cachedResponse = URLCache.shared.cachedResponse(for: request),
            let palette = await palette(from: cachedResponse.data) {
             return palette
         }
 
-        if let diskData = ArtworkDiskCache.dataSync(for: imageURL),
+        if let diskData = ArtworkDiskCache.dataSync(for: imageURL.url),
            let palette = await palette(from: diskData) {
             return palette
         }
 
         do {
             let (data, _) = try await URLSession.shared.data(for: request)
-            await ArtworkDiskCache.insert(data, for: imageURL)
+            await ArtworkDiskCache.insert(data, for: imageURL.url)
             return await palette(from: data)
         } catch {
             return nil

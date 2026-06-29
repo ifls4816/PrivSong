@@ -73,9 +73,9 @@ final class PlayerController: ObservableObject {
     private var queue: [EmbyAudioItem] = []
     private var queueBeforeShuffle: [EmbyAudioItem]?
     private var restoredQueueCurrentSongID: String?
-    private var streamCandidates: [URL] = []
+    private var streamCandidates: [AuthenticatedURL] = []
     private var streamCandidateIndex = 0
-    private var currentStreamURL: URL?
+    private var currentStreamURL: AuthenticatedURL?
     private var currentDurationOverride: TimeInterval?
     private var currentPlaySessionId: String?
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
@@ -323,7 +323,7 @@ final class PlayerController: ObservableObject {
         isUsingLocalFile ? .directPlay : .directStream
     }
 
-    private func cacheCurrentSong(from sourceURL: URL?, cacheKey: PlaybackAudioCache.Key) {
+    private func cacheCurrentSong(from sourceURL: AuthenticatedURL?, cacheKey: PlaybackAudioCache.Key) {
         audioCacheTask?.cancel()
         guard let sourceURL, !sourceURL.isFileURL else { return }
 
@@ -387,7 +387,7 @@ final class PlayerController: ObservableObject {
 
         audioSession.activate()
         let cachedURL = PlaybackAudioCache.cachedFileURL(for: cacheKey)
-        let initialURL = cachedURL ?? streamCandidates.first
+        let initialURL = cachedURL.map { AuthenticatedURL(url: $0) } ?? streamCandidates.first
         currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedURL != nil)
         replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
         cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
@@ -399,12 +399,12 @@ final class PlayerController: ObservableObject {
     }
 
     private func replaceCurrentItem(
-        with url: URL?,
+        with resource: AuthenticatedURL?,
         autoplay: Bool,
         startAt startTime: TimeInterval? = nil,
         candidateIndex: Int? = nil
     ) {
-        guard let url else {
+        guard let resource else {
             print("[Player] No playable Emby URL for current item.")
             isPlaying = false
             isBuffering = false
@@ -417,9 +417,10 @@ final class PlayerController: ObservableObject {
         if let candidateIndex {
             streamCandidateIndex = candidateIndex
         }
-        currentStreamURL = url
+        currentStreamURL = resource
 
-        let asset = AVURLAsset(url: url)
+        let url = resource.url
+        let asset = AVURLAsset(url: url, options: resource.avAssetOptions)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = url.isFileURL ? 0 : 45
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = !url.isFileURL
@@ -1168,13 +1169,13 @@ final class PlayerController: ObservableObject {
         artworkTask?.cancel()
         currentArtwork = nil
 
-        guard let url = client.imageURL(for: song, session: session, size: 600) else {
+        guard let resource = client.imageURL(for: song, session: session, size: 600) else {
             syncNowPlaying(force: true)
             return
         }
 
         artworkTask = Task { [weak self, songId = song.id] in
-            guard let (data, _) = try? await URLSession.shared.data(from: url),
+            guard let (data, _) = try? await URLSession.shared.data(for: resource.request),
                   let image = UIImage(data: data),
                   !Task.isCancelled else {
                 return
@@ -1188,16 +1189,16 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func loadEmbeddedLyrics(from url: URL?, songId: String) {
+    private func loadEmbeddedLyrics(from resource: AuthenticatedURL?, songId: String) {
         lyricsTask?.cancel()
         lyrics = []
         lyricsSongId = songId
         isLoadingLyrics = false
-        guard let url else { return }
+        guard let resource else { return }
 
         isLoadingLyrics = true
         lyricsTask = Task { [weak self] in
-            let lines = await Self.readEmbeddedLyrics(from: url)
+            let lines = await Self.readEmbeddedLyrics(from: resource)
             await MainActor.run {
                 guard !Task.isCancelled, self?.lyricsSongId == songId else { return }
                 self?.lyrics = lines
@@ -1206,8 +1207,8 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private nonisolated static func readEmbeddedLyrics(from url: URL) async -> [LyricLine] {
-        let asset = AVURLAsset(url: url)
+    private nonisolated static func readEmbeddedLyrics(from resource: AuthenticatedURL) async -> [LyricLine] {
+        let asset = AVURLAsset(url: resource.url, options: resource.avAssetOptions)
         do {
             var metadata: [AVMetadataItem] = []
             metadata += try await asset.load(.commonMetadata)
@@ -1402,14 +1403,14 @@ enum PlaybackAudioCache {
 }
 
 actor CurrentSongAudioCache {
-    func cacheCurrentSong(from sourceURL: URL, key: PlaybackAudioCache.Key) async throws -> URL {
+    func cacheCurrentSong(from sourceURL: AuthenticatedURL, key: PlaybackAudioCache.Key) async throws -> URL {
         if let cachedURL = PlaybackAudioCache.cachedFileURL(for: key) {
             return cachedURL
         }
 
         try PlaybackAudioCache.prepareDirectory()
         let destinationURL = PlaybackAudioCache.fileURL(for: key)
-        let (temporaryURL, response) = try await URLSession.shared.download(from: sourceURL)
+        let (temporaryURL, response) = try await URLSession.shared.download(for: sourceURL.request)
         try Task.checkCancellation()
         try validate(response: response, temporaryURL: temporaryURL)
 
@@ -1433,6 +1434,13 @@ actor CurrentSongAudioCache {
         guard fileSize > 0 else {
             throw URLError(.zeroByteResource)
         }
+    }
+}
+
+private extension AuthenticatedURL {
+    var avAssetOptions: [String: Any]? {
+        guard !httpHeaders.isEmpty else { return nil }
+        return ["AVURLAssetHTTPHeaderFieldsKey": httpHeaders]
     }
 }
 

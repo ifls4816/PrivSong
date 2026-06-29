@@ -4,19 +4,19 @@ import UIKit
 
 @MainActor
 struct ArtworkView: View {
-    let url: URL?
+    let url: AuthenticatedURL?
     var cornerRadius: CGFloat = 8
     var showsPlaceholder = true
     @State private var image: UIImage?
-    @State private var displayedURL: URL?
+    @State private var displayedURL: AuthenticatedURL?
 
-    init(url: URL?, cornerRadius: CGFloat = 8, showsPlaceholder: Bool = true) {
+    init(url: AuthenticatedURL?, cornerRadius: CGFloat = 8, showsPlaceholder: Bool = true) {
         self.url = url
         self.cornerRadius = cornerRadius
         self.showsPlaceholder = showsPlaceholder
 
-        let exactImage = url.flatMap { ArtworkImageCache.shared.image(for: $0) }
-        let cachedImage = exactImage ?? url.flatMap { ArtworkImageCache.shared.fallbackImage(for: $0) }
+        let exactImage = url.flatMap { ArtworkImageCache.shared.image(for: $0.url) }
+        let cachedImage = exactImage ?? url.flatMap { ArtworkImageCache.shared.fallbackImage(for: $0.url) }
         _image = State(initialValue: cachedImage)
         _displayedURL = State(initialValue: exactImage == nil ? nil : url)
     }
@@ -63,21 +63,22 @@ struct ArtworkView: View {
     }
 
     @MainActor
-    private func loadImage(from url: URL?) async {
-        guard let url else {
+    private func loadImage(from resource: AuthenticatedURL?) async {
+        guard let resource else {
             image = nil
             displayedURL = nil
             return
         }
 
-        if displayedURL == url, image != nil {
+        if displayedURL == resource, image != nil {
             return
         }
 
+        let url = resource.url
         if let cached = ArtworkImageCache.shared.image(for: url) {
             withoutAnimation {
                 image = cached
-                displayedURL = url
+                displayedURL = resource
             }
             return
         }
@@ -87,7 +88,7 @@ struct ArtworkView: View {
                 image = fallback
                 displayedURL = nil
             }
-        } else if displayedURL != url {
+        } else if displayedURL != resource {
             withoutAnimation {
                 image = nil
                 displayedURL = nil
@@ -99,19 +100,19 @@ struct ArtworkView: View {
             ArtworkImageCache.shared.insert(cached, for: url)
             withoutAnimation {
                 image = cached
-                displayedURL = url
+                displayedURL = resource
             }
             return
         }
 
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, _) = try await URLSession.shared.data(for: resource.request)
             guard !Task.isCancelled,
                   let loaded = await ArtworkDecoder.image(from: data, url: url) else { return }
             ArtworkImageCache.shared.insert(loaded, for: url)
             await ArtworkDiskCache.insert(data, for: url)
             image = loaded
-            displayedURL = url
+            displayedURL = resource
         } catch {
             withoutAnimation {
                 image = nil

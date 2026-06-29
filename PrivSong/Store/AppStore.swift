@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -59,6 +60,7 @@ final class AppStore: ObservableObject {
     private let snapshotStore = LibrarySnapshotStore()
     private let initialHomeSnapshotStore = InitialHomeContentSnapshotStore()
     private let audiobookProgressStore = AudiobookProgressStore()
+    private let sessionTokenStore = KeychainSessionTokenStore()
     private let sessionKey = "EmbySession"
     private let favoritesKey = "FavoriteSongIds"
     private let recentKey = "RecentSongIds"
@@ -486,7 +488,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func imageURL(for song: EmbyAudioItem, size: Int = 600) -> URL? {
+    func imageURL(for song: EmbyAudioItem, size: Int = 600) -> AuthenticatedURL? {
         guard let session else { return nil }
         return client.imageURL(for: song, session: session, size: size)
     }
@@ -811,6 +813,11 @@ final class AppStore: ObservableObject {
         favoriteErrorMessage = nil
         libraryStatus = "Not connected"
         UserDefaults.standard.removeObject(forKey: sessionKey)
+        do {
+            try sessionTokenStore.deleteAllTokens()
+        } catch {
+            print("[AppStore] Failed to clear Emby session token: \(error.localizedDescription)")
+        }
         snapshotStore.clear()
         initialHomeSnapshotStore.clear()
         audiobookProgressStore.clear()
@@ -885,8 +892,14 @@ final class AppStore: ObservableObject {
     }
 
     private func persist(_ session: EmbySession) {
-        if let data = try? JSONEncoder().encode(session) {
+        do {
+            try sessionTokenStore.saveToken(session.accessToken, for: session)
+            let metadata = StoredEmbySession(session: session)
+            let data = try JSONEncoder().encode(metadata)
             UserDefaults.standard.set(data, forKey: sessionKey)
+        } catch {
+            UserDefaults.standard.removeObject(forKey: sessionKey)
+            print("[AppStore] Failed to persist Emby session securely: \(error.localizedDescription)")
         }
     }
 
@@ -936,7 +949,7 @@ final class AppStore: ObservableObject {
 
     private func restoreSession() {
         guard let data = UserDefaults.standard.data(forKey: sessionKey),
-              let restored = try? JSONDecoder().decode(EmbySession.self, from: data) else {
+              let restored = restoredSession(from: data) else {
             return
         }
         session = restored
@@ -958,6 +971,30 @@ final class AppStore: ObservableObject {
             await loadInitialHomeContent(session: restored)
             await refreshLibraryIfNeededForToday()
         }
+    }
+
+    private func restoredSession(from data: Data) -> EmbySession? {
+        let decoder = JSONDecoder()
+        if let legacySession = try? decoder.decode(EmbySession.self, from: data) {
+            persist(legacySession)
+            return legacySession
+        }
+
+        if let metadata = try? decoder.decode(StoredEmbySession.self, from: data) {
+            do {
+                guard let token = try sessionTokenStore.token(for: metadata),
+                      !token.isEmpty else {
+                    UserDefaults.standard.removeObject(forKey: sessionKey)
+                    return nil
+                }
+                return metadata.session(accessToken: token)
+            } catch {
+                print("[AppStore] Failed to restore Emby session token: \(error.localizedDescription)")
+                return nil
+            }
+        }
+
+        return nil
     }
 
     private func restoreLibrarySnapshot() -> Bool {
@@ -1099,6 +1136,120 @@ private struct LibrarySnapshot: Codable {
     let songs: [EmbyAudioItem]
     let playlists: [MusicPlaylist]
     let audiobookEpisodes: [EmbyAudioItem]
+}
+
+private struct StoredEmbySession: Codable {
+    let serverURL: URL
+    let userId: String
+    let username: String
+
+    init(session: EmbySession) {
+        serverURL = session.serverURL
+        userId = session.userId
+        username = session.username
+    }
+
+    func session(accessToken: String) -> EmbySession {
+        EmbySession(
+            serverURL: serverURL,
+            userId: userId,
+            username: username,
+            accessToken: accessToken
+        )
+    }
+}
+
+private struct KeychainSessionTokenStore {
+    private let service = "PrivSong.EmbySession"
+
+    func saveToken(_ token: String, for session: EmbySession) throws {
+        try saveToken(token, account: account(serverURL: session.serverURL, userId: session.userId))
+    }
+
+    func token(for metadata: StoredEmbySession) throws -> String? {
+        try token(account: account(serverURL: metadata.serverURL, userId: metadata.userId))
+    }
+
+    func deleteAllTokens() throws {
+        let status = SecItemDelete([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service
+        ] as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainSessionTokenError.unhandledStatus(status)
+        }
+    }
+
+    private func saveToken(_ token: String, account: String) throws {
+        let data = Data(token.utf8)
+        let query = baseQuery(account: account)
+        let updateStatus = SecItemUpdate(
+            query as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+
+        if updateStatus == errSecSuccess {
+            return
+        }
+
+        guard updateStatus == errSecItemNotFound else {
+            throw KeychainSessionTokenError.unhandledStatus(updateStatus)
+        }
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        guard addStatus == errSecSuccess else {
+            throw KeychainSessionTokenError.unhandledStatus(addStatus)
+        }
+    }
+
+    private func token(account: String) throws -> String? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw KeychainSessionTokenError.unhandledStatus(status)
+        }
+        guard let data = item as? Data,
+              let token = String(data: data, encoding: .utf8) else {
+            throw KeychainSessionTokenError.invalidData
+        }
+        return token
+    }
+
+    private func baseQuery(account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
+
+    private func account(serverURL: URL, userId: String) -> String {
+        "\(serverURL.absoluteString)#\(userId)"
+    }
+}
+
+private enum KeychainSessionTokenError: LocalizedError {
+    case invalidData
+    case unhandledStatus(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidData:
+            return "Keychain returned invalid token data."
+        case .unhandledStatus(let status):
+            return "Keychain operation failed with status \(status)."
+        }
+    }
 }
 
 private struct LibrarySnapshotStore {

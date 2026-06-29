@@ -194,7 +194,7 @@ private struct SearchResultSection<Content: View>: View {
 private struct SearchArtworkRow: View {
     let title: String
     let subtitle: String
-    let imageURL: URL?
+    let imageURL: AuthenticatedURL?
 
     var body: some View {
         HStack(spacing: 12) {

@@ -7,6 +7,28 @@ struct EmbySession: Codable, Equatable {
     let accessToken: String
 }
 
+struct AuthenticatedURL: Hashable, Sendable {
+    let url: URL
+    let httpHeaders: [String: String]
+
+    init(url: URL, httpHeaders: [String: String] = [:]) {
+        self.url = url
+        self.httpHeaders = httpHeaders
+    }
+
+    var isFileURL: Bool {
+        url.isFileURL
+    }
+
+    var request: URLRequest {
+        var request = URLRequest(url: url)
+        for (field, value) in httpHeaders {
+            request.setValue(value, forHTTPHeaderField: field)
+        }
+        return request
+    }
+}
+
 enum OnlinePlaybackQuality: String, CaseIterable, Codable, Identifiable, Hashable {
     case lossless
     case veryHigh
