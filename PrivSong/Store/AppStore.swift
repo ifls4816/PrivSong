@@ -37,6 +37,23 @@ final class AppStore: ObservableObject {
     @Published var prefersHighRefreshRate = false {
         didSet { UserDefaults.standard.set(prefersHighRefreshRate, forKey: highRefreshRateKey) }
     }
+    @Published var audioCacheLimit: AudioCacheLimit = .defaultValue {
+        didSet {
+            UserDefaults.standard.set(audioCacheLimit.rawValue, forKey: audioCacheLimitKey)
+            PlaybackAudioCache.setLimit(audioCacheLimit)
+            if audioCacheLimit == .off {
+                player?.cancelAudioCaching()
+            }
+            Task {
+                await Task.detached(priority: .utility) {
+                    PlaybackAudioCache.trimToLimit()
+                }.value
+                await refreshCacheUsage()
+            }
+        }
+    }
+    @Published private(set) var cacheUsageBytes: Int64?
+    @Published private(set) var isClearingCache = false
 
     // Cached derived data — recomputed only when source media changes
     @Published private(set) var albums: [MusicAlbum] = []
@@ -69,6 +86,8 @@ final class AppStore: ObservableObject {
     private let startsOnBrowseKey = "StartsOnBrowse"
     private let keepsScreenAwakeKey = "KeepsScreenAwakeOnPlayerPage"
     private let highRefreshRateKey = "PrefersHighRefreshRate"
+    private let audioCacheLimitKey = "AudioCacheLimitMB"
+    private let searchResultLimit = 100
     private var activeSearchToken: UUID?
     private var libraryCacheSavedAt: Date?
     private var dailyRecommendationDay: Int?
@@ -233,6 +252,11 @@ final class AppStore: ObservableObject {
     init() {
         restoreLocalState()
         restoreSession()
+        Task.detached(priority: .utility) {
+            DiskCacheMaintenance.removeOrphanedFiles()
+            PlaybackAudioCache.trimToLimit()
+            ArtworkDiskCache.trimToLimit()
+        }
     }
 
     func signIn(server: String, username: String, password: String) async {
@@ -471,7 +495,29 @@ final class AppStore: ObservableObject {
         isSearching = true
 
         do {
-            let results = try await client.fetchSongs(session: session, searchTerm: normalized)
+            let serverMatches = try await client.searchSongs(
+                session: session,
+                searchTerm: normalized,
+                limit: searchResultLimit
+            )
+            guard activeSearchToken == token, !Task.isCancelled else { return }
+
+            // Emby's SearchTerm only matches song titles; album and artist matches come from
+            // the library already in memory instead of extra server round trips.
+            let library = songs
+            let limit = searchResultLimit
+            let results = await Task.detached(priority: .userInitiated) {
+                var seen = Set(serverMatches.map(\.id))
+                var merged = serverMatches
+                for song in library {
+                    if merged.count >= limit { break }
+                    guard !song.isAudiobookAudio,
+                          song.matchesSearch(normalized),
+                          seen.insert(song.id).inserted else { continue }
+                    merged.append(song)
+                }
+                return merged
+            }.value
             guard activeSearchToken == token, !Task.isCancelled else { return }
             searchResults = results
         } catch is CancellationError {
@@ -822,23 +868,44 @@ final class AppStore: ObservableObject {
         initialHomeSnapshotStore.clear()
         audiobookProgressStore.clear()
         ArtworkImageCache.shared.clear()
+        player?.cancelAudioCaching()
         ArtworkDiskCache.clear()
         PlaybackAudioCache.clearAll()
         URLCache.shared.removeAllCachedResponses()
+        cacheUsageBytes = nil
     }
 
     func clearCaches() {
+        guard !isClearingCache else { return }
+        isClearingCache = true
         snapshotStore.clear()
         initialHomeSnapshotStore.clear()
         ArtworkImageCache.shared.clear()
-        ArtworkDiskCache.clear()
-        PlaybackAudioCache.clearAll()
+        player?.cancelAudioCaching()
         URLCache.shared.removeAllCachedResponses()
         hasLoadedInitialContent = hasHomeContent || hasBrowseContent
         libraryCacheSavedAt = nil
         libraryStatus = songs.isEmpty && audiobookEpisodes.isEmpty
             ? "Cache cleared."
             : "Cache cleared. Current library remains in memory."
+
+        Task {
+            // Deleting hundreds of MB of audio can take a moment; keep it off the main thread.
+            await Task.detached(priority: .userInitiated) {
+                ArtworkDiskCache.clear()
+                PlaybackAudioCache.clearAll()
+                DiskCacheMaintenance.removeOrphanedFiles()
+            }.value
+            isClearingCache = false
+            await refreshCacheUsage()
+        }
+    }
+
+    func refreshCacheUsage() async {
+        let fileBytes = await Task.detached(priority: .utility) {
+            PlaybackAudioCache.totalSize() + ArtworkDiskCache.totalSize()
+        }.value
+        cacheUsageBytes = fileBytes + Int64(URLCache.shared.currentDiskUsage)
     }
 
     private func updateLibraryStatus() {
@@ -1074,6 +1141,9 @@ final class AppStore: ObservableObject {
         startsOnBrowse = UserDefaults.standard.bool(forKey: startsOnBrowseKey)
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)
         prefersHighRefreshRate = UserDefaults.standard.bool(forKey: highRefreshRateKey)
+        if UserDefaults.standard.object(forKey: audioCacheLimitKey) != nil {
+            audioCacheLimit = AudioCacheLimit(rawValue: UserDefaults.standard.integer(forKey: audioCacheLimitKey)) ?? .defaultValue
+        }
     }
 
     private func refreshDailyRecommendations(for day: Int) {

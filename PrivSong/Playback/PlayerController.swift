@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import Synchronization
 import UIKit
 
 struct LyricLine: Identifiable, Hashable, Sendable {
@@ -47,7 +48,6 @@ final class PlayerController: ObservableObject {
     private(set) var duration: TimeInterval = 0 {
         didSet { timeline.updateDuration(duration) }
     }
-    @Published private(set) var queueSnapshot: [EmbyAudioItem] = []
     @Published private(set) var upcomingQueueSnapshot: [EmbyAudioItem] = []
     @Published private(set) var lyrics: [LyricLine] = []
     @Published private(set) var lyricsSongId: String?
@@ -323,13 +323,20 @@ final class PlayerController: ObservableObject {
         isUsingLocalFile ? .directPlay : .directStream
     }
 
+    func cancelAudioCaching() {
+        audioCacheTask?.cancel()
+        audioCacheTask = nil
+    }
+
     private func cacheCurrentSong(from sourceURL: AuthenticatedURL?, cacheKey: PlaybackAudioCache.Key) {
         audioCacheTask?.cancel()
-        guard let sourceURL, !sourceURL.isFileURL else { return }
+        guard let sourceURL, !sourceURL.isFileURL, PlaybackAudioCache.isEnabled else { return }
 
         let currentAudioCache = audioCache
         audioCacheTask = Task {
             do {
+                // Give the stream the bandwidth while it starts, and skip caching tracks that get skipped quickly.
+                try await Task.sleep(for: PlaybackAudioCache.downloadDelay)
                 _ = try await currentAudioCache.cacheCurrentSong(from: sourceURL, key: cacheKey)
             } catch is CancellationError {
             } catch {
@@ -376,6 +383,7 @@ final class PlayerController: ObservableObject {
         let cacheKey = PlaybackAudioCache.Key(session: session, item: song)
         let playSessionId = UUID().uuidString
         activeAudioCacheKey = cacheKey
+        PlaybackAudioCache.setProtectedKey(cacheKey)
         currentPlaySessionId = playSessionId
         streamCandidates = client.playbackURLCandidates(
             for: song,
@@ -386,13 +394,18 @@ final class PlayerController: ObservableObject {
         syncQueueSnapshots()
 
         audioSession.activate()
-        let cachedURL = PlaybackAudioCache.cachedFileURL(for: cacheKey)
-        let initialURL = cachedURL.map { AuthenticatedURL(url: $0) } ?? streamCandidates.first
-        currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedURL != nil)
+        let cachedResource = PlaybackAudioCache.cachedFileURL(for: cacheKey).map { AuthenticatedURL(url: $0) }
+        let initialURL = cachedResource ?? streamCandidates.first
+        currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedResource != nil)
         replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
-        cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
+        if cachedResource == nil {
+            cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
+        }
         loadArtwork(for: song, session: session)
-        loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
+        loadEmbeddedLyrics(
+            from: cachedResource ?? client.originalAudioStreamURL(for: song, session: session),
+            songId: song.id
+        )
         reportPlaybackStarted(position: initialPosition)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
@@ -438,7 +451,8 @@ final class PlayerController: ObservableObject {
                 toleranceAfter: .zero
             ) { [weak self] _ in
                 Task { @MainActor in
-                    guard let self else { return }
+                    // The user may have moved on to another track before this seek finished.
+                    guard let self, self.engine.currentItem === item else { return }
                     self.elapsed = clampedStartTime
                     self.pendingSeekTarget = clampedStartTime
                     self.suppressTimeUpdatesUntil = Date().addingTimeInterval(0.8)
@@ -496,6 +510,7 @@ final class PlayerController: ObservableObject {
         streamCandidateIndex = 0
         currentDurationOverride = nil
         activeAudioCacheKey = nil
+        PlaybackAudioCache.setProtectedKey(nil)
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
@@ -713,7 +728,6 @@ final class PlayerController: ObservableObject {
 
     private func syncQueueSnapshots(persists: Bool = true) {
         let songs = activeQueue
-        queueSnapshot = songs
 
         guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
             upcomingQueueSnapshot = songs
@@ -959,9 +973,11 @@ final class PlayerController: ObservableObject {
     private func syncPlaybackStateFromEngine(forceNowPlaying: Bool) {
         let playing = engine.timeControlStatus == .playing || engine.rate > 0
         let buffering = engine.timeControlStatus == .waitingToPlayAtSpecifiedRate && engine.rate == 0
-        isBuffering = buffering
+        // Runs on every 0.5s tick: only touch @Published state when it actually changes,
+        // otherwise every observing view (mini player, now playing) re-renders each tick.
         if buffering {
-            playbackStatusText = "正在缓冲"
+            setBuffering(true)
+            setPlaybackStatusText("正在缓冲")
         } else {
             clearTransientPlaybackStatus()
         }
@@ -973,7 +989,7 @@ final class PlayerController: ObservableObject {
     }
 
     private func clearTransientPlaybackStatus() {
-        isBuffering = false
+        setBuffering(false)
         if playbackStatusText == "正在跳转" ||
             playbackStatusText == "正在缓冲" ||
             playbackStatusText == "正在连接" ||
@@ -981,6 +997,16 @@ final class PlayerController: ObservableObject {
             playbackStatusText == "正在切换播放源" {
             playbackStatusText = nil
         }
+    }
+
+    private func setBuffering(_ value: Bool) {
+        guard isBuffering != value else { return }
+        isBuffering = value
+    }
+
+    private func setPlaybackStatusText(_ value: String?) {
+        guard playbackStatusText != value else { return }
+        playbackStatusText = value
     }
 
     private func handlePlaybackStalled(for itemId: ObjectIdentifier) {
@@ -1317,6 +1343,15 @@ final class PlayerController: ObservableObject {
 
 enum PlaybackAudioCache {
     private static let version = "v3"
+    static let downloadDelay: Duration = .seconds(10)
+
+    private struct State {
+        var limitBytes = AudioCacheLimit.defaultValue.bytes
+        var generation = 0
+        var protectedFileName: String?
+    }
+
+    private static let state = Mutex(State())
 
     struct Key: Hashable {
         let serverHash: String
@@ -1347,17 +1382,51 @@ enum PlaybackAudioCache {
         }
     }
 
+    static var limitBytes: Int64 {
+        state.withLock { $0.limitBytes }
+    }
+
+    static var isEnabled: Bool {
+        limitBytes > 0
+    }
+
+    static func setLimit(_ limit: AudioCacheLimit) {
+        state.withLock { $0.limitBytes = limit.bytes }
+    }
+
+    /// The file the player is reading right now; trimming never removes it.
+    static func setProtectedKey(_ key: Key?) {
+        state.withLock { $0.protectedFileName = key?.fileName }
+    }
+
     static func cachedFileURL(for key: Key) -> URL? {
         let url = fileURL(for: key)
         guard FileManager.default.fileExists(atPath: url.path),
               (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 0 else {
             return nil
         }
+        DiskCacheMaintenance.markUsed(url)
         return url
     }
 
     static func clearAll() {
+        // Downloads that started before this point must not write their file back.
+        state.withLock { $0.generation += 1 }
         try? FileManager.default.removeItem(at: directoryURL)
+    }
+
+    static func totalSize() -> Int64 {
+        DiskCacheMaintenance.size(of: directoryURL)
+    }
+
+    /// Evicts least recently played songs until the cache fits the configured limit.
+    static func trimToLimit() {
+        let (limit, protectedFileName) = state.withLock { ($0.limitBytes, $0.protectedFileName) }
+        DiskCacheMaintenance.trim(directoryURL, toBytes: limit, protecting: protectedFileName)
+    }
+
+    fileprivate static var generation: Int {
+        state.withLock { $0.generation }
     }
 
     fileprivate static func fileURL(for key: Key) -> URL {
@@ -1369,9 +1438,7 @@ enum PlaybackAudioCache {
     }
 
     private static var directoryURL: URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base
+        DiskCacheMaintenance.cachesBaseURL
             .appendingPathComponent("PrivSong", isDirectory: true)
             .appendingPathComponent("CurrentPlaybackAudio", isDirectory: true)
     }
@@ -1403,28 +1470,37 @@ enum PlaybackAudioCache {
 }
 
 actor CurrentSongAudioCache {
-    func cacheCurrentSong(from sourceURL: AuthenticatedURL, key: PlaybackAudioCache.Key) async throws -> URL {
+    func cacheCurrentSong(from sourceURL: AuthenticatedURL, key: PlaybackAudioCache.Key) async throws -> URL? {
         if let cachedURL = PlaybackAudioCache.cachedFileURL(for: key) {
             return cachedURL
+        }
+        guard PlaybackAudioCache.isEnabled else { return nil }
+
+        let generation = PlaybackAudioCache.generation
+        let (temporaryURL, response) = try await URLSession.shared.download(for: sourceURL.request)
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        try Task.checkCancellation()
+        let fileSize = try validate(response: response, temporaryURL: temporaryURL)
+
+        // The cache was cleared or shrunk while downloading, or this single file would not fit at all.
+        guard PlaybackAudioCache.generation == generation,
+              fileSize <= PlaybackAudioCache.limitBytes else {
+            return nil
         }
 
         try PlaybackAudioCache.prepareDirectory()
         let destinationURL = PlaybackAudioCache.fileURL(for: key)
-        let (temporaryURL, response) = try await URLSession.shared.download(for: sourceURL.request)
-        try Task.checkCancellation()
-        try validate(response: response, temporaryURL: temporaryURL)
-
         try? FileManager.default.removeItem(at: destinationURL)
         do {
             try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
         } catch {
             try FileManager.default.copyItem(at: temporaryURL, to: destinationURL)
-            try? FileManager.default.removeItem(at: temporaryURL)
         }
+        PlaybackAudioCache.trimToLimit()
         return destinationURL
     }
 
-    private func validate(response: URLResponse, temporaryURL: URL) throws {
+    private func validate(response: URLResponse, temporaryURL: URL) throws -> Int64 {
         if let httpResponse = response as? HTTPURLResponse,
            !(200..<300).contains(httpResponse.statusCode) {
             throw URLError(.badServerResponse)
@@ -1434,6 +1510,94 @@ actor CurrentSongAudioCache {
         guard fileSize > 0 else {
             throw URLError(.zeroByteResource)
         }
+        return Int64(fileSize)
+    }
+}
+
+enum DiskCacheMaintenance {
+    private struct CachedFile {
+        let url: URL
+        let size: Int64
+        let lastUsed: Date
+    }
+
+    static var cachesBaseURL: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+    }
+
+    static func size(of directory: URL) -> Int64 {
+        files(in: directory).reduce(0) { $0 + $1.size }
+    }
+
+    /// Removes the least recently used files until the directory fits within `maxBytes`.
+    static func trim(_ directory: URL, toBytes maxBytes: Int64, protecting protectedFileName: String? = nil) {
+        let files = files(in: directory)
+        var total = files.reduce(0) { $0 + $1.size }
+        guard total > maxBytes else { return }
+
+        for file in files.sorted(by: { $0.lastUsed < $1.lastUsed }) where total > maxBytes {
+            guard file.url.lastPathComponent != protectedFileName else { continue }
+            if (try? FileManager.default.removeItem(at: file.url)) != nil {
+                total -= file.size
+            }
+        }
+    }
+
+    static func markUsed(_ url: URL) {
+        try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
+    }
+
+    /// Deletes storage left behind by older builds (pre-rename folders, artwork kept in
+    /// Application Support) and by audio downloads interrupted when the app was killed.
+    static func removeOrphanedFiles() {
+        let fileManager = FileManager.default
+        let applicationSupportURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let legacyDirectories = [
+            cachesBaseURL.appendingPathComponent("MusicEmby", isDirectory: true),
+            applicationSupportURL?.appendingPathComponent("MusicEmby", isDirectory: true),
+            applicationSupportURL?.appendingPathComponent("PrivSong/ArtworkCache", isDirectory: true)
+        ]
+        for directory in legacyDirectories.compactMap({ $0 }) {
+            try? fileManager.removeItem(at: directory)
+        }
+
+        let temporaryFiles = (try? fileManager.contentsOfDirectory(
+            at: fileManager.temporaryDirectory,
+            includingPropertiesForKeys: nil
+        )) ?? []
+        for url in temporaryFiles where url.lastPathComponent.hasPrefix("CFNetworkDownload_") {
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
+    private static func files(in directory: URL) -> [CachedFile] {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .totalFileAllocatedSizeKey,
+            .fileSizeKey,
+            .contentModificationDateKey
+        ]
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(keys)
+        ) else {
+            return []
+        }
+
+        var files: [CachedFile] = []
+        for case let url as URL in enumerator {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                  values.isRegularFile == true else {
+                continue
+            }
+            files.append(CachedFile(
+                url: url,
+                size: Int64(values.totalFileAllocatedSize ?? values.fileSize ?? 0),
+                lastUsed: values.contentModificationDate ?? .distantPast
+            ))
+        }
+        return files
     }
 }
 

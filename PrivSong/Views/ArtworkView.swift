@@ -215,9 +215,15 @@ final class ArtworkImageCache {
 }
 
 enum ArtworkDiskCache {
+    private static let limitBytes: Int64 = 200 * 1024 * 1024
+
     static func data(for url: URL) async -> Data? {
         await Task.detached(priority: .utility) {
-            dataSync(for: url)
+            let data = dataSync(for: url)
+            if data != nil {
+                DiskCacheMaintenance.markUsed(fileURL(for: url))
+            }
+            return data
         }.value
     }
 
@@ -240,6 +246,14 @@ enum ArtworkDiskCache {
         try? FileManager.default.removeItem(at: directoryURL)
     }
 
+    static func totalSize() -> Int64 {
+        DiskCacheMaintenance.size(of: directoryURL)
+    }
+
+    static func trimToLimit() {
+        DiskCacheMaintenance.trim(directoryURL, toBytes: limitBytes)
+    }
+
     private static func fileURL(for url: URL) -> URL {
         directoryURL.appendingPathComponent(cacheKey(for: url)).appendingPathExtension("image")
     }
@@ -254,9 +268,7 @@ enum ArtworkDiskCache {
     }
 
     private static var directoryURL: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base
+        DiskCacheMaintenance.cachesBaseURL
             .appendingPathComponent("PrivSong", isDirectory: true)
             .appendingPathComponent("ArtworkCache", isDirectory: true)
     }

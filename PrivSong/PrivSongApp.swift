@@ -7,10 +7,11 @@ struct PrivSongApp: App {
     @StateObject private var player = SharedAppEnvironment.shared.player
 
     init() {
-        // Keep enough shared response cache for artwork and player backdrop color extraction.
+        // Artwork bytes already persist in ArtworkDiskCache, so the shared HTTP cache only needs to
+        // absorb short-term repeats (player backdrop color extraction, API responses).
         URLCache.shared = URLCache(
-            memoryCapacity: 50 * 1024 * 1024,
-            diskCapacity: 200 * 1024 * 1024,
+            memoryCapacity: 16 * 1024 * 1024,
+            diskCapacity: 64 * 1024 * 1024,
             diskPath: nil
         )
         UISlider.appearance().minimumTrackTintColor = .musicRed

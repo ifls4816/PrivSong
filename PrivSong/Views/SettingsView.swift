@@ -14,6 +14,14 @@ struct SettingsView: View {
                     playbackRows
                 }
 
+                Section {
+                    storageRows
+                } header: {
+                    Text("存储")
+                } footer: {
+                    Text("播放过的歌曲会缓存到本机，再次播放时无需联网。超过上限后自动删除最久未播放的歌曲。")
+                }
+
                 Section("高级") {
                     advancedRows
                 }
@@ -24,6 +32,9 @@ struct SettingsView: View {
             .safeAreaPadding(.bottom, 112)
             .mainPageToolbar("设置")
             .navigationBarBackButtonHidden(true)
+            .task {
+                await store.refreshCacheUsage()
+            }
         }
     }
 
@@ -47,15 +58,32 @@ struct SettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(store.session == nil || store.isLoading)
+        }
+    }
+
+    private var storageRows: some View {
+        Group {
+            AudioCacheLimitMenuRow(selection: $store.audioCacheLimit)
 
             Button {
                 store.clearCaches()
             } label: {
-                SettingsActionRow(title: "清除缓存", icon: "trash", tint: .orange)
+                SettingsActionRow(
+                    title: "清除缓存",
+                    icon: "trash",
+                    tint: .orange,
+                    showsProgress: store.isClearingCache,
+                    value: cacheUsageSummary
+                )
             }
             .buttonStyle(.plain)
-
+            .disabled(store.isClearingCache)
         }
+    }
+
+    private var cacheUsageSummary: String? {
+        guard !store.isClearingCache, let bytes = store.cacheUsageBytes else { return nil }
+        return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
     }
 
     private var librarySummary: String {
@@ -288,6 +316,43 @@ private struct PlaybackQualityMenuRow: View {
     }
 }
 
+private struct AudioCacheLimitMenuRow: View {
+    @Binding var selection: AudioCacheLimit
+
+    var body: some View {
+        HStack(spacing: 12) {
+            SettingsIcon(icon: "internaldrive", tint: .gray)
+            Text("歌曲缓存上限")
+                .foregroundStyle(.primary)
+            Spacer(minLength: 12)
+            Menu {
+                ForEach(AudioCacheLimit.allCases) { limit in
+                    Button {
+                        selection = limit
+                    } label: {
+                        if selection == limit {
+                            Label(limit.title, systemImage: "checkmark")
+                        } else {
+                            Text(limit.title)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(selection.title)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(.blue)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .buttonStyle(.plain)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
 private struct SettingsInfoRow: View {
     let title: String
     let value: String
@@ -331,6 +396,7 @@ private struct SettingsActionRow: View {
     let icon: String
     let tint: Color
     var showsProgress = false
+    var value: String? = nil
 
     var body: some View {
         HStack(spacing: 12) {
@@ -341,6 +407,10 @@ private struct SettingsActionRow: View {
             if showsProgress {
                 ProgressView()
                     .controlSize(.small)
+            } else if let value {
+                Text(value)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         }
         .contentShape(Rectangle())

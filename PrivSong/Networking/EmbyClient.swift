@@ -94,6 +94,30 @@ struct EmbyClient {
         return visibleItems.filter { $0.isAudio && !$0.isAudiobookAudio }
     }
 
+    /// One capped title-search request per music library. Unlike `fetchSongs`, it never falls back
+    /// to walking the directory tree, which turned every search without title hits into a full crawl.
+    func searchSongs(session embySession: EmbySession, searchTerm: String, limit: Int) async throws -> [EmbyAudioItem] {
+        let musicViews = try await fetchViews(session: embySession).filter(\.isMusicLibrary)
+        var songs: [EmbyAudioItem] = []
+
+        for view in musicViews {
+            let response = try await fetchSongPage(
+                session: embySession,
+                searchTerm: searchTerm,
+                parentId: view.id,
+                filterName: "IncludeItemTypes",
+                filterValue: "Audio",
+                startIndex: 0,
+                limit: limit,
+                sortBy: "SortName",
+                sortOrder: "Ascending"
+            )
+            songs.append(contentsOf: response.items.filter { $0.isAudio && !$0.isAudiobookAudio })
+        }
+
+        return Array(uniqueSongs(songs).prefix(limit))
+    }
+
     func fetchInitialHomeContent(session embySession: EmbySession) async throws -> InitialHomeContent {
         let views = try await fetchViews(session: embySession)
         let musicViews = views.filter(\.isMusicLibrary)
@@ -941,9 +965,7 @@ struct EmbyClient {
         let term = searchTerm.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !term.isEmpty else { return true }
 
-        return song.name.localizedCaseInsensitiveContains(term) ||
-            song.album?.localizedCaseInsensitiveContains(term) == true ||
-            song.artistLine.localizedCaseInsensitiveContains(term)
+        return song.matchesSearch(term)
     }
 
     func playbackURLCandidates(

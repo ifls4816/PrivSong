@@ -79,6 +79,37 @@ struct PlaybackQualityPreferences: Equatable {
     var wifiQuality: OnlinePlaybackQuality = .lossless
 }
 
+enum AudioCacheLimit: Int, CaseIterable, Identifiable, Sendable {
+    case off = 0
+    case mb256 = 256
+    case mb512 = 512
+    case gb1 = 1024
+    case gb2 = 2048
+
+    static let defaultValue: AudioCacheLimit = .mb512
+
+    var id: Int { rawValue }
+
+    var bytes: Int64 {
+        Int64(rawValue) * 1024 * 1024
+    }
+
+    var title: String {
+        switch self {
+        case .off:
+            return "不缓存"
+        case .mb256:
+            return "256 MB"
+        case .mb512:
+            return "512 MB"
+        case .gb1:
+            return "1 GB"
+        case .gb2:
+            return "2 GB"
+        }
+    }
+}
+
 struct EmbyAuthResponse: Decodable {
     let user: EmbyUser
     let accessToken: String
@@ -583,20 +614,25 @@ struct MusicPlaylist: Identifiable, Codable, Hashable {
 
 extension Array where Element == EmbyAudioItem {
     var musicAlbums: [MusicAlbum] {
-        let grouped = Dictionary(grouping: self) { song in
-            let album = song.album?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return album?.isEmpty == false ? album! : "Unknown Album"
-        }
+        let grouped = Dictionary(grouping: self, by: \.albumGroupId)
 
-        return grouped.map { title, songs in
-            MusicAlbum(
-                id: title,
-                title: title,
-                artist: songs.first?.albumArtist ?? songs.first?.artistLine ?? "Unknown Artist",
-                songs: songs.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return grouped.map { groupId, songs in
+            let sortedSongs = songs.sorted(by: Self.trackOrderSort)
+            let first = sortedSongs.first
+            return MusicAlbum(
+                id: groupId,
+                title: first?.albumTitle ?? "Unknown Album",
+                artist: first?.albumArtist ?? first?.artistLine ?? "Unknown Artist",
+                songs: sortedSongs
             )
         }
-        .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        .sorted { left, right in
+            let titleOrder = left.title.localizedCaseInsensitiveCompare(right.title)
+            if titleOrder != .orderedSame {
+                return titleOrder == .orderedAscending
+            }
+            return left.artist.localizedCaseInsensitiveCompare(right.artist) == .orderedAscending
+        }
     }
 
     var musicArtists: [MusicArtist] {
@@ -630,7 +666,7 @@ extension Array where Element == EmbyAudioItem {
         }
 
         return grouped.map { groupId, episodes in
-            let sortedEpisodes = episodes.sorted(by: Self.audiobookEpisodeSort)
+            let sortedEpisodes = episodes.sorted(by: Self.trackOrderSort)
             let first = sortedEpisodes.first
             return Audiobook(
                 id: groupId,
@@ -642,7 +678,8 @@ extension Array where Element == EmbyAudioItem {
         .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
-    private static func audiobookEpisodeSort(_ left: EmbyAudioItem, _ right: EmbyAudioItem) -> Bool {
+    /// Disc number, then track number, then name — the order tracks appear on the album.
+    private static func trackOrderSort(_ left: EmbyAudioItem, _ right: EmbyAudioItem) -> Bool {
         let leftParentIndex = left.parentIndexNumber ?? Int.max
         let rightParentIndex = right.parentIndexNumber ?? Int.max
         if leftParentIndex != rightParentIndex {
@@ -658,6 +695,27 @@ extension Array where Element == EmbyAudioItem {
         let leftSortName = left.sortName ?? left.name
         let rightSortName = right.sortName ?? right.name
         return leftSortName.localizedStandardCompare(rightSortName) == .orderedAscending
+    }
+}
+
+extension EmbyAudioItem {
+    var albumTitle: String {
+        firstNonEmpty(album) ?? "Unknown Album"
+    }
+
+    /// Emby's AlbumId when available. Otherwise album title plus album artist, so that
+    /// same-named albums ("Greatest Hits") by different artists stay separate.
+    var albumGroupId: String {
+        if let albumId = firstNonEmpty(albumId) {
+            return albumId
+        }
+        return "\(albumTitle)\u{1F}\(firstNonEmpty(albumArtist) ?? "")"
+    }
+
+    func matchesSearch(_ term: String) -> Bool {
+        name.localizedCaseInsensitiveContains(term) ||
+            album?.localizedCaseInsensitiveContains(term) == true ||
+            artistLine.localizedCaseInsensitiveContains(term)
     }
 }
 

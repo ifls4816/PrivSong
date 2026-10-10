@@ -98,9 +98,8 @@ struct RootTabView: View {
     }
 
     private func openAlbum(for song: EmbyAudioItem) {
-        guard let album = song.album?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !album.isEmpty else { return }
-        openHomeRoute(.album(album))
+        guard song.album?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return }
+        openHomeRoute(.album(song.albumGroupId))
     }
 
     private func openArtist(for song: EmbyAudioItem) {

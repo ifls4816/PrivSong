@@ -76,8 +76,13 @@ struct SearchView: View {
     }
 
     private var resultsContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+        // Each of these filters the whole library, so evaluate them once per render.
+        let visibleArtists = self.visibleArtists
+        let visibleAlbums = self.visibleAlbums
+        let visibleSongs = self.visibleSongs
+
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 if store.isSearching {
                     HStack(spacing: 10) {
                         ProgressView()
@@ -182,7 +187,7 @@ private struct SearchResultSection<Content: View>: View {
             Text(title)
                 .font(.system(size: 22, weight: .bold))
 
-            VStack(spacing: 0) {
+            LazyVStack(spacing: 0) {
                 content
             }
             .padding(.horizontal, 12)
