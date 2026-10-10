@@ -37,15 +37,7 @@ struct RootTabView: View {
                 }
             } message: {
                 Text(store.favoriteErrorMessage ?? "")
-            }
-            .overlay {
-                if store.prefersHighRefreshRate {
-                    HighRefreshRateView()
-                        .frame(width: 0, height: 0)
-                        .allowsHitTesting(false)
-                }
-            }
-    }
+            }    }
 
     private var favoriteErrorBinding: Binding<Bool> {
         Binding {
@@ -130,43 +122,4 @@ private enum AppTab: Hashable {
     case browse
     case settings
     case search
-}
-
-private struct HighRefreshRateView: UIViewRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        context.coordinator.start()
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.start()
-    }
-
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
-        coordinator.stop()
-    }
-
-    final class Coordinator {
-        private var displayLink: CADisplayLink?
-
-        @objc private func tick() {}
-
-        func start() {
-            guard displayLink == nil else { return }
-            let link = CADisplayLink(target: self, selector: #selector(tick))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
-            link.add(to: .main, forMode: .common)
-            displayLink = link
-        }
-
-        func stop() {
-            displayLink?.invalidate()
-            displayLink = nil
-        }
-    }
 }

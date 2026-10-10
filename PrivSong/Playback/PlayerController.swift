@@ -1,6 +1,7 @@
 import AVFoundation
 import Combine
 import Foundation
+import Network
 import Synchronization
 import UIKit
 
@@ -72,6 +73,11 @@ final class PlayerController: ObservableObject {
     private let client = EmbyClient()
     private let audioCache = CurrentSongAudioCache()
     private let queueSnapshotStore = PlaybackQueueSnapshotStore()
+    private let pathMonitor = NWPathMonitor()
+    private var networkKind: PlaybackNetworkKind = .wifi
+    private var qualityPreferences = PlaybackQualityPreferences()
+    /// Bitrate the current track is being transcoded to, or nil when playing the original.
+    private var currentTranscodeBitrate: Int?
 
     private var session: EmbySession?
     private var queue: [EmbyAudioItem] = []
@@ -117,7 +123,32 @@ final class PlayerController: ObservableObject {
         configureRemoteCommands()
         configurePlayerObservers()
         configureAudioSessionObservers()
+        configureNetworkMonitor()
         restorePlaybackQueueSnapshot()
+    }
+
+    private func configureNetworkMonitor() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let kind: PlaybackNetworkKind = path.usesInterfaceType(.cellular)
+                && !path.usesInterfaceType(.wifi)
+                && !path.usesInterfaceType(.wiredEthernet)
+                ? .cellular
+                : .wifi
+            Task { @MainActor in
+                // Applies from the next track on, so switching networks never interrupts playback.
+                self?.networkKind = kind
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "PrivSong.network-path", qos: .utility))
+    }
+
+    /// Target transcode bitrate for `song` on the current network, or nil to play the original.
+    private func transcodeBitrate(for song: EmbyAudioItem) -> Int? {
+        guard let maxBitrate = qualityPreferences.quality(for: networkKind).bitrate,
+              client.shouldTranscode(song, maxBitrate: maxBitrate) else {
+            return nil
+        }
+        return maxBitrate
     }
 
     func setSession(_ session: EmbySession?) {
@@ -179,7 +210,23 @@ final class PlayerController: ObservableObject {
     }
 
     func setPlaybackQualityPreferences(_ preferences: PlaybackQualityPreferences) {
-        _ = preferences
+        guard preferences != qualityPreferences else { return }
+        qualityPreferences = preferences
+
+        // Restart a streaming track at its current position when the change affects it.
+        // Tracks playing from the local cache use no network, so they're left alone.
+        guard let currentSong,
+              let session,
+              currentStreamURL?.isFileURL == false,
+              transcodeBitrate(for: currentSong) != currentTranscodeBitrate else { return }
+
+        start(
+            song: currentSong,
+            session: session,
+            autoplay: isPlaying || engine.timeControlStatus == .playing,
+            startPosition: elapsed,
+            durationOverride: currentDurationOverride
+        )
     }
 
     func seek(to progress: Double) {
@@ -326,7 +373,11 @@ final class PlayerController: ObservableObject {
     }
 
     private func playbackReportMethod(isUsingLocalFile: Bool) -> EmbyPlaybackReportMethod {
-        isUsingLocalFile ? .directPlay : .directStream
+        if isUsingLocalFile {
+            return .directPlay
+        }
+        // Only the first candidate is the transcode; later ones are original-file fallbacks.
+        return streamCandidateIndex == 0 && currentTranscodeBitrate != nil ? .transcode : .directStream
     }
 
     func cancelAudioCaching() {
@@ -391,20 +442,24 @@ final class PlayerController: ObservableObject {
         activeAudioCacheKey = cacheKey
         PlaybackAudioCache.setProtectedKey(cacheKey)
         currentPlaySessionId = playSessionId
+        currentTranscodeBitrate = transcodeBitrate(for: song)
         streamCandidates = client.playbackURLCandidates(
             for: song,
             session: session,
-            playSessionId: playSessionId
+            playSessionId: playSessionId,
+            transcodeBitrate: currentTranscodeBitrate
         )
         streamCandidateIndex = 0
         syncQueueSnapshots()
 
         audioSession.activate()
+        // A cached original plays without any network use, so it wins even over a transcode.
         let cachedResource = PlaybackAudioCache.cachedFileURL(for: cacheKey).map { AuthenticatedURL(url: $0) }
         let initialURL = cachedResource ?? streamCandidates.first
         currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedResource != nil)
         replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
-        if cachedResource == nil {
+        // Caching downloads the full original file, which would defeat a lower-bitrate transcode.
+        if cachedResource == nil, currentTranscodeBitrate == nil {
             cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
         }
         loadArtwork(for: song, session: session)
@@ -653,6 +708,7 @@ final class PlayerController: ObservableObject {
         streamCandidateIndex = nextIndex
         playbackStatusText = "正在切换播放源"
         isBuffering = true
+        currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: false)
         print("[Player] Retrying with fallback stream URL \(nextIndex + 1)/\(streamCandidates.count)")
         replaceCurrentItem(
             with: streamCandidates[nextIndex],
@@ -660,7 +716,8 @@ final class PlayerController: ObservableObject {
             startAt: elapsed,
             candidateIndex: nextIndex
         )
-        if let activeAudioCacheKey {
+        // If the transcode failed, don't also download the full original in the background.
+        if let activeAudioCacheKey, currentTranscodeBitrate == nil {
             cacheCurrentSong(from: streamCandidates[nextIndex], cacheKey: activeAudioCacheKey)
         }
     }

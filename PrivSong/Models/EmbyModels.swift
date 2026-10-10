@@ -74,9 +74,23 @@ enum OnlinePlaybackQuality: String, CaseIterable, Codable, Identifiable, Hashabl
     }
 }
 
+enum PlaybackNetworkKind: Equatable, Sendable {
+    case wifi
+    case cellular
+}
+
 struct PlaybackQualityPreferences: Equatable {
     var cellularQuality: OnlinePlaybackQuality = .standard
     var wifiQuality: OnlinePlaybackQuality = .lossless
+
+    func quality(for networkKind: PlaybackNetworkKind) -> OnlinePlaybackQuality {
+        switch networkKind {
+        case .wifi:
+            return wifiQuality
+        case .cellular:
+            return cellularQuality
+        }
+    }
 }
 
 enum AudioCacheLimit: Int, CaseIterable, Identifiable, Sendable {
@@ -362,6 +376,11 @@ struct EmbyAudioItem: Identifiable, Codable, Hashable {
             mediaSources?.first?.audioStream?.codec
         )
         return rawValue.map(Self.normalizedAudioFormat)
+    }
+
+    /// Bitrate of the original file in bits per second, when the server reported one.
+    var sourceBitrate: Int? {
+        preferredBitrate
     }
 
     private var preferredBitrate: Int? {

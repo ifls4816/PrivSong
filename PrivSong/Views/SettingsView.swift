@@ -19,11 +19,7 @@ struct SettingsView: View {
                 } header: {
                     Text("存储")
                 } footer: {
-                    Text("播放过的歌曲会缓存到本机，再次播放时无需联网。超过上限后自动删除最久未播放的歌曲。")
-                }
-
-                Section("高级") {
-                    advancedRows
+                    Text("播放过的歌曲会缓存到本机，再次播放时无需联网。超过上限后自动删除最久未播放的歌曲。清除歌曲缓存不会影响资料库。转码播放时不缓存。")
                 }
             }
             .formStyle(.grouped)
@@ -69,7 +65,7 @@ struct SettingsView: View {
                 store.clearCaches()
             } label: {
                 SettingsActionRow(
-                    title: "清除缓存",
+                    title: "清除歌曲缓存",
                     icon: "trash",
                     tint: .orange,
                     showsProgress: store.isClearingCache,
@@ -115,17 +111,6 @@ struct SettingsView: View {
                 icon: "sun.max",
                 tint: .orange,
                 isOn: $store.keepsScreenAwakeOnPlayerPage
-            )
-        }
-    }
-
-    private var advancedRows: some View {
-        Group {
-            SettingsToggleRow(
-                title: "120Hz 高刷新率",
-                icon: "speedometer",
-                tint: .purple,
-                isOn: $store.prefersHighRefreshRate
             )
         }
     }

@@ -37,9 +37,6 @@ final class AppStore: ObservableObject {
     @Published var keepsScreenAwakeOnPlayerPage = false {
         didSet { UserDefaults.standard.set(keepsScreenAwakeOnPlayerPage, forKey: keepsScreenAwakeKey) }
     }
-    @Published var prefersHighRefreshRate = false {
-        didSet { UserDefaults.standard.set(prefersHighRefreshRate, forKey: highRefreshRateKey) }
-    }
     @Published var audioCacheLimit: AudioCacheLimit = .defaultValue {
         didSet {
             UserDefaults.standard.set(audioCacheLimit.rawValue, forKey: audioCacheLimitKey)
@@ -166,12 +163,6 @@ final class AppStore: ObservableObject {
     var localizedLibraryStatus: String {
         if libraryStatus == "Not connected" {
             return "未连接"
-        }
-        if libraryStatus == "Cache cleared." {
-            return "缓存已清除"
-        }
-        if libraryStatus == "Cache cleared. Current library remains in memory." {
-            return "缓存已清除，当前资料库仍保留在内存中"
         }
         if libraryStatus == "Connected, but Emby returned 0 audio items." {
             return "已连接，但 Emby 未返回音频内容"
@@ -973,7 +964,7 @@ final class AppStore: ObservableObject {
         } catch {
             print("[AppStore] Failed to clear Emby session token: \(error.localizedDescription)")
         }
-        clearPersistedSnapshots(includingAudiobookProgress: true)
+        clearPersistedSnapshots()
         ArtworkImageCache.shared.clear()
         player?.cancelAudioCaching()
         ArtworkDiskCache.clear()
@@ -985,20 +976,13 @@ final class AppStore: ObservableObject {
     func clearCaches() {
         guard !isClearingCache else { return }
         isClearingCache = true
-        clearPersistedSnapshots(includingAudiobookProgress: false)
-        ArtworkImageCache.shared.clear()
+        // Only cached song audio. The library snapshot and artwork stay so the app doesn't
+        // have to resync from Emby afterwards.
         player?.cancelAudioCaching()
-        URLCache.shared.removeAllCachedResponses()
-        hasLoadedInitialContent = hasHomeContent || hasBrowseContent
-        libraryCacheSavedAt = nil
-        libraryStatus = songs.isEmpty && audiobookEpisodes.isEmpty
-            ? "Cache cleared."
-            : "Cache cleared. Current library remains in memory."
 
         Task {
             // Deleting hundreds of MB of audio can take a moment; keep it off the main thread.
             await Task.detached(priority: .userInitiated) {
-                ArtworkDiskCache.clear()
                 PlaybackAudioCache.clearAll()
                 DiskCacheMaintenance.removeOrphanedFiles()
             }.value
@@ -1008,24 +992,22 @@ final class AppStore: ObservableObject {
     }
 
     /// Queued behind any pending snapshot write so a late save can't resurrect the file.
-    private func clearPersistedSnapshots(includingAudiobookProgress: Bool) {
+    private func clearPersistedSnapshots() {
         let librarySnapshots = snapshotStore
         let homeSnapshots = initialHomeSnapshotStore
         let progressStore = audiobookProgressStore
         persistenceQueue.async {
             librarySnapshots.clear()
             homeSnapshots.clear()
-            if includingAudiobookProgress {
-                progressStore.clear()
-            }
+            progressStore.clear()
         }
     }
 
+    /// Size of the song audio cache, which is what "清除歌曲缓存" removes.
     func refreshCacheUsage() async {
-        let fileBytes = await Task.detached(priority: .utility) {
-            PlaybackAudioCache.totalSize() + ArtworkDiskCache.totalSize()
+        cacheUsageBytes = await Task.detached(priority: .utility) {
+            PlaybackAudioCache.totalSize()
         }.value
-        cacheUsageBytes = fileBytes + Int64(URLCache.shared.currentDiskUsage)
     }
 
     private func updateLibraryStatus() {
@@ -1294,7 +1276,8 @@ final class AppStore: ObservableObject {
         audiobookProgress = audiobookProgressStore.load()
         startsOnBrowse = UserDefaults.standard.bool(forKey: startsOnBrowseKey)
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)
-        prefersHighRefreshRate = UserDefaults.standard.bool(forKey: highRefreshRateKey)
+        // The 120Hz toggle was removed: the Info.plist key already enables ProMotion everywhere.
+        UserDefaults.standard.removeObject(forKey: highRefreshRateKey)
         if UserDefaults.standard.object(forKey: audioCacheLimitKey) != nil {
             audioCacheLimit = AudioCacheLimit(rawValue: UserDefaults.standard.integer(forKey: audioCacheLimitKey)) ?? .defaultValue
         }
