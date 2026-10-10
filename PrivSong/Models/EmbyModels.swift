@@ -537,6 +537,8 @@ struct IndexedSection<Item: Identifiable>: Identifiable {
     var id: String { title }
 }
 
+extension IndexedSection: Sendable where Item: Sendable {}
+
 enum PinyinIndexer {
     static func sections<Item>(for items: [Item], title: KeyPath<Item, String>) -> [IndexedSection<Item>] where Item: Identifiable {
         let grouped = Dictionary(grouping: items) { item in

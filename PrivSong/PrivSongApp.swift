@@ -5,6 +5,7 @@ import UIKit
 struct PrivSongApp: App {
     @StateObject private var store = SharedAppEnvironment.shared.store
     @StateObject private var player = SharedAppEnvironment.shared.player
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         // Artwork bytes already persist in ArtworkDiskCache, so the shared HTTP cache only needs to
@@ -28,6 +29,12 @@ struct PrivSongApp: App {
                 .onAppear {
                     store.player = player
                 }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Writes are batched while active; persist what's pending before the app may be suspended.
+            guard phase == .background else { return }
+            player.flushQueueSnapshot()
+            store.flushAudiobookProgress()
         }
     }
 }

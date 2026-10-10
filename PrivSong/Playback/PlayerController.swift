@@ -11,6 +11,8 @@ struct LyricLine: Identifiable, Hashable, Sendable {
 }
 
 private let seekBackwardTolerance: TimeInterval = 0.35
+/// Serializes queue snapshot writes and deletes off the main thread while keeping them in order.
+private let queuePersistenceQueue = DispatchQueue(label: "PrivSong.queue-persistence", qos: .utility)
 
 @MainActor
 final class PlaybackTimeline: ObservableObject {
@@ -58,7 +60,9 @@ final class PlayerController: ObservableObject {
     @Published var isShuffleEnabled = false
     @Published var repeatMode: RepeatMode = .none
 
-    var onPlaybackPositionChanged: ((EmbyAudioItem, TimeInterval, TimeInterval, Bool) -> Void)?
+    /// (item, position, duration, isFinished, isCheckpoint). `isCheckpoint` is true for start,
+    /// pause, seek and stop reports, and false for the periodic progress ticks.
+    var onPlaybackPositionChanged: ((EmbyAudioItem, TimeInterval, TimeInterval, Bool, Bool) -> Void)?
     let timeline = PlaybackTimeline()
 
     private let engine = AVPlayer()
@@ -103,6 +107,8 @@ final class PlayerController: ObservableObject {
     private var sleepTimerTask: Task<Void, Never>?
     private var audioCacheTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
+    private var queuePersistTask: Task<Void, Never>?
+    private var pendingQueueSnapshotWrite: (@Sendable () -> Void)?
 
     init() {
         engine.automaticallyWaitsToMinimizeStalling = true
@@ -122,7 +128,7 @@ final class PlayerController: ObservableObject {
         queue = []
         queueBeforeShuffle = nil
         restoredQueueCurrentSongID = nil
-        queueSnapshotStore.clear()
+        clearQueueSnapshot()
         syncQueueSnapshots(persists: false)
         syncRemoteCommandAvailability()
     }
@@ -745,8 +751,18 @@ final class PlayerController: ObservableObject {
     }
 
     private func restorePlaybackQueueSnapshot() {
-        guard let snapshot = queueSnapshotStore.load(),
-              !snapshot.queue.isEmpty else { return }
+        let store = queueSnapshotStore
+        Task { [weak self] in
+            // The saved queue can hold the whole library; decode it off the main thread.
+            let snapshot = await Task.detached(priority: .userInitiated) { store.load() }.value
+            guard let self, let snapshot else { return }
+            self.applyRestoredQueueSnapshot(snapshot)
+        }
+    }
+
+    private func applyRestoredQueueSnapshot(_ snapshot: PlaybackQueueSnapshot) {
+        // Playback started before the snapshot finished loading; that queue wins.
+        guard !snapshot.queue.isEmpty, queue.isEmpty, currentSong == nil else { return }
 
         queue = snapshot.queue
         queueBeforeShuffle = snapshot.isShuffleEnabled ? snapshot.queueBeforeShuffle : nil
@@ -765,7 +781,7 @@ final class PlayerController: ObservableObject {
 
     private func persistQueueSnapshot() {
         guard !queue.isEmpty else {
-            queueSnapshotStore.clear()
+            clearQueueSnapshot()
             return
         }
 
@@ -773,13 +789,49 @@ final class PlayerController: ObservableObject {
             queue.contains { $0.id == id } ? id : nil
         }
 
-        queueSnapshotStore.save(
-            queue: queue,
-            queueBeforeShuffle: queueBeforeShuffle,
-            currentSongID: currentSongID,
-            isShuffleEnabled: isShuffleEnabled,
-            repeatMode: repeatMode
-        )
+        let store = queueSnapshotStore
+        let queue = queue
+        let queueBeforeShuffle = queueBeforeShuffle
+        let isShuffleEnabled = isShuffleEnabled
+        let repeatMode = repeatMode
+        pendingQueueSnapshotWrite = {
+            store.save(
+                queue: queue,
+                queueBeforeShuffle: queueBeforeShuffle,
+                currentSongID: currentSongID,
+                isShuffleEnabled: isShuffleEnabled,
+                repeatMode: repeatMode
+            )
+        }
+
+        // Coalesce bursts (play() and start() both sync the queue) into a single write.
+        queuePersistTask?.cancel()
+        queuePersistTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            self?.flushQueueSnapshot()
+        }
+    }
+
+    /// Writes any pending queue snapshot now, e.g. when the app moves to the background.
+    func flushQueueSnapshot() {
+        queuePersistTask?.cancel()
+        queuePersistTask = nil
+        guard let write = pendingQueueSnapshotWrite else { return }
+        pendingQueueSnapshotWrite = nil
+        queuePersistenceQueue.async {
+            write()
+        }
+    }
+
+    private func clearQueueSnapshot() {
+        queuePersistTask?.cancel()
+        queuePersistTask = nil
+        pendingQueueSnapshotWrite = nil
+        let store = queueSnapshotStore
+        queuePersistenceQueue.async {
+            store.clear()
+        }
     }
 
     private func reordered(_ songs: [EmbyAudioItem], moving sourceIndex: Int, to destinationIndex: Int) -> [EmbyAudioItem] {
@@ -1074,7 +1126,7 @@ final class PlayerController: ObservableObject {
         let playMethod = currentPlaybackReportMethod
         let clampedPosition = max(0, position)
         lastPlaybackProgressReport = Date()
-        notifyPlaybackPosition(position: clampedPosition, isFinished: false)
+        notifyPlaybackPosition(position: clampedPosition, isFinished: false, isCheckpoint: true)
 
         playbackReportTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1109,7 +1161,7 @@ final class PlayerController: ObservableObject {
         let playMethod = currentPlaybackReportMethod
         let clampedPosition = max(0, min(position ?? elapsed, max(duration, currentSong.duration)))
         let paused = isPaused ?? !isPlaying
-        notifyPlaybackPosition(position: clampedPosition, isFinished: false)
+        notifyPlaybackPosition(position: clampedPosition, isFinished: false, isCheckpoint: force)
 
         playbackReportTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1137,7 +1189,7 @@ final class PlayerController: ObservableObject {
         let playMethod = currentPlaybackReportMethod
         let clampedPosition = max(0, min(position ?? elapsed, max(duration, currentSong.duration)))
         let isFinished = duration > 0 && clampedPosition >= max(duration - 10, duration * 0.98)
-        notifyPlaybackPosition(position: clampedPosition, isFinished: isFinished)
+        notifyPlaybackPosition(position: clampedPosition, isFinished: isFinished, isCheckpoint: true)
         self.currentPlaySessionId = nil
         lastPlaybackProgressReport = .distantPast
 
@@ -1157,9 +1209,9 @@ final class PlayerController: ObservableObject {
         }
     }
 
-    private func notifyPlaybackPosition(position: TimeInterval, isFinished: Bool) {
+    private func notifyPlaybackPosition(position: TimeInterval, isFinished: Bool, isCheckpoint: Bool) {
         guard let currentSong else { return }
-        onPlaybackPositionChanged?(currentSong, position, max(duration, currentSong.duration), isFinished)
+        onPlaybackPositionChanged?(currentSong, position, max(duration, currentSong.duration), isFinished, isCheckpoint)
     }
 
     private func handleInterruption(rawType: UInt?, rawOptions: UInt?) {

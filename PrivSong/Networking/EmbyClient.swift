@@ -237,27 +237,6 @@ struct EmbyClient {
         return items
     }
 
-    func fetchPlaylists(session embySession: EmbySession) async throws -> [MusicPlaylist] {
-        let playlistItems = try await fetchPlaylistItems(session: embySession)
-        guard !playlistItems.isEmpty else { return [] }
-
-        var playlists: [MusicPlaylist] = []
-        for item in playlistItems {
-            let songs = (try? await fetchPlaylistSongs(playlistId: item.id, session: embySession)) ?? []
-            playlists.append(
-                MusicPlaylist(
-                    id: item.id,
-                    name: item.name,
-                    description: "\(songs.count) 首歌曲",
-                    songs: songs,
-                    songCount: item.childCount ?? songs.count
-                )
-            )
-        }
-
-        return playlists.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-    }
-
     func fetchPlaylistSummaries(session embySession: EmbySession) async throws -> [MusicPlaylist] {
         try await fetchPlaylistItems(session: embySession)
             .map { item in
@@ -271,6 +250,36 @@ struct EmbyClient {
                 )
             }
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The first few songs of each playlist, enough for cover artwork. Fetched concurrently;
+    /// playlists that fail are simply left out of the result.
+    func fetchPlaylistCoverSongs(
+        playlistIds: [String],
+        session embySession: EmbySession,
+        limit: Int = 4
+    ) async -> [String: [EmbyAudioItem]] {
+        await withTaskGroup(of: (String, [EmbyAudioItem]?).self) { group in
+            for playlistId in playlistIds {
+                group.addTask {
+                    let songs = try? await fetchPlaylistSongPage(
+                        playlistId: playlistId,
+                        startIndex: 0,
+                        limit: limit,
+                        session: embySession
+                    ).items.filter(\.isAudio)
+                    return (playlistId, songs)
+                }
+            }
+
+            var covers: [String: [EmbyAudioItem]] = [:]
+            for await (playlistId, songs) in group {
+                if let songs {
+                    covers[playlistId] = songs
+                }
+            }
+            return covers
+        }
     }
 
     func fetchPlaylistSongs(playlistId: String, session embySession: EmbySession) async throws -> [EmbyAudioItem] {
@@ -831,22 +840,12 @@ struct EmbyClient {
         var totalRecordCount: Int?
 
         repeat {
-            var components = URLComponents(
-                url: embySession.serverURL.appending(path: "Playlists/\(playlistId)/Items"),
-                resolvingAgainstBaseURL: false
+            let response = try await fetchPlaylistSongPage(
+                playlistId: playlistId,
+                startIndex: startIndex,
+                limit: pageLimit,
+                session: embySession
             )
-            components?.queryItems = [
-                URLQueryItem(name: "UserId", value: embySession.userId),
-                URLQueryItem(name: "Fields", value: itemFields),
-                URLQueryItem(name: "StartIndex", value: "\(startIndex)"),
-                URLQueryItem(name: "Limit", value: "\(pageLimit)")
-            ]
-            guard let url = components?.url else { throw EmbyError.invalidURL }
-
-            var request = URLRequest(url: url)
-            request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
-
-            let response: EmbyItemsResponse = try await send(request)
             songs.append(contentsOf: response.items.filter(\.isAudio))
             totalRecordCount = response.totalRecordCount
 
@@ -857,6 +856,30 @@ struct EmbyClient {
         } while totalRecordCount.map { songs.count < $0 } ?? true
 
         return uniqueSongs(songs)
+    }
+
+    private func fetchPlaylistSongPage(
+        playlistId: String,
+        startIndex: Int,
+        limit: Int,
+        session embySession: EmbySession
+    ) async throws -> EmbyItemsResponse {
+        var components = URLComponents(
+            url: embySession.serverURL.appending(path: "Playlists/\(playlistId)/Items"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "UserId", value: embySession.userId),
+            URLQueryItem(name: "Fields", value: itemFields),
+            URLQueryItem(name: "StartIndex", value: "\(startIndex)"),
+            URLQueryItem(name: "Limit", value: "\(limit)")
+        ]
+        guard let url = components?.url else { throw EmbyError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+
+        return try await send(request)
     }
 
     private func fetchPlaylistEntries(playlistId: String, session embySession: EmbySession) async throws -> [EmbyPlaylistEntry] {
