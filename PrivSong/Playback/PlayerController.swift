@@ -12,6 +12,12 @@ struct LyricLine: Identifiable, Hashable, Sendable {
 }
 
 private let seekBackwardTolerance: TimeInterval = 0.35
+
+private struct RemoteCommandAvailability: Equatable {
+    let canGoNext: Bool
+    let canGoPrevious: Bool
+    let canSeek: Bool
+}
 /// Serializes queue snapshot writes and deletes off the main thread while keeping them in order.
 private let queuePersistenceQueue = DispatchQueue(label: "PrivSong.queue-persistence", qos: .utility)
 
@@ -78,6 +84,7 @@ final class PlayerController: ObservableObject {
     private var qualityPreferences = PlaybackQualityPreferences()
     /// Bitrate the current track is being transcoded to, or nil when playing the original.
     private var currentTranscodeBitrate: Int?
+    private var lastRemoteCommandAvailability: RemoteCommandAvailability?
 
     private var session: EmbySession?
     private var queue: [EmbyAudioItem] = []
@@ -536,7 +543,13 @@ final class PlayerController: ObservableObject {
     }
 
     private func resume() {
-        guard currentSong != nil else { return }
+        guard let currentSong else { return }
+        // The queue played to the end and the session was reported stopped: play the track
+        // again from the start under a new Emby play session instead of resuming at the end.
+        if currentPlaySessionId == nil, let session {
+            start(song: currentSong, session: session, autoplay: true)
+            return
+        }
         audioSession.activate()
         engine.play()
         isPlaying = true
@@ -636,7 +649,7 @@ final class PlayerController: ObservableObject {
         let songs = activeQueue
         guard let currentSong,
               let session,
-              let currentIndex = songs.firstIndex(of: currentSong) else {
+              let currentIndex = songs.firstIndex(where: { $0.id == currentSong.id }) else {
             return
         }
 
@@ -781,8 +794,9 @@ final class PlayerController: ObservableObject {
     }
 
     private func currentQueueReferenceIndex(in songs: [EmbyAudioItem]) -> Int? {
+        // Match by id: full equality compares every field and is slow on large queues.
         if let currentSong,
-           let index = songs.firstIndex(of: currentSong) {
+           let index = songs.firstIndex(where: { $0.id == currentSong.id }) {
             return index
         }
         guard let restoredQueueCurrentSongID else { return nil }
@@ -1161,17 +1175,29 @@ final class PlayerController: ObservableObject {
         )
     }
 
+    /// Runs on every periodic tick, so it compares by id and only touches
+    /// MPRemoteCommandCenter when availability actually changes.
     private func syncRemoteCommandAvailability() {
-        guard currentSong != nil else {
-            remoteCommands.update(canGoNext: false, canGoPrevious: false, canSeek: false)
-            return
+        let availability: RemoteCommandAvailability
+        if let currentSong {
+            let songs = activeQueue
+            let currentIndex = songs.firstIndex { $0.id == currentSong.id }
+            availability = RemoteCommandAvailability(
+                canGoNext: repeatMode == .all || currentIndex.map { $0 < songs.index(before: songs.endIndex) } == true,
+                canGoPrevious: elapsed > 3 || repeatMode == .all || currentIndex.map { $0 > songs.startIndex } == true,
+                canSeek: duration > 0
+            )
+        } else {
+            availability = RemoteCommandAvailability(canGoNext: false, canGoPrevious: false, canSeek: false)
         }
 
-        let songs = activeQueue
-        let currentIndex = currentSong.flatMap { songs.firstIndex(of: $0) }
-        let canGoNext = repeatMode == .all || currentIndex.map { $0 < songs.index(before: songs.endIndex) } == true
-        let canGoPrevious = elapsed > 3 || repeatMode == .all || currentIndex.map { $0 > songs.startIndex } == true
-        remoteCommands.update(canGoNext: canGoNext, canGoPrevious: canGoPrevious, canSeek: duration > 0)
+        guard availability != lastRemoteCommandAvailability else { return }
+        lastRemoteCommandAvailability = availability
+        remoteCommands.update(
+            canGoNext: availability.canGoNext,
+            canGoPrevious: availability.canGoPrevious,
+            canSeek: availability.canSeek
+        )
     }
 
     private func reportPlaybackStarted(position: TimeInterval) {
@@ -1309,18 +1335,31 @@ final class PlayerController: ObservableObject {
             return
         }
 
+        // The player page shows the same 600px artwork, so it's usually cached already.
+        let url = resource.url
+        if let cached = ArtworkImageCache.shared.image(for: url) {
+            currentArtwork = cached
+            syncNowPlaying(force: true)
+            return
+        }
+
         artworkTask = Task { [weak self, songId = song.id] in
-            guard let (data, _) = try? await URLSession.shared.data(for: resource.request),
-                  let image = UIImage(data: data),
-                  !Task.isCancelled else {
-                return
+            var artworkData = await ArtworkDiskCache.data(for: url)
+            if artworkData == nil,
+               let (downloaded, _) = try? await URLSession.shared.data(for: resource.request) {
+                artworkData = downloaded
+                await ArtworkDiskCache.insert(downloaded, for: url)
             }
 
-            await MainActor.run {
-                guard self?.currentSong?.id == songId else { return }
-                self?.currentArtwork = image
-                self?.syncNowPlaying(force: true)
+            guard let artworkData,
+                  let image = UIImage(data: artworkData),
+                  !Task.isCancelled,
+                  let self,
+                  self.currentSong?.id == songId else {
+                return
             }
+            self.currentArtwork = image
+            self.syncNowPlaying(force: true)
         }
     }
 

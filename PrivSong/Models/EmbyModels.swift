@@ -808,17 +808,26 @@ private extension KeyedDecodingContainer {
             return nil
         }
 
-        let fractional = ISO8601DateFormatter()
-        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = fractional.date(from: rawValue) {
+        if let date = embyFractionalDateFormatter.date(from: rawValue) {
             return date
         }
-
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        return standard.date(from: rawValue)
+        return embyStandardDateFormatter.date(from: rawValue)
     }
 }
+
+// Shared because the library decode parses thousands of dates; creating formatters is costly.
+// ISO8601DateFormatter is thread-safe for parsing once configured.
+nonisolated(unsafe) private let embyFractionalDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+}()
+
+nonisolated(unsafe) private let embyStandardDateFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+}()
 
 extension TimeInterval {
     var musicDurationText: String {

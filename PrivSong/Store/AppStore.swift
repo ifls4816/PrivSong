@@ -17,7 +17,10 @@ final class AppStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var favoriteErrorMessage: String?
     @Published var libraryStatus = "Not connected"
-    @Published var favoriteSongIds: Set<String> = []
+    @Published var favoriteSongIds: Set<String> = [] {
+        didSet { refreshFavoriteSongs() }
+    }
+    @Published private(set) var favoriteSongs: [EmbyAudioItem] = []
     @Published var recentSongIds: [String] = []
     @Published var cellularOnlineQuality: OnlinePlaybackQuality = .standard {
         didSet {
@@ -68,7 +71,9 @@ final class AppStore: ObservableObject {
     @Published private(set) var audiobookSections: [IndexedSection<Audiobook>] = []
     @Published private(set) var audiobookProgress: [String: AudiobookPlaybackProgress] = [:]
     @Published private(set) var recentSongs: [EmbyAudioItem] = []
-    @Published private(set) var serverFavoriteSongs: [EmbyAudioItem] = []
+    @Published private(set) var serverFavoriteSongs: [EmbyAudioItem] = [] {
+        didSet { refreshFavoriteSongs() }
+    }
     @Published private(set) var dailyRecommendedSongs: [EmbyAudioItem] = []
     @Published private(set) var recentlyAddedSongs: [EmbyAudioItem] = []
     @Published private(set) var mostPlayedSongs: [EmbyAudioItem] = []
@@ -132,7 +137,9 @@ final class AppStore: ObservableObject {
         !dailyRecommendedSongs.isEmpty || !recentlyAddedSongs.isEmpty || !mostPlayedSongs.isEmpty
     }
 
-    var favoriteSongs: [EmbyAudioItem] {
+    /// Rebuilds `favoriteSongs`. Stored rather than computed because the home page reads it on
+    /// every render and computing it scans the whole library.
+    private func refreshFavoriteSongs() {
         var seen = Set<String>()
         var merged: [EmbyAudioItem] = []
 
@@ -146,7 +153,9 @@ final class AppStore: ObservableObject {
             merged.append(song)
         }
 
-        return merged
+        if merged != favoriteSongs {
+            favoriteSongs = merged
+        }
     }
 
     var playbackQualityPreferences: PlaybackQualityPreferences {
@@ -1102,12 +1111,14 @@ final class AppStore: ObservableObject {
             playlists = derived.generatedPlaylists
         }
         refreshRecentSongs()
+        refreshFavoriteSongs()
     }
 
     private func clearSongs() {
         derivedDataGeneration += 1
         songs = []
         songsById = [:]
+        favoriteSongs = []
         albums = []
         artists = []
         albumSections = []
