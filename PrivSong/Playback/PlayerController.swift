@@ -538,7 +538,7 @@ final class PlayerController: ObservableObject {
         currentStreamURL = resource
 
         let url = resource.url
-        let asset = AVURLAsset(url: url, options: resource.avAssetOptions)
+        let asset = AVURLAsset(url: url, options: resource.playbackAssetOptions)
         let item = AVPlayerItem(asset: asset)
         item.preferredForwardBufferDuration = url.isFileURL ? 0 : 45
         item.canUseNetworkResourcesForLiveStreamingWhilePaused = !url.isFileURL
@@ -1815,6 +1815,16 @@ private extension AuthenticatedURL {
     var avAssetOptions: [String: Any]? {
         guard !httpHeaders.isEmpty else { return nil }
         return ["AVURLAssetHTTPHeaderFieldsKey": httpHeaders]
+    }
+
+    /// Options for the asset that is actually played. Precise timing makes seeks in
+    /// variable-bitrate files (FLAC, VBR MP3) land where the reported time says. Without it
+    /// AVFoundation estimates the byte offset from the average bitrate, so after a seek the
+    /// audio drifted away from the clock that drives the progress bar and lyrics.
+    var playbackAssetOptions: [String: Any] {
+        var options = avAssetOptions ?? [:]
+        options[AVURLAssetPreferPreciseDurationAndTimingKey] = true
+        return options
     }
 }
 
