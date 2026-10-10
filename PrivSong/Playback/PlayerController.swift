@@ -371,6 +371,14 @@ final class PlayerController: ObservableObject {
         seek(toSeconds: time, shouldPlayAfterSeek: isPlaying)
     }
 
+    /// The player's actual position, read straight from AVPlayer. The published `elapsed` only
+    /// updates every 0.5 s, which is too coarse for line-accurate lyrics.
+    var precisePlaybackTime: TimeInterval {
+        let seconds = engine.currentTime().seconds
+        guard seconds.isFinite, seconds >= 0 else { return elapsed }
+        return duration > 0 ? min(seconds, duration) : seconds
+    }
+
     /// Reads the song's embedded lyrics on demand (when the lyrics panel shows it), instead of
     /// opening another connection to the audio file for every track that plays.
     func loadLyricsIfNeeded(for song: EmbyAudioItem) {
@@ -1423,6 +1431,23 @@ final class PlayerController: ObservableObject {
         return []
     }
 
+    /// The LRC `[offset:…]` value in seconds, or 0 when absent.
+    private nonisolated static func lyricOffset(in rawLyrics: String) -> TimeInterval {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"\[offset:\s*([+-]?\d+)\s*\]"#,
+            options: [.caseInsensitive]
+        ) else {
+            return 0
+        }
+        let range = NSRange(rawLyrics.startIndex..., in: rawLyrics)
+        guard let match = regex.firstMatch(in: rawLyrics, range: range),
+              let valueRange = Range(match.range(at: 1), in: rawLyrics),
+              let milliseconds = Double(rawLyrics[valueRange]) else {
+            return 0
+        }
+        return milliseconds / 1000
+    }
+
     private nonisolated static func parseLyrics(_ rawLyrics: String) -> [LyricLine] {
         let pattern = #"\[(\d{1,2}):(\d{2})(?:[\.:](\d{1,3}))?\]"#
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
@@ -1435,6 +1460,8 @@ final class PlayerController: ObservableObject {
 
         var timedLines: [(time: TimeInterval, text: String)] = []
         var plainLines: [String] = []
+        // LRC `[offset:±ms]` shifts every timestamp; positive values make lyrics appear earlier.
+        let offset = lyricOffset(in: rawLyrics)
 
         for line in rawLyrics.components(separatedBy: .newlines) {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1458,7 +1485,7 @@ final class PlayerController: ObservableObject {
 
             for match in matches {
                 guard let time = lyricTime(from: nsLine, match: match) else { continue }
-                timedLines.append((time, text))
+                timedLines.append((max(time - offset, 0), text))
             }
         }
 

@@ -1030,20 +1030,26 @@ struct LyricsPanelView: View {
     let isPlaybackActive: Bool
     let scrubElapsed: TimeInterval
     let isScrubbing: Bool
-    @State private var lastAutoScrollAt = Date.distantPast
     @State private var timedLyricIndexCache = TimedLyricIndexCache()
 
-    private let autoScrollInterval: TimeInterval = 0.35
-    private let lyricActivationLeadTime: TimeInterval = 0.35
+    /// Small head start so a line is highlighted as it begins, allowing for the scroll animation.
+    private let lyricActivationLeadTime: TimeInterval = 0.15
 
-    private var playbackElapsed: TimeInterval {
-        displayedPlaybackElapsed(
-            timeline: timeline,
-            fallbackDuration: fallbackDuration,
-            isPlaybackActive: isPlaybackActive,
-            isScrubbing: isScrubbing,
-            scrubElapsed: scrubElapsed
-        )
+    /// Position used to pick the active line. Reads AVPlayer directly: the shared timeline only
+    /// updates every 0.5 s, which made lines switch up to half a second off.
+    private var lyricElapsed: TimeInterval {
+        guard isPlaybackActive else { return 0 }
+        if isScrubbing {
+            return scrubElapsed
+        }
+        if let seekTarget = timeline.seekTarget {
+            return seekTarget
+        }
+        return player.precisePlaybackTime
+    }
+
+    private var isLyricClockRunning: Bool {
+        isPlaybackActive && player.isPlaying && !isScrubbing
     }
 
     private var playbackDuration: TimeInterval {
@@ -1085,67 +1091,70 @@ struct LyricsPanelView: View {
     }
 
     private var lyricsScrollView: some View {
-        let activeIndex = activeLyricIndex
-        let activeID = activeLyricId(for: activeIndex)
-
-        return GeometryReader { geometry in
+        GeometryReader { geometry in
             ScrollViewReader { proxy in
-                ScrollView {
-                    // Lazy: only on-screen lines are diffed on each playback tick.
-                    LazyVStack(alignment: .leading, spacing: 14) {
-                        ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
-                            let isActive = activeIndex == index
-                            Button {
-                                player.seek(toLyric: line)
-                            } label: {
-                                // One text style for every line (scales with Dynamic Type); the
-                                // active line is emphasised with a scale effect, which animates
-                                // without re-laying out the text like switching fonts did.
-                                Text(line.text)
-                                    .font(.title2.bold())
-                                    .lineSpacing(2)
-                                    .multilineTextAlignment(.leading)
-                                    .foregroundStyle(isActive ? .primary : .secondary)
-                                    .scaleEffect(isActive ? 1 : 0.84, anchor: .leading)
-                                    .animation(.easeOut(duration: 0.2), value: isActive)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
+                // Re-evaluated about 10 times a second while playing (paused otherwise) so the
+                // highlighted line follows the audio closely.
+                TimelineView(.animation(minimumInterval: 0.1, paused: !isLyricClockRunning)) { _ in
+                    let lines = self.lines
+                    let activeIndex = activeLyricIndex(at: lyricElapsed, in: lines)
+                    let activeID = activeLyricId(for: activeIndex, in: lines)
+
+                    ScrollView {
+                        // Not lazy: `scrollTo(_:anchor: .center)` needs real row heights. A lazy stack
+                        // estimates heights for rows it hasn't built, which left the active line
+                        // off-centre.
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
+                                let isActive = activeIndex == index
+                                Button {
+                                    player.seek(toLyric: line)
+                                } label: {
+                                    // One text style for every line (scales with Dynamic Type); the
+                                    // active line is emphasised with a scale effect, which animates
+                                    // without re-laying out the text like switching fonts did.
+                                    Text(line.text)
+                                        .font(.title2.bold())
+                                        .lineSpacing(2)
+                                        .multilineTextAlignment(.leading)
+                                        .foregroundStyle(isActive ? .primary : .secondary)
+                                        .scaleEffect(isActive ? 1 : 0.84, anchor: .leading)
+                                        .animation(.easeOut(duration: 0.2), value: isActive)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .contentShape(Rectangle())
+                                }
+                                .id(line.id)
+                                .buttonStyle(.plain)
+                                .disabled(line.time == nil)
                             }
-                            .id(line.id)
-                            .buttonStyle(.plain)
-                            .disabled(line.time == nil)
+                        }
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: max(geometry.size.height, 1), alignment: .center)
+                    }
+                    .scrollIndicators(.hidden)
+                    .onAppear {
+                        refreshTimedLyricIndexCache()
+                        DispatchQueue.main.async {
+                            scrollToActiveLyric(activeID, using: proxy, animated: false)
                         }
                     }
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(minHeight: max(geometry.size.height, 1), alignment: .center)
-                }
-                .scrollIndicators(.hidden)
-                .onAppear {
-                    refreshTimedLyricIndexCache()
-                    DispatchQueue.main.async {
-                        scrollToActiveLyric(activeID, using: proxy, animated: false)
+                    .onChange(of: song.id) { _, _ in
+                        refreshTimedLyricIndexCache()
+                        DispatchQueue.main.async {
+                            scrollToActiveLyric(activeID, using: proxy, animated: false)
+                        }
                     }
-                }
-                .onChange(of: song.id) { _, _ in
-                    refreshTimedLyricIndexCache()
-                    DispatchQueue.main.async {
-                        scrollToActiveLyric(activeID, using: proxy, animated: false)
+                    .onChange(of: lyricsScrollVersion) { _, _ in
+                        refreshTimedLyricIndexCache()
+                        DispatchQueue.main.async {
+                            scrollToActiveLyric(activeID, using: proxy, animated: false)
+                        }
                     }
-                }
-                .onChange(of: lyricsScrollVersion) { _, _ in
-                    refreshTimedLyricIndexCache()
-                    DispatchQueue.main.async {
-                        scrollToActiveLyric(activeID, using: proxy, animated: false)
-                    }
-                }
-                .onChange(of: activeID) { _, id in
-                    guard let id else { return }
-                    let now = Date()
-                    guard now.timeIntervalSince(lastAutoScrollAt) >= autoScrollInterval else { return }
-                    lastAutoScrollAt = now
-                    withAnimation(.easeInOut(duration: 0.28)) {
-                        proxy.scrollTo(id, anchor: .center)
+                    .onChange(of: activeID) { _, id in
+                        // Scroll on every line change. The old 0.35 s throttle dropped scrolls for
+                        // quick lines and never caught up, leaving the view behind the audio.
+                        scrollToActiveLyric(id, using: proxy, animated: true)
                     }
                 }
             }
@@ -1177,22 +1186,23 @@ struct LyricsPanelView: View {
         lines.count == 1 && lines[0].id < 0 && lines[0].time == nil
     }
 
-    private var activeLyricIndex: Int {
+    private func activeLyricIndex(at elapsed: TimeInterval, in lines: [LyricLine]) -> Int {
         guard !lines.isEmpty else { return 0 }
-        if let timedIndex = activeTimedLyricIndex {
-            return timedIndex
+        let anchors = currentTimedLyricAnchors
+        if !anchors.isEmpty {
+            // Before the first timed line, stay on it rather than falling through to the
+            // progress-based estimate meant for untimed lyrics.
+            return activeTimedLyricIndex(at: elapsed, anchors: anchors) ?? anchors[0].lineIndex
         }
 
+        // Untimed lyrics: approximate by playback progress.
         let duration = max(playbackDuration, 1)
-        let progress = min(max(playbackElapsed / duration, 0), 0.999)
+        let progress = min(max(elapsed / duration, 0), 0.999)
         return min(Int(progress * Double(lines.count)), lines.count - 1)
     }
 
-    private var activeTimedLyricIndex: Int? {
-        let anchors = currentTimedLyricAnchors
-        guard !anchors.isEmpty else { return nil }
-
-        let adjustedElapsed = playbackElapsed + lyricActivationLeadTime
+    private func activeTimedLyricIndex(at elapsed: TimeInterval, anchors: [TimedLyricAnchor]) -> Int? {
+        let adjustedElapsed = elapsed + lyricActivationLeadTime
         var lowerBound = 0
         var upperBound = anchors.count
         var bestIndex: Int?
@@ -1212,7 +1222,7 @@ struct LyricsPanelView: View {
         return bestIndex
     }
 
-    private func activeLyricId(for activeIndex: Int) -> Int? {
+    private func activeLyricId(for activeIndex: Int, in lines: [LyricLine]) -> Int? {
         guard lines.indices.contains(activeIndex) else { return nil }
         return lines[activeIndex].id
     }
