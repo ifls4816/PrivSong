@@ -660,10 +660,6 @@ final class AppStore {
         return "上次 \(progress.position.musicDurationText)"
     }
 
-    func isCurrentAudiobookEpisode(_ episode: EmbyAudioItem) -> Bool {
-        player?.currentSong?.id == episode.id
-    }
-
     func registerPlayback(song: EmbyAudioItem) {
         recentSongIds.removeAll { $0 == song.id }
         recentSongIds.insert(song.id, at: 0)

@@ -14,51 +14,50 @@ struct MiniPlayerView: View {
         let song = player.currentSong ?? store.lastPlayedSong
         let isInline = accessoryPlacement == .inline
         let artworkURL = song.flatMap { store.imageURL(for: $0, size: 160) }
-        let verticalPadding: CGFloat = 6
-        let horizontalPadding: CGFloat = 12
         let artworkSize: CGFloat = 36
         let artworkCornerRadius: CGFloat = 8
         let cornerRadius: CGFloat = isInline ? 26 : 16
-        let titleSize: CGFloat = 12.5
-        let subtitleSize: CGFloat = 11
-        let contentHeight: CGFloat = 48
-        let maxAccessoryWidth: CGFloat = 430
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
 
         HStack(spacing: 10) {
-            if song != nil {
-                ArtworkView(url: artworkURL, cornerRadius: artworkCornerRadius)
-                    .frame(width: artworkSize, height: artworkSize)
-                    .allowsHitTesting(false)
-                    .transaction { transaction in
-                        transaction.disablesAnimations = true
+            // A real button (not a tap gesture) so VoiceOver and keyboard users can open the player.
+            Button(action: openPlayer) {
+                HStack(spacing: 10) {
+                    if song != nil {
+                        ArtworkView(url: artworkURL, cornerRadius: artworkCornerRadius)
+                            .frame(width: artworkSize, height: artworkSize)
+                            .transaction { transaction in
+                                transaction.disablesAnimations = true
+                            }
+                    } else {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
+                                .fill(.primary.opacity(0.08))
+                            Image(systemName: "music.note")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(width: artworkSize, height: artworkSize)
                     }
-            } else {
-                ZStack {
-                    RoundedRectangle(cornerRadius: artworkCornerRadius, style: .continuous)
-                        .fill(.primary.opacity(0.08))
-                    Image(systemName: "music.note")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.secondary)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(song?.name ?? "暂无歌曲")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(miniSubtitle(for: song))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(width: artworkSize, height: artworkSize)
+                .contentShape(Rectangle())
             }
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(song?.name ?? "暂无歌曲")
-                    .font(.system(size: titleSize, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(miniSubtitle(for: song))
-                    .font(.system(size: subtitleSize))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(height: 34, alignment: .center)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
             .layoutPriority(1)
-
-            Spacer(minLength: 8)
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("打开播放页")
 
             Button {
                 if player.currentSong != nil {
@@ -82,6 +81,7 @@ struct MiniPlayerView: View {
             }
             .buttonStyle(.plain)
             .disabled(song == nil)
+            .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
 
             Button {
                 player.next()
@@ -93,21 +93,20 @@ struct MiniPlayerView: View {
             }
             .buttonStyle(.plain)
             .disabled(player.currentSong == nil)
+            .accessibilityLabel("下一首")
         }
-        .padding(.horizontal, horizontalPadding)
-        .padding(.vertical, verticalPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: contentHeight)
-        .frame(maxWidth: maxAccessoryWidth, alignment: .leading)
-        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+        .frame(maxWidth: 430, alignment: .leading)
+        // The accessory bar has a fixed height; cap text growth so it never clips.
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
         // No custom fill: the bottom accessory already sits in the system Liquid Glass capsule,
         // the same material as the tab bar. Painting over it made the two look different.
         .contentShape(shape)
         .transaction { transaction in
             transaction.animation = nil
         }
-        .onTapGesture(perform: openPlayer)
-        .onLongPressGesture(minimumDuration: 0.45, perform: openPlayer)
     }
 
     private func miniSubtitle(for song: EmbyAudioItem?) -> String {
@@ -328,24 +327,26 @@ struct NowPlayingView: View {
                     onOpenAlbum(song)
                 } label: {
                     Text(song.name)
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.headline.weight(.bold))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("前往专辑")
 
                 Button {
                     onOpenArtist(song)
                 } label: {
                     Text(song.artistLine)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("前往艺术家")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -358,6 +359,7 @@ struct NowPlayingView: View {
                     .foregroundStyle(store.isFavorite(song) ? Color.musicRed : .secondary)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(store.isFavorite(song) ? "取消喜欢" : "喜欢")
         }
     }
 
@@ -389,6 +391,7 @@ struct NowPlayingView: View {
             .disabled(player.currentSong == nil)
             .opacity(player.currentSong == nil ? 0.42 : 1)
             .buttonStyle(.plain)
+            .accessibilityLabel("上一首")
 
             Button {
                 if player.currentSong == nil {
@@ -412,6 +415,7 @@ struct NowPlayingView: View {
                 .frame(width: 68, height: 62)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(player.isPlaying ? "暂停" : "播放")
 
             Button {
                 player.next()
@@ -423,6 +427,7 @@ struct NowPlayingView: View {
             .disabled(player.currentSong == nil)
             .opacity(player.currentSong == nil ? 0.42 : 1)
             .buttonStyle(.plain)
+            .accessibilityLabel("下一首")
 
             repeatModeButton
         }
@@ -440,6 +445,8 @@ struct NowPlayingView: View {
                 .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("随机播放")
+        .accessibilityValue(player.isShuffleEnabled ? "开" : "关")
     }
 
     private var repeatModeButton: some View {
@@ -452,6 +459,8 @@ struct NowPlayingView: View {
                 .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("重复播放")
+        .accessibilityValue(player.repeatMode.accessibilityValue)
     }
 
     private var volumeControl: some View {
@@ -463,6 +472,7 @@ struct NowPlayingView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .frame(width: 18, height: height, alignment: .center)
                 .offset(y: iconOffsetY)
+                .accessibilityHidden(true)
             SystemVolumeSlider()
                 .frame(maxWidth: .infinity)
                 .frame(height: height)
@@ -473,6 +483,7 @@ struct NowPlayingView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .frame(width: 18, height: height, alignment: .center)
                 .offset(y: iconOffsetY)
+                .accessibilityHidden(true)
         }
         .frame(height: height, alignment: .center)
         .frame(maxWidth: .infinity)
@@ -520,6 +531,8 @@ struct NowPlayingView: View {
                 .foregroundStyle(player.sleepTimerEndDate == nil ? .secondary : Color.musicRed)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("睡眠定时")
+        .accessibilityValue(sleepTimerRemainingText.map { "剩余 \($0)" } ?? "关")
     }
 
     private var sleepTimerSelection: Binding<String> {
@@ -574,6 +587,8 @@ struct NowPlayingView: View {
                 .foregroundStyle(mode == target ? Color.musicRed : .secondary)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(target.accessibilityLabel)
+        .accessibilityAddTraits(mode == target ? .isSelected : [])
     }
 }
 
@@ -627,6 +642,8 @@ private struct PlaybackProgressControls: View {
             }
             .tint(Color.musicRed)
             .allowsHitTesting(isPlaybackActive && duration > 0)
+            .accessibilityLabel("播放进度")
+            .accessibilityValue("\(playbackTimeText(elapsed)) / \(playbackTimeText(duration))")
 
             HStack {
                 Text(playbackTimeText(elapsed))
@@ -635,8 +652,10 @@ private struct PlaybackProgressControls: View {
                 Text("-\(playbackTimeText(duration - elapsed))")
                     .monospacedDigit()
             }
-            .font(.system(size: 11, weight: .semibold))
+            .font(.caption2.weight(.semibold))
             .foregroundStyle(.secondary)
+            // The slider already announces the position.
+            .accessibilityHidden(true)
         }
     }
 }
@@ -747,6 +766,7 @@ final class VolumeSliderContainer: UIView {
         visibleSlider.maximumValue = 1
         visibleSlider.value = AVAudioSession.sharedInstance().outputVolume
         visibleSlider.minimumTrackTintColor = .musicRed
+        visibleSlider.accessibilityLabel = "音量"
         visibleSlider.clipsToBounds = false
         visibleSlider.layer.masksToBounds = false
         visibleSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -822,7 +842,8 @@ private struct PlayerPageBackground: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .blur(radius: 12)
+                // No blur: blurring an already smooth gradient changed nothing visible but cost a
+                // full-screen offscreen pass on every frame of the player page.
                 .saturation(0.92)
                 .transition(.opacity)
             }
@@ -1070,17 +1091,23 @@ struct LyricsPanelView: View {
         return GeometryReader { geometry in
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
+                    // Lazy: only on-screen lines are diffed on each playback tick.
+                    LazyVStack(alignment: .leading, spacing: 14) {
                         ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
                             let isActive = activeIndex == index
                             Button {
                                 player.seek(toLyric: line)
                             } label: {
+                                // One text style for every line (scales with Dynamic Type); the
+                                // active line is emphasised with a scale effect, which animates
+                                // without re-laying out the text like switching fonts did.
                                 Text(line.text)
-                                    .font(.system(size: isActive ? 24 : 19, weight: .bold))
+                                    .font(.title2.bold())
                                     .lineSpacing(2)
                                     .multilineTextAlignment(.leading)
                                     .foregroundStyle(isActive ? .primary : .secondary)
+                                    .scaleEffect(isActive ? 1 : 0.84, anchor: .leading)
+                                    .animation(.easeOut(duration: 0.2), value: isActive)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .contentShape(Rectangle())
                             }
@@ -1139,7 +1166,7 @@ struct LyricsPanelView: View {
 
     private var placeholderView: some View {
         Text(lines.first?.text ?? "暂无歌词")
-            .font(.system(size: 20, weight: .bold))
+            .font(.title3.bold())
             .foregroundStyle(.secondary)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity, alignment: .center)
@@ -1229,14 +1256,17 @@ struct LyricsPanelView: View {
 struct QueuePlayerView: View {
     @Environment(AppStore.self) private var store
     @EnvironmentObject private var player: PlayerController
-    @State private var isReordering = false
+    @State private var editMode: EditMode = .inactive
 
     var body: some View {
+        let upcoming = player.upcomingQueueSnapshot
+
         VStack(spacing: 10) {
             HStack(spacing: 12) {
                 Text("接下来播放")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(.primary)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
                 Button {
                     player.toggleShuffle()
@@ -1246,6 +1276,8 @@ struct QueuePlayerView: View {
                         .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("随机播放")
+                .accessibilityValue(player.isShuffleEnabled ? "开" : "关")
 
                 Button {
                     player.cycleRepeatMode()
@@ -1255,102 +1287,96 @@ struct QueuePlayerView: View {
                         .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("重复播放")
+                .accessibilityValue(player.repeatMode.accessibilityValue)
 
                 Button {
                     player.clearUpcomingQueue()
                 } label: {
                     Image(systemName: "trash")
                         .frame(width: 32, height: 30)
-                        .foregroundStyle(player.upcomingQueueSnapshot.isEmpty ? Color.secondary.opacity(0.35) : Color.secondary)
+                        .foregroundStyle(upcoming.isEmpty ? Color.secondary.opacity(0.35) : Color.secondary)
                 }
                 .buttonStyle(.plain)
-                .disabled(player.upcomingQueueSnapshot.isEmpty)
+                .disabled(upcoming.isEmpty)
+                .accessibilityLabel("清空待播放")
 
                 Button {
                     withAnimation(.snappy(duration: 0.18)) {
-                        isReordering.toggle()
+                        editMode = editMode.isEditing ? .inactive : .active
                     }
                 } label: {
-                    Image(systemName: isReordering ? "checkmark" : "arrow.up.arrow.down")
+                    Image(systemName: editMode.isEditing ? "checkmark" : "arrow.up.arrow.down")
                         .frame(width: 32, height: 30)
                         .foregroundStyle(.primary)
                 }
                 .buttonStyle(.plain)
+                .disabled(upcoming.isEmpty)
+                .accessibilityLabel(editMode.isEditing ? "完成" : "调整顺序")
             }
 
-            if player.upcomingQueueSnapshot.isEmpty {
+            if upcoming.isEmpty {
                 ContentUnavailableView("没有待播放歌曲", systemImage: "music.note.list")
                     .foregroundStyle(.secondary)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(Array(player.upcomingQueueSnapshot.enumerated()), id: \.element.id) { index, song in
-                            queueRow(song: song, index: index)
+                // System list: drag handles in edit mode, swipe to delete otherwise.
+                List {
+                    ForEach(upcoming) { song in
+                        queueRow(song: song)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                    }
+                    .onMove { source, destination in
+                        guard let from = source.first else { return }
+                        // `onMove` reports the destination before removal; the player expects
+                        // the final index.
+                        player.moveUpcomingQueueItem(from: from, to: destination > from ? destination - 1 : destination)
+                    }
+                    .onDelete { offsets in
+                        for index in offsets.sorted(by: >) {
+                            player.removeUpcomingQueueItem(at: index)
                         }
                     }
-                    .padding(.bottom, 8)
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
                 .scrollIndicators(.hidden)
+                .environment(\.editMode, $editMode)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .onChange(of: upcoming.isEmpty) { _, isEmpty in
+            if isEmpty {
+                editMode = .inactive
+            }
+        }
     }
 
-    private func queueRow(song: EmbyAudioItem, index: Int) -> some View {
-        HStack(spacing: 10) {
-            ArtworkView(url: store.imageURL(for: song, size: 120), cornerRadius: 5)
-                .frame(width: 38, height: 38)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(song.name)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                Text(song.artistLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            if isReordering {
-                HStack(spacing: 2) {
-                    Button {
-                        player.moveUpcomingQueueItem(from: index, to: index - 1)
-                    } label: {
-                        Image(systemName: "chevron.up")
-                            .frame(width: 30, height: 30)
-                    }
-                    .disabled(index == 0)
-
-                    Button {
-                        player.moveUpcomingQueueItem(from: index, to: index + 1)
-                    } label: {
-                        Image(systemName: "chevron.down")
-                            .frame(width: 30, height: 30)
-                    }
-                    .disabled(index >= player.upcomingQueueSnapshot.count - 1)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            } else {
-                Button {
-                    player.removeUpcomingQueueItem(at: index)
-                } label: {
-                        Image(systemName: "minus.circle")
-                            .font(.system(size: 18, weight: .semibold))
-                            .frame(width: 30, height: 30)
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard !isReordering else { return }
+    private func queueRow(song: EmbyAudioItem) -> some View {
+        Button {
             player.playQueued(song: song)
+        } label: {
+            HStack(spacing: 10) {
+                ArtworkView(url: store.imageURL(for: song, size: 120), cornerRadius: 5)
+                    .frame(width: 38, height: 38)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(song.name)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Text(song.artistLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .disabled(editMode.isEditing)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -1358,6 +1384,30 @@ private enum PlayerMode {
     case nowPlaying
     case lyrics
     case queue
+
+    var accessibilityLabel: String {
+        switch self {
+        case .nowPlaying:
+            return "正在播放"
+        case .lyrics:
+            return "歌词"
+        case .queue:
+            return "播放队列"
+        }
+    }
+}
+
+private extension RepeatMode {
+    var accessibilityValue: String {
+        switch self {
+        case .none:
+            return "关"
+        case .all:
+            return "全部重复"
+        case .one:
+            return "单曲重复"
+        }
+    }
 }
 
 extension Notification.Name {

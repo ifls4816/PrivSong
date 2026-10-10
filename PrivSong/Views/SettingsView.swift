@@ -1,10 +1,23 @@
 import SwiftUI
 
+enum SettingsRoute: Hashable {
+    case folderLibrary
+
+    /// The folder browser has its own bottom toolbar, so the tab bar and mini player hide.
+    var hidesRootBottomChrome: Bool {
+        switch self {
+        case .folderLibrary:
+            return true
+        }
+    }
+}
+
 struct SettingsView: View {
     @Environment(AppStore.self) private var store
+    @Binding var path: [SettingsRoute]
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             Form {
                 Section("资料库") {
                     libraryRows
@@ -14,24 +27,23 @@ struct SettingsView: View {
                     playbackRows
                 }
 
-                Section {
+                Section("存储") {
                     storageRows
-                } header: {
-                    Text("存储")
-                } footer: {
-                    Text("播放过的歌曲会缓存到本机，再次播放时无需联网。超过上限后自动删除最久未播放的歌曲。清除歌曲缓存不会影响资料库。转码播放时不缓存。")
                 }
             }
             .formStyle(.grouped)
-            .scrollContentBackground(.hidden)
-            .background(Color.musicPageBackground.ignoresSafeArea())
-            .safeAreaPadding(.bottom, 112)
             .mainPageToolbar("设置")
-            .navigationBarBackButtonHidden(true)
+            .navigationDestination(for: SettingsRoute.self) { route in
+                switch route {
+                case .folderLibrary:
+                    MusicFolderLibraryView()
+                }
+            }
             .task {
                 await store.refreshCacheUsage()
             }
         }
+        .toolbarVisibility(path.contains { $0.hidesRootBottomChrome } ? .hidden : .visible, for: .tabBar)
     }
 
     private var libraryRows: some View {
@@ -44,6 +56,15 @@ struct SettingsView: View {
                     value: librarySummary,
                     icon: "music.note.list",
                     tint: .blue
+                )
+            }
+
+            NavigationLink(value: SettingsRoute.folderLibrary) {
+                SettingsValueRow(
+                    title: "文件夹",
+                    value: "Emby 目录",
+                    icon: "folder.fill",
+                    tint: .indigo
                 )
             }
 
@@ -211,8 +232,6 @@ private struct EditLibrarySettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .background(Color.musicPageBackground.ignoresSafeArea())
         .navigationTitle("编辑资料库")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadConnectionFields)
@@ -254,8 +273,6 @@ private struct PlaybackQualitySettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .background(Color.musicPageBackground.ignoresSafeArea())
         .navigationTitle("播放音质")
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -268,36 +285,18 @@ private struct PlaybackQualityMenuRow: View {
     @Binding var selection: OnlinePlaybackQuality
 
     var body: some View {
-        HStack(spacing: 12) {
-            SettingsIcon(icon: icon, tint: tint)
-            Text(title)
-                .foregroundStyle(.primary)
-            Spacer(minLength: 12)
-            Menu {
-                ForEach(OnlinePlaybackQuality.allCases) { quality in
-                    Button {
-                        selection = quality
-                    } label: {
-                        if selection == quality {
-                            Label(quality.displayTitle, systemImage: "checkmark")
-                        } else {
-                            Text(quality.displayTitle)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(selection.displayTitle)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .foregroundStyle(.blue)
-                .fixedSize(horizontal: true, vertical: false)
+        // System menu picker: matches the iOS 26 look and follows the app tint.
+        Picker(selection: $selection) {
+            ForEach(OnlinePlaybackQuality.allCases) { quality in
+                Text(quality.displayTitle).tag(quality)
             }
-            .buttonStyle(.plain)
+        } label: {
+            HStack(spacing: 12) {
+                SettingsIcon(icon: icon, tint: tint)
+                Text(title)
+            }
         }
-        .contentShape(Rectangle())
+        .pickerStyle(.menu)
     }
 }
 
@@ -305,36 +304,17 @@ private struct AudioCacheLimitMenuRow: View {
     @Binding var selection: AudioCacheLimit
 
     var body: some View {
-        HStack(spacing: 12) {
-            SettingsIcon(icon: "internaldrive", tint: .gray)
-            Text("歌曲缓存上限")
-                .foregroundStyle(.primary)
-            Spacer(minLength: 12)
-            Menu {
-                ForEach(AudioCacheLimit.allCases) { limit in
-                    Button {
-                        selection = limit
-                    } label: {
-                        if selection == limit {
-                            Label(limit.title, systemImage: "checkmark")
-                        } else {
-                            Text(limit.title)
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(selection.title)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                }
-                .foregroundStyle(.blue)
-                .fixedSize(horizontal: true, vertical: false)
+        Picker(selection: $selection) {
+            ForEach(AudioCacheLimit.allCases) { limit in
+                Text(limit.title).tag(limit)
             }
-            .buttonStyle(.plain)
+        } label: {
+            HStack(spacing: 12) {
+                SettingsIcon(icon: "internaldrive", tint: .gray)
+                Text("歌曲缓存上限")
+            }
         }
-        .contentShape(Rectangle())
+        .pickerStyle(.menu)
     }
 }
 
@@ -426,11 +406,13 @@ private struct SettingsIcon: View {
     let tint: Color
 
     var body: some View {
+        // Fixed-size icon tile, like the system Settings app; decorative for VoiceOver.
         Image(systemName: icon)
             .font(.system(size: 16, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: 30, height: 30)
             .background(tint, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 
@@ -490,17 +472,12 @@ struct SignInView: View {
                                 text: $password
                             )
                         }
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-                        }
-                        .shadow(color: .black.opacity(0.08), radius: 22, y: 14)
+                        .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
 
                         if let error = store.errorMessage {
                             HStack(alignment: .top, spacing: 10) {
                                 Image(systemName: "exclamationmark.triangle.fill")
-                                    .font(.system(size: 15, weight: .semibold))
+                                    .font(.subheadline.weight(.semibold))
                                 Text(error)
                                     .font(.subheadline)
                                     .fixedSize(horizontal: false, vertical: true)
@@ -517,27 +494,20 @@ struct SignInView: View {
                             HStack(spacing: 10) {
                                 if store.isLoading {
                                     ProgressView()
-                                        .tint(.white)
                                 }
 
                                 Text(store.isLoading ? "连接中..." : "连接 Emby")
                                     .font(.headline)
-                                    .fontWeight(.semibold)
                             }
                             .frame(maxWidth: .infinity)
-                            .frame(height: 54)
-                            .foregroundStyle(canConnect || store.isLoading ? .white : .secondary)
-                            .background(
-                                canConnect || store.isLoading ? Color.musicRed : Color.secondary.opacity(0.16),
-                                in: RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.large)
                         .disabled(!canConnect)
 
                         HStack(alignment: .top, spacing: 10) {
                             Image(systemName: "lock.shield.fill")
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(.footnote.weight(.semibold))
                                 .foregroundStyle(Color.musicRed)
 
                             VStack(alignment: .leading, spacing: 4) {
@@ -562,7 +532,6 @@ struct SignInView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar(.hidden, for: .navigationBar)
         }
-        .presentationBackground(.regularMaterial)
     }
 }
 
@@ -626,11 +595,13 @@ private struct SignInHeader: View {
                     .font(.system(size: 42, weight: .bold))
                     .foregroundStyle(.white)
             }
+            .accessibilityHidden(true)
 
             VStack(spacing: 8) {
                 Text("连接 Emby")
-                    .font(.system(size: 32, weight: .bold))
+                    .font(.largeTitle.bold())
                     .foregroundStyle(.primary)
+                    .accessibilityAddTraits(.isHeader)
 
                 Text("登录后同步音乐资料库，并在本机保留缓存。")
                     .font(.subheadline)

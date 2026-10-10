@@ -8,7 +8,6 @@ private enum SongRowLayout {
 
 struct SongRow: View {
     @Environment(AppStore.self) private var store
-    @State private var rowWidth: CGFloat?
 
     let song: EmbyAudioItem
     let imageURL: AuthenticatedURL?
@@ -22,12 +21,8 @@ struct SongRow: View {
         }
         .buttonStyle(.plain)
         .contentShape(.interaction, Rectangle())
+        // The system lifts this shape onto its own glass platter for the context-menu preview.
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: SongRowLayout.contextPreviewCornerRadius, style: .continuous))
-        .onGeometryChange(for: CGFloat.self) { geometry in
-            geometry.size.width
-        } action: { newWidth in
-            rowWidth = newWidth
-        }
         .contextMenu {
             Button {
                 store.playNext(song)
@@ -46,12 +41,6 @@ struct SongRow: View {
             } label: {
                 Label(store.isFavorite(song) ? "取消喜欢" : "喜欢", systemImage: store.isFavorite(song) ? "star.slash" : "star")
             }
-        } preview: {
-            SongRowContextPreview(
-                song: song,
-                imageURL: imageURL,
-                width: rowWidth.map { $0 + SongRowLayout.cardHorizontalPadding * 2 }
-            )
         }
     }
 
@@ -71,13 +60,13 @@ private struct SongRowContent: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(song.name)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 HStack(spacing: 6) {
                     if let tagText = song.audioInfoTagText {
                         Text(tagText)
-                            .font(.system(size: 9.5, weight: .bold))
+                            .font(.caption2.weight(.bold))
                             .foregroundStyle(Color.musicRed)
                             .lineLimit(1)
                             .padding(.horizontal, 5)
@@ -106,37 +95,7 @@ private struct SongRowContent: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
-    }
-}
-
-private struct SongRowContextPreview: View {
-    let song: EmbyAudioItem
-    let imageURL: AuthenticatedURL?
-    let width: CGFloat?
-
-    var body: some View {
-        SongRowContent(song: song, imageURL: imageURL)
-            .padding(.horizontal, SongRowLayout.cardHorizontalPadding)
-            .frame(width: width, alignment: .leading)
-            .liquidGlassContextPreview(cornerRadius: SongRowLayout.contextPreviewCornerRadius)
-    }
-}
-
-extension View {
-    func liquidGlassContextPreview(cornerRadius: CGFloat) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-
-        return self
-            .background {
-                shape
-                    .fill(Color.white.opacity(0.08))
-            }
-            .glassEffect(.regular.tint(Color.white.opacity(0.18)).interactive(), in: shape)
-            .overlay {
-                shape
-                    .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.8)
-            }
-            .shadow(color: Color.black.opacity(0.10), radius: 18, x: 0, y: 10)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -158,7 +117,7 @@ struct SongListView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 14)
-            .padding(.bottom, 130)
+            .padding(.bottom, 16)
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
@@ -222,7 +181,7 @@ struct PaginatedSongListView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 14)
-            .padding(.bottom, 130)
+            .padding(.bottom, 16)
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
@@ -300,6 +259,9 @@ struct ArtistDetailView: View {
 
 struct AudiobookDetailView: View {
     @Environment(AppStore.self) private var store
+    /// Observed here (not through the store) so the "now playing" marker and the current-episode
+    /// line update as soon as the track changes.
+    @EnvironmentObject private var player: PlayerController
     private let pageSize = 32
 
     let audiobook: Audiobook
@@ -325,7 +287,7 @@ struct AudiobookDetailView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 18)
-            .padding(.bottom, 130)
+            .padding(.bottom, 16)
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
@@ -377,18 +339,23 @@ struct AudiobookDetailView: View {
     }
 
     private var episodeList: some View {
-        LazyVStack(spacing: 0) {
-            ForEach(Array(visibleEpisodes.enumerated()), id: \.element.id) { index, episode in
+        // Computed once per render; reading `visibleEpisodes` inside the loop rebuilt it per row.
+        let episodes = visibleEpisodes
+        let currentEpisodeId = player.currentSong?.id
+
+        return LazyVStack(spacing: 0) {
+            ForEach(Array(episodes.enumerated()), id: \.element.id) { index, episode in
                 AudiobookEpisodeRow(
                     episode: episode,
                     episodeNumber: index + 1,
-                    audiobook: audiobook
+                    audiobook: audiobook,
+                    isCurrent: episode.id == currentEpisodeId
                 )
                 .onAppear {
-                    loadNextPageIfNeeded(appearingIndex: index)
+                    loadNextPageIfNeeded(appearingIndex: index, visibleCount: episodes.count)
                 }
 
-                if index < visibleEpisodes.count - 1 {
+                if index < episodes.count - 1 {
                     Divider()
                         .padding(.leading, 56)
                 }
@@ -399,8 +366,8 @@ struct AudiobookDetailView: View {
         .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 
-    private func loadNextPageIfNeeded(appearingIndex index: Int) {
-        let preloadThreshold = max(visibleEpisodes.count - 12, 0)
+    private func loadNextPageIfNeeded(appearingIndex index: Int, visibleCount shownCount: Int) {
+        let preloadThreshold = max(shownCount - 12, 0)
         guard index >= preloadThreshold else { return }
         guard visibleCount < audiobook.episodes.count, !isLoadingNextPage else { return }
 
@@ -443,7 +410,7 @@ private struct MusicCollectionDetailView: View {
             }
             .padding(.horizontal, 18)
             .padding(.top, 18)
-            .padding(.bottom, 130)
+            .padding(.bottom, 16)
         }
         .scrollContentBackground(.hidden)
         .background(Color.musicPageBackground.ignoresSafeArea())
@@ -591,6 +558,7 @@ private struct AudiobookEpisodeRow: View {
     let episode: EmbyAudioItem
     let episodeNumber: Int
     let audiobook: Audiobook
+    let isCurrent: Bool
 
     var body: some View {
         Button {
@@ -599,16 +567,17 @@ private struct AudiobookEpisodeRow: View {
             HStack(spacing: 12) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(Color.musicRed.opacity(store.isCurrentAudiobookEpisode(episode) ? 0.18 : 0.10))
-                    Image(systemName: store.isCurrentAudiobookEpisode(episode) ? "waveform" : "book.pages")
+                        .fill(Color.musicRed.opacity(isCurrent ? 0.18 : 0.10))
+                    Image(systemName: isCurrent ? "waveform" : "book.pages")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(Color.musicRed)
                 }
                 .frame(width: 44, height: 44)
+                .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 3) {
                     Text(episode.name)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .foregroundStyle(.primary)
 
@@ -636,6 +605,7 @@ private struct AudiobookEpisodeRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }
 }
 
@@ -658,14 +628,18 @@ struct SongRowsCard: View {
     }
 
     var body: some View {
+        // Computed once per render rather than once per row.
+        let songs = visibleSongs
+        let queue = playbackQueue
+
         LazyVStack(spacing: 0) {
-            ForEach(Array(visibleSongs.enumerated()), id: \.element.id) { index, song in
-                SongRow(song: song, imageURL: store.imageURL(for: song, size: 160), songs: playbackQueue)
+            ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+                SongRow(song: song, imageURL: store.imageURL(for: song, size: 160), songs: queue)
                     .onAppear {
                         onSongAppear?(index)
                     }
 
-                if index < visibleSongs.count - 1 {
+                if index < songs.count - 1 {
                     Divider()
                         .padding(.leading, 56)
                 }

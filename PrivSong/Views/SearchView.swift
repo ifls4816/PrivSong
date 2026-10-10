@@ -5,6 +5,9 @@ struct SearchView: View {
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var submittedSearchText = ""
+    /// Matched once when the search is submitted, not on every render while results are shown.
+    @State private var matchedAlbums: [MusicAlbum] = []
+    @State private var matchedArtists: [MusicArtist] = []
 
     private var trimmedText: String {
         searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -16,19 +19,6 @@ struct SearchView: View {
 
     private var visibleSongs: [EmbyAudioItem] {
         submittedTerm.isEmpty ? [] : store.searchResults
-    }
-
-    private var visibleAlbums: [MusicAlbum] {
-        guard !submittedTerm.isEmpty else { return [] }
-        return store.albums.filter {
-            $0.title.localizedCaseInsensitiveContains(submittedTerm) ||
-                $0.artist.localizedCaseInsensitiveContains(submittedTerm)
-        }
-    }
-
-    private var visibleArtists: [MusicArtist] {
-        guard !submittedTerm.isEmpty else { return [] }
-        return store.artists.filter { $0.name.localizedCaseInsensitiveContains(submittedTerm) }
     }
 
     var body: some View {
@@ -62,23 +52,16 @@ struct SearchView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 76, weight: .regular))
-                .foregroundStyle(.secondary.opacity(0.42))
-            Text("搜索音乐")
-                .font(.system(size: 23, weight: .bold))
-            Text("输入歌曲、专辑或艺术家名称")
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.secondary.opacity(0.7))
-        }
-        .padding(.bottom, 70)
+        ContentUnavailableView(
+            "搜索音乐",
+            systemImage: "magnifyingglass",
+            description: Text("输入歌曲、专辑或艺术家名称")
+        )
     }
 
     private var resultsContent: some View {
-        // Each of these filters the whole library, so evaluate them once per render.
-        let visibleArtists = self.visibleArtists
-        let visibleAlbums = self.visibleAlbums
+        let visibleArtists = matchedArtists
+        let visibleAlbums = matchedAlbums
         let visibleSongs = self.visibleSongs
 
         return ScrollView {
@@ -94,7 +77,7 @@ struct SearchView: View {
 
                 if !visibleArtists.isEmpty {
                     SearchResultSection(title: "艺人") {
-                        ForEach(visibleArtists.prefix(6)) { artist in
+                        ForEach(visibleArtists) { artist in
                             NavigationLink {
                                 ArtistDetailView(artist: artist)
                             } label: {
@@ -107,7 +90,7 @@ struct SearchView: View {
 
                 if !visibleAlbums.isEmpty {
                     SearchResultSection(title: "专辑") {
-                        ForEach(visibleAlbums.prefix(8)) { album in
+                        ForEach(visibleAlbums) { album in
                             NavigationLink {
                                 AlbumDetailView(album: album)
                             } label: {
@@ -145,7 +128,7 @@ struct SearchView: View {
             }
             .padding(.horizontal, 22)
             .padding(.top, 32)
-            .padding(.bottom, 128)
+            .padding(.bottom, 16)
         }
     }
 
@@ -159,6 +142,12 @@ struct SearchView: View {
             return
         }
 
+        matchedArtists = Array(store.artists.filter { $0.name.localizedCaseInsensitiveContains(term) }.prefix(6))
+        matchedAlbums = Array(store.albums.filter {
+            $0.title.localizedCaseInsensitiveContains(term) ||
+                $0.artist.localizedCaseInsensitiveContains(term)
+        }.prefix(8))
+
         searchTask = Task {
             await store.search(term)
         }
@@ -167,6 +156,8 @@ struct SearchView: View {
     private func clearSearch() {
         searchTask?.cancel()
         submittedSearchText = ""
+        matchedArtists = []
+        matchedAlbums = []
         searchTask = Task {
             await store.search("")
         }
@@ -185,7 +176,8 @@ private struct SearchResultSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title)
-                .font(.system(size: 22, weight: .bold))
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
 
             LazyVStack(spacing: 0) {
                 content
@@ -207,7 +199,7 @@ private struct SearchArtworkRow: View {
                 .frame(width: 52, height: 52)
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(subtitle)
@@ -219,10 +211,12 @@ private struct SearchArtworkRow: View {
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.bold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -240,7 +234,7 @@ private struct SearchPlainRow: View {
                 .background(Color.musicRed.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text(subtitle)
@@ -252,9 +246,11 @@ private struct SearchPlainRow: View {
             Image(systemName: "chevron.right")
                 .font(.footnote.weight(.bold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }

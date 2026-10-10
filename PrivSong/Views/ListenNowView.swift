@@ -55,7 +55,7 @@ struct ListenNowView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 14)
-                .padding(.bottom, 130)
+                .padding(.bottom, 16)
             }
             .scrollContentBackground(.hidden)
             .background(Color.musicPageBackground.ignoresSafeArea())
@@ -82,8 +82,6 @@ struct ListenNowView: View {
                     } else {
                         ContentUnavailableView("有声书不可用", systemImage: "book.closed")
                     }
-                case .folderLibrary:
-                    MusicFolderLibraryView()
                 }
             }
             .onChange(of: pendingRoute) { _, route in
@@ -112,11 +110,6 @@ struct ListenNowView: View {
                 Text(playlistErrorMessage ?? "")
             }
         }
-        .toolbarVisibility(homeTabBarVisibility, for: .tabBar)
-    }
-
-    private var homeTabBarVisibility: Visibility {
-        path.last?.hidesRootBottomChrome == true ? .hidden : .visible
     }
 
     private var deleteConfirmationMessage: String {
@@ -176,16 +169,6 @@ struct ListenNowView: View {
                     )
                 }
                 .buttonStyle(.plain)
-
-                NavigationLink(value: HomeRoute.folderLibrary) {
-                    LibraryCategoryCard(
-                        title: "文件夹",
-                        subtitle: "Emby 目录",
-                        icon: "folder.fill",
-                        color: Color.musicRed
-                    )
-                }
-                .buttonStyle(.plain)
             }
         }
     }
@@ -195,12 +178,16 @@ struct ListenNowView: View {
     }
 
     private var playlistSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        // Computed once per render; reading `visiblePlaylists` inside the loop rebuilt it per row.
+        let playlists = visiblePlaylists
+
+        return VStack(alignment: .leading, spacing: 12) {
             Text("我的歌单")
-                .font(.system(size: 24, weight: .bold))
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
 
             LazyVStack(spacing: 0) {
-                ForEach(Array(visiblePlaylists.enumerated()), id: \.element.id) { index, playlist in
+                ForEach(Array(playlists.enumerated()), id: \.element.id) { index, playlist in
                     LongPressHomePlaylistRow(
                         playlist: playlist,
                         open: {
@@ -215,10 +202,10 @@ struct ListenNowView: View {
                         }
                     )
                     .onAppear {
-                        loadNextPlaylistPageIfNeeded(appearingIndex: index)
+                        loadNextPlaylistPageIfNeeded(appearingIndex: index, visibleCount: playlists.count)
                     }
 
-                    if index < visiblePlaylists.count - 1 {
+                    if index < playlists.count - 1 {
                         Divider()
                             .padding(.leading, 90)
                     }
@@ -243,8 +230,8 @@ struct ListenNowView: View {
         }
     }
 
-    private func loadNextPlaylistPageIfNeeded(appearingIndex index: Int) {
-        let preloadThreshold = max(visiblePlaylists.count - 6, 0)
+    private func loadNextPlaylistPageIfNeeded(appearingIndex index: Int, visibleCount: Int) {
+        let preloadThreshold = max(visibleCount - 6, 0)
         guard index >= preloadThreshold else { return }
         guard visiblePlaylistCount < store.playlists.count, !isLoadingNextPlaylistPage else { return }
 
@@ -271,16 +258,6 @@ enum HomeRoute: Hashable {
     case artist(String)
     case album(String)
     case audiobook(String)
-    case folderLibrary
-
-    var hidesRootBottomChrome: Bool {
-        switch self {
-        case .folderLibrary:
-            return true
-        case .playlist, .artist, .album, .audiobook:
-            return false
-        }
-    }
 }
 
 private enum HomePlaylistRowLayout {
@@ -299,7 +276,7 @@ struct HomePlaylistRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(playlist.name)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                 Text("\(playlist.displaySongCount) 首歌曲")
@@ -311,86 +288,59 @@ struct HomePlaylistRow: View {
             Spacer(minLength: 8)
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
 private struct LongPressHomePlaylistRow: View {
     @Environment(AppStore.self) private var store
-    @State private var rowWidth: CGFloat?
 
     let playlist: MusicPlaylist
     let open: () -> Void
     let edit: () -> Void
     let delete: () -> Void
 
-    private var artworkURLs: [AuthenticatedURL] {
-        playlist.songs
+    var body: some View {
+        let artworkURLs = playlist.songs
             .prefix(4)
             .compactMap { store.imageURL(for: $0, size: 160) }
-    }
 
-    var body: some View {
         if playlist.isServerEditable {
-            editablePlaylistButton
+            Button(action: open) {
+                HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
+            }
+            .buttonStyle(.plain)
+            .contentShape(.interaction, Rectangle())
+            // The system draws the context-menu preview on its own glass platter.
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius, style: .continuous))
+            .contextMenu {
+                Button {
+                    edit()
+                } label: {
+                    Label("编辑", systemImage: "pencil")
+                }
+
+                Button(role: .destructive) {
+                    delete()
+                } label: {
+                    Label("删除", systemImage: "trash")
+                }
+            }
         } else {
-            plainPlaylistButton
-        }
-    }
-
-    private var editablePlaylistButton: some View {
-        Button(action: open) {
-            HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
-        }
-        .buttonStyle(.plain)
-        .contentShape(.interaction, Rectangle())
-        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius, style: .continuous))
-        .onGeometryChange(for: CGFloat.self) { geometry in
-            geometry.size.width
-        } action: { newWidth in
-            rowWidth = newWidth
-        }
-        .contextMenu {
-            Button {
-                edit()
-            } label: {
-                Label("编辑", systemImage: "pencil")
+            Button(action: open) {
+                HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
             }
-
-            Button(role: .destructive) {
-                delete()
-            } label: {
-                Label("删除", systemImage: "trash")
-            }
-        } preview: {
-            HomePlaylistRowContextPreview(playlist: playlist, artworkURLs: artworkURLs, width: rowWidth)
+            .buttonStyle(.plain)
+            .contentShape(.interaction, Rectangle())
         }
-    }
-
-    private var plainPlaylistButton: some View {
-        Button(action: open) {
-            HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
-        }
-        .buttonStyle(.plain)
-        .contentShape(.interaction, Rectangle())
-    }
-}
-
-private struct HomePlaylistRowContextPreview: View {
-    let playlist: MusicPlaylist
-    let artworkURLs: [AuthenticatedURL]
-    let width: CGFloat?
-
-    var body: some View {
-        HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
-            .frame(width: width, alignment: .leading)
-            .liquidGlassContextPreview(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius)
     }
 }
 
@@ -437,16 +387,20 @@ private struct PlaylistEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                    Button(role: .cancel) {
                         dismiss()
                     }
                     .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "保存中" : "保存") {
-                        Task { await save() }
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button(role: .confirm) {
+                            Task { await save() }
+                        }
+                        .disabled(!canSave)
                     }
-                    .disabled(!canSave)
                 }
             }
         }
@@ -604,7 +558,7 @@ struct BrowseView: View {
                 }
                 .padding(.horizontal, 18)
                 .padding(.top, 14)
-                .padding(.bottom, 130)
+                .padding(.bottom, 16)
             }
             .scrollContentBackground(.hidden)
             .background(Color.musicPageBackground.ignoresSafeArea())
@@ -629,16 +583,15 @@ struct BrowseView: View {
                 store.play(song: song, in: songs)
             } label: {
                 Image(systemName: "play.fill")
-                    .font(.system(size: 17, weight: .bold))
+                    .font(.body.weight(.bold))
                     .foregroundStyle(.white)
-                    .frame(width: 46, height: 46)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay {
-                        Circle().strokeBorder(.white.opacity(0.28), lineWidth: 1)
-                    }
+                    .frame(width: 30, height: 30)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .controlSize(.large)
             .disabled(songs.isEmpty)
+            .accessibilityLabel("播放每日推荐")
             .padding(18)
         }
     }
@@ -661,7 +614,7 @@ struct BrowseView: View {
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.white.opacity(0.70))
                     Text(title)
-                        .font(.system(size: 28, weight: .heavy))
+                        .font(.title.weight(.heavy))
                         .foregroundStyle(.white)
                         .lineLimit(2)
                         .minimumScaleFactor(0.82)
@@ -692,7 +645,7 @@ struct BrowseView: View {
             }
             .padding(24)
         }
-        .frame(height: 226)
+        .frame(minHeight: 226)
         .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -732,6 +685,7 @@ private struct LibraryCategoryCard: View {
         .padding(14)
         .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
         .background(Color.musicCardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -770,7 +724,7 @@ private struct PlaylistSkeletonSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("我的歌单")
-                .font(.system(size: 24, weight: .bold))
+                .font(.title2.bold())
 
             LazyVStack(spacing: 0) {
                 ForEach(0..<5, id: \.self) { index in
@@ -906,6 +860,8 @@ private struct MostPlayedSkeletonSection: View {
 
 private struct SkeletonBlock: View {
     let cornerRadius: CGFloat
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isAnimating = false
 
     var body: some View {
@@ -913,22 +869,27 @@ private struct SkeletonBlock: View {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(Color.secondary.opacity(0.13))
                 .overlay {
-                    LinearGradient(
-                        colors: [
-                            .clear,
-                            Color.white.opacity(0.34),
-                            .clear
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .rotationEffect(.degrees(18))
-                    .frame(width: max(proxy.size.width * 0.72, 24), height: proxy.size.height * 2.4)
-                    .offset(x: isAnimating ? proxy.size.width * 1.2 : -proxy.size.width * 1.2)
+                    if !reduceMotion {
+                        LinearGradient(
+                            colors: [
+                                .clear,
+                                // A white sweep that reads well on light cards is glaring on dark ones.
+                                Color.white.opacity(colorScheme == .dark ? 0.08 : 0.34),
+                                .clear
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .rotationEffect(.degrees(18))
+                        .frame(width: max(proxy.size.width * 0.72, 24), height: proxy.size.height * 2.4)
+                        .offset(x: isAnimating ? proxy.size.width * 1.2 : -proxy.size.width * 1.2)
+                    }
                 }
                 .clipped()
         }
+        .accessibilityHidden(true)
         .onAppear {
+            guard !reduceMotion else { return }
             withAnimation(.linear(duration: 1.15).repeatForever(autoreverses: false)) {
                 isAnimating = true
             }
@@ -989,8 +950,9 @@ struct SectionHeader<Destination: View>: View {
 
     var body: some View {
         HStack {
-                Text(title)
-                    .font(.system(size: 24, weight: .bold))
+            Text(title)
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
             Spacer()
             NavigationLink {
                 destination
@@ -1000,7 +962,7 @@ struct SectionHeader<Destination: View>: View {
                     Image(systemName: "chevron.right")
                         .font(.caption.weight(.bold))
                 }
-                .font(.system(size: 15, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.musicRed)
             }
         }

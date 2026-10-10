@@ -84,68 +84,28 @@ private struct IndexedLibraryView<Item: Identifiable, Row: View>: View {
             if sections.isEmpty {
                 ContentUnavailableView(emptyTitle, systemImage: emptyIcon)
             } else {
+                // System inset-grouped sections instead of hand-drawn rounded rows and dividers;
+                // rows are identified by id so state stays attached to the right item on refresh.
                 List {
                     ForEach(sections) { section in
                         Section {
-                            ForEach(section.items.indices, id: \.self) { index in
-                                let item = section.items[index]
-                                let isFirst = index == 0
-                                let isLast = index == section.items.count - 1
-
+                            ForEach(section.items) { item in
                                 row(item)
-                                    .frame(maxWidth: .infinity)
-                                    .background(
-                                        Color.musicCardBackground,
-                                        in: IndexedSectionRowShape(isFirst: isFirst, isLast: isLast)
-                                    )
-                                    .overlay(alignment: .bottom) {
-                                        if !isLast {
-                                            Divider()
-                                                .padding(.leading, 90)
-                                        }
-                                    }
-                                    .listRowInsets(EdgeInsets(top: 0, leading: 18, bottom: 0, trailing: 18))
-                                    .listRowSeparator(.hidden)
-                                    .listRowBackground(Color.clear)
+                                    .listRowInsets(EdgeInsets())
+                                    .alignmentGuide(.listRowSeparatorLeading) { _ in 84 }
                             }
                         } header: {
                             Text(section.title)
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.secondary)
-                                .textCase(.uppercase)
-                                .padding(.leading, 2)
                         }
                         .sectionIndexLabel(section.title)
                     }
                 }
-                .listStyle(.plain)
+                .listStyle(.insetGrouped)
                 .listSectionIndexVisibility(.visible)
-                .scrollContentBackground(.hidden)
-                .safeAreaPadding(.bottom, 112)
-                .background(Color.musicPageBackground.ignoresSafeArea())
             }
         }
         .navigationTitle(title)
         .toolbarTitleDisplayMode(.large)
-    }
-}
-
-private struct IndexedSectionRowShape: Shape {
-    let isFirst: Bool
-    let isLast: Bool
-
-    func path(in rect: CGRect) -> Path {
-        let radius: CGFloat = 18
-        return UnevenRoundedRectangle(
-            cornerRadii: .init(
-                topLeading: isFirst ? radius : 0,
-                bottomLeading: isLast ? radius : 0,
-                bottomTrailing: isLast ? radius : 0,
-                topTrailing: isFirst ? radius : 0
-            ),
-            style: .continuous
-        )
-        .path(in: rect)
     }
 }
 
@@ -160,7 +120,7 @@ private struct ArtistIndexRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(artist.name)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 Text("\(artist.songs.count) 首歌曲")
@@ -172,12 +132,14 @@ private struct ArtistIndexRow: View {
             Spacer(minLength: 8)
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -192,7 +154,7 @@ private struct AlbumIndexRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(album.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 Text([album.artist, album.yearText].filter { !$0.isEmpty }.joined(separator: " - "))
@@ -208,12 +170,14 @@ private struct AlbumIndexRow: View {
             Spacer(minLength: 8)
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -228,7 +192,7 @@ private struct AudiobookIndexRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(audiobook.title)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 Text(audiobook.author)
@@ -244,12 +208,14 @@ private struct AudiobookIndexRow: View {
             Spacer(minLength: 8)
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -350,7 +316,7 @@ private struct MusicFolderRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(folder.name)
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.callout.weight(.semibold))
                     .lineLimit(1)
                     .foregroundStyle(.primary)
                 Text(folder.songCount.map { "\($0) 首歌曲" } ?? "文件夹")
@@ -362,12 +328,14 @@ private struct MusicFolderRow: View {
             Spacer(minLength: 8)
 
             Image(systemName: "chevron.right")
-                .font(.system(size: 18, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(Color.musicRed)
+                .accessibilityHidden(true)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
         .contentShape(Rectangle())
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -446,69 +414,30 @@ private struct MusicFolderSongSelectionView: View {
         .refreshable {
             await loadSongs()
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            selectionBar
-        }
-    }
-
-    private var selectionBar: some View {
-        let shape = Capsule(style: .continuous)
-
-        return HStack(spacing: 8) {
-            Button {
-                toggleAllSelected()
-            } label: {
-                Label(isAllSelected ? "取消全选" : "中选全部", systemImage: isAllSelected ? "checkmark.circle.fill" : "checkmark.circle")
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+        // A system bottom toolbar (the tab bar is hidden here) gets Liquid Glass for free,
+        // instead of a hand-built bar layering custom glass, fills and shadows.
+        .toolbar {
+            ToolbarItem(placement: .bottomBar) {
+                Button(isAllSelected ? "取消全选" : "全选") {
+                    toggleAllSelected()
+                }
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.capsule)
-            .controlSize(.regular)
-
-            Label {
+            ToolbarSpacer(.flexible, placement: .bottomBar)
+            ToolbarItem(placement: .bottomBar) {
                 Text("已选 \(selectedSongIds.count) 首")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.secondary)
                     .monospacedDigit()
-            } icon: {
-                Image(systemName: "music.note.list")
             }
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 36)
-            .padding(.horizontal, 8)
-            .background(.thinMaterial, in: Capsule(style: .continuous))
-
-            Button {
-                isShowingPlaylistWriter = true
-            } label: {
-                Label("写入歌单", systemImage: "text.badge.plus")
-                    .font(.callout.weight(.semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.82)
+            ToolbarSpacer(.flexible, placement: .bottomBar)
+            ToolbarItem(placement: .bottomBar) {
+                Button("写入歌单") {
+                    isShowingPlaylistWriter = true
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedSongIds.isEmpty)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.regular)
-            .tint(Color.musicRed)
-            .disabled(selectedSongIds.isEmpty)
         }
-        .padding(8)
-        .background {
-            shape
-                .fill(Color.white.opacity(0.06))
-        }
-        .glassEffect(.regular.tint(Color.white.opacity(0.14)).interactive(), in: shape)
-        .overlay {
-            shape
-                .strokeBorder(Color.white.opacity(0.20), lineWidth: 0.7)
-        }
-        .shadow(color: Color.black.opacity(0.16), radius: 18, x: 0, y: 10)
-        .padding(.horizontal, 14)
-        .padding(.top, 8)
-        .padding(.bottom, 8)
     }
 
     private func loadSongs() async {
@@ -536,8 +465,12 @@ private struct SelectableSongRowsCard: View {
     @Binding var selectedSongIds: Set<String>
 
     var body: some View {
+        let lastSongId = songs.last?.id
+
         LazyVStack(spacing: 0) {
-            ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in
+            // Iterate the songs directly: re-enumerating the whole folder on every selection
+            // toggle copied the array each time.
+            ForEach(songs) { song in
                 SelectableSongRow(
                     song: song,
                     imageURL: store.imageURL(for: song, size: 160),
@@ -546,7 +479,7 @@ private struct SelectableSongRowsCard: View {
                     toggle(song)
                 }
 
-                if index < songs.count - 1 {
+                if song.id != lastSongId {
                     Divider()
                         .padding(.leading, 94)
                 }
@@ -576,16 +509,17 @@ private struct SelectableSongRow: View {
         Button(action: toggle) {
             HStack(spacing: 12) {
                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 22, weight: .semibold))
+                    .font(.title2.weight(.semibold))
                     .foregroundStyle(isSelected ? Color.musicRed : .secondary)
                     .frame(width: 26)
+                    .accessibilityHidden(true)
 
                 ArtworkView(url: imageURL, cornerRadius: 5)
                     .frame(width: 44, height: 44)
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(song.name)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.subheadline.weight(.semibold))
                         .lineLimit(1)
                         .foregroundStyle(.primary)
                     Text(song.artistLine)
@@ -605,6 +539,7 @@ private struct SelectableSongRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -683,16 +618,20 @@ private struct RealtimePlaylistWriterSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") {
+                    Button(role: .cancel) {
                         dismiss()
                     }
                     .disabled(isSaving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "写入中" : "写入") {
-                        Task { await save() }
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button(role: .confirm) {
+                            Task { await save() }
+                        }
+                        .disabled(!canSave)
                     }
-                    .disabled(!canSave)
                 }
             }
             .task {

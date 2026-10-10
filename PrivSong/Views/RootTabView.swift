@@ -6,12 +6,14 @@ struct RootTabView: View {
     @State private var isPlayerExpanded = false
     @State private var selectedTab: AppTab = .home
     @State private var homePath: [HomeRoute] = []
+    @State private var settingsPath: [SettingsRoute] = []
     @State private var pendingHomeRoute: HomeRoute?
     @State private var routeAfterPlayerDismiss: HomeRoute?
 
     var body: some View {
         tabs
             .sheet(isPresented: $isPlayerExpanded, onDismiss: handlePlayerSheetDismiss) {
+                // The player page paints its own opaque background, so the default sheet is kept.
                 NowPlayingView(
                     onOpenAlbum: openAlbum,
                     onOpenArtist: openArtist
@@ -20,13 +22,10 @@ struct RootTabView: View {
                 }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(.regularMaterial)
             }
-            .overlay {
-                if store.session == nil {
-                    SignInView()
-                        .transition(.opacity)
-                }
+            .fullScreenCover(isPresented: isSignInPresented) {
+                SignInView()
+                    .interactiveDismissDisabled()
             }
             .onAppear {
                 selectedTab = store.startsOnBrowse ? .browse : .home
@@ -38,6 +37,13 @@ struct RootTabView: View {
             } message: {
                 Text(store.favoriteErrorMessage ?? "")
             }    }
+
+    /// Sign-in covers the app whenever there's no session; it dismisses itself once connected.
+    private var isSignInPresented: Binding<Bool> {
+        Binding {
+            store.session == nil
+        } set: { _ in }
+    }
 
     private var favoriteErrorBinding: Binding<Bool> {
         Binding {
@@ -58,7 +64,7 @@ struct RootTabView: View {
     }
 
     private var hidesRootBottomChrome: Bool {
-        selectedTab == .home && homePath.last?.hidesRootBottomChrome == true
+        selectedTab == .settings && settingsPath.contains { $0.hidesRootBottomChrome }
     }
 
     private var miniPlayerAccessory: some View {
@@ -78,7 +84,7 @@ struct RootTabView: View {
             }
 
             Tab("设置", systemImage: "gearshape.fill", value: AppTab.settings) {
-                SettingsView()
+                SettingsView(path: $settingsPath)
             }
 
             Tab("搜索", systemImage: "magnifyingglass", value: AppTab.search, role: .search) {
