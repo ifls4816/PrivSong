@@ -790,17 +790,17 @@ final class PlayerController: ObservableObject {
         }
 
         let store = queueSnapshotStore
-        let queue = queue
-        let queueBeforeShuffle = queueBeforeShuffle
-        let isShuffleEnabled = isShuffleEnabled
-        let repeatMode = repeatMode
+        let savedQueue = queue
+        let savedQueueBeforeShuffle = queueBeforeShuffle
+        let savedShuffleEnabled = isShuffleEnabled
+        let savedRepeatMode = repeatMode
         pendingQueueSnapshotWrite = {
             store.save(
-                queue: queue,
-                queueBeforeShuffle: queueBeforeShuffle,
+                queue: savedQueue,
+                queueBeforeShuffle: savedQueueBeforeShuffle,
                 currentSongID: currentSongID,
-                isShuffleEnabled: isShuffleEnabled,
-                repeatMode: repeatMode
+                isShuffleEnabled: savedShuffleEnabled,
+                repeatMode: savedRepeatMode
             )
         }
 

@@ -1009,14 +1009,14 @@ final class AppStore: ObservableObject {
 
     /// Queued behind any pending snapshot write so a late save can't resurrect the file.
     private func clearPersistedSnapshots(includingAudiobookProgress: Bool) {
-        let snapshotStore = snapshotStore
-        let initialHomeSnapshotStore = initialHomeSnapshotStore
-        let audiobookProgressStore = audiobookProgressStore
+        let librarySnapshots = snapshotStore
+        let homeSnapshots = initialHomeSnapshotStore
+        let progressStore = audiobookProgressStore
         persistenceQueue.async {
-            snapshotStore.clear()
-            initialHomeSnapshotStore.clear()
+            librarySnapshots.clear()
+            homeSnapshots.clear()
             if includingAudiobookProgress {
-                audiobookProgressStore.clear()
+                progressStore.clear()
             }
         }
     }
@@ -1268,11 +1268,11 @@ final class AppStore: ObservableObject {
     private func saveLibrarySnapshot() {
         guard !songs.isEmpty || !audiobookEpisodes.isEmpty else { return }
         let store = snapshotStore
-        let songs = songs
-        let playlists = playlists
-        let audiobookEpisodes = audiobookEpisodes
+        let savedSongs = songs
+        let savedPlaylists = playlists
+        let savedAudiobookEpisodes = audiobookEpisodes
         persistenceQueue.async {
-            store.save(songs: songs, playlists: playlists, audiobookEpisodes: audiobookEpisodes)
+            store.save(songs: savedSongs, playlists: savedPlaylists, audiobookEpisodes: savedAudiobookEpisodes)
         }
     }
 
