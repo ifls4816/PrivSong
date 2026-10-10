@@ -17,6 +17,7 @@ private struct RemoteCommandAvailability: Equatable {
     let canGoNext: Bool
     let canGoPrevious: Bool
     let canSeek: Bool
+    let isSpokenAudio: Bool
 }
 /// Serializes queue snapshot writes and deletes off the main thread while keeping them in order.
 private let queuePersistenceQueue = DispatchQueue(label: "PrivSong.queue-persistence", qos: .utility)
@@ -85,6 +86,9 @@ final class PlayerController: ObservableObject {
     /// Bitrate the current track is being transcoded to, or nil when playing the original.
     private var currentTranscodeBitrate: Int?
     private var lastRemoteCommandAvailability: RemoteCommandAvailability?
+    /// Set by the store, which knows which tracks belong to audiobooks (they can be plain
+    /// `Audio` items inside an audiobook library). Turns on the skip buttons on the lock screen.
+    var isAudiobookEpisode: ((EmbyAudioItem) -> Bool)?
 
     private var session: EmbySession?
     private var queue: [EmbyAudioItem] = []
@@ -106,7 +110,8 @@ final class PlayerController: ObservableObject {
     private var lastPlaybackProgressReport = Date.distantPast
     private var activeAudioCacheKey: PlaybackAudioCache.Key?
     private var currentArtwork: UIImage?
-    private var lastNowPlayingSync = Date.distantPast
+    /// Duration last sent to Now Playing; periodic ticks only resend when it changes.
+    private var lastNowPlayingDuration: TimeInterval = -1
     private var shouldResumeAfterInterruption = false
     private var isSwitchingTracks = false
     private var pendingSeekTarget: TimeInterval?
@@ -493,7 +498,7 @@ final class PlayerController: ObservableObject {
         isLoadingLyrics = false
         playbackStatusText = "正在连接"
         isBuffering = true
-        lastNowPlayingSync = .distantPast
+        lastNowPlayingDuration = -1
         currentStreamURL = nil
         currentDurationOverride = durationOverride
         seekTarget = nil
@@ -695,7 +700,7 @@ final class PlayerController: ObservableObject {
         lyrics = []
         lyricsSongId = nil
         isLoadingLyrics = false
-        lastNowPlayingSync = .distantPast
+        lastNowPlayingDuration = -1
         syncQueueSnapshots()
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
@@ -1057,6 +1062,12 @@ final class PlayerController: ObservableObject {
         remoteCommands.onSeek = { [weak self] seconds in
             Task { @MainActor in self?.seek(toSeconds: seconds, shouldPlayAfterSeek: self?.isPlaying == true) }
         }
+        remoteCommands.onSkip = { [weak self] offset in
+            Task { @MainActor in
+                guard let self else { return }
+                self.seek(toSeconds: self.precisePlaybackTime + offset, shouldPlayAfterSeek: self.isPlaying)
+            }
+        }
     }
 
     private func configurePlayerObservers() {
@@ -1283,16 +1294,21 @@ final class PlayerController: ObservableObject {
             return
         }
 
-        let now = Date()
-        guard force || now.timeIntervalSince(lastNowPlayingSync) >= 1 else { return }
-        lastNowPlayingSync = now
+        // State changes (track, play/pause, seek, artwork) always pass `force`. Periodic ticks
+        // only update when the duration became known or changed: the system extrapolates the
+        // elapsed time from the playback rate, so rebuilding the info every second was wasted.
+        guard force || abs(duration - lastNowPlayingDuration) > 0.5 else { return }
+        lastNowPlayingDuration = duration
 
+        let queueIndex = queue.firstIndex { $0.id == currentSong.id }
         nowPlaying.update(
             song: currentSong,
             elapsed: elapsed,
             duration: duration,
             isPlaying: isPlaying,
-            artwork: currentArtwork
+            artwork: currentArtwork,
+            queueIndex: queueIndex,
+            queueCount: queueIndex == nil ? nil : queue.count
         )
     }
 
@@ -1306,10 +1322,11 @@ final class PlayerController: ObservableObject {
             availability = RemoteCommandAvailability(
                 canGoNext: repeatMode == .all || currentIndex.map { $0 < songs.index(before: songs.endIndex) } == true,
                 canGoPrevious: elapsed > 3 || repeatMode == .all || currentIndex.map { $0 > songs.startIndex } == true,
-                canSeek: duration > 0
+                canSeek: duration > 0,
+                isSpokenAudio: currentSong.isAudiobookAudio || isAudiobookEpisode?(currentSong) == true
             )
         } else {
-            availability = RemoteCommandAvailability(canGoNext: false, canGoPrevious: false, canSeek: false)
+            availability = RemoteCommandAvailability(canGoNext: false, canGoPrevious: false, canSeek: false, isSpokenAudio: false)
         }
 
         guard availability != lastRemoteCommandAvailability else { return }
@@ -1317,7 +1334,8 @@ final class PlayerController: ObservableObject {
         remoteCommands.update(
             canGoNext: availability.canGoNext,
             canGoPrevious: availability.canGoPrevious,
-            canSeek: availability.canSeek
+            canSeek: availability.canSeek,
+            isSpokenAudio: availability.isSpokenAudio
         )
     }
 

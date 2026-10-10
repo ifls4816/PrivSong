@@ -11,6 +11,11 @@ final class RemoteCommandCoordinator: @unchecked Sendable {
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
     var onSeek: ((TimeInterval) -> Void)?
+    /// Relative jump in seconds (negative = back), used by the audiobook skip buttons.
+    var onSkip: ((TimeInterval) -> Void)?
+
+    static let skipBackwardInterval: TimeInterval = 15
+    static let skipForwardInterval: TimeInterval = 30
 
     private let commandCenter = MPRemoteCommandCenter.shared()
 
@@ -18,12 +23,16 @@ final class RemoteCommandCoordinator: @unchecked Sendable {
         configureCommands()
     }
 
-    func update(canGoNext: Bool, canGoPrevious: Bool, canSeek: Bool) {
+    /// `isSpokenAudio` (audiobooks) swaps the previous/next track buttons for skip back 15 s /
+    /// forward 30 s on the lock screen, Control Center and CarPlay.
+    func update(canGoNext: Bool, canGoPrevious: Bool, canSeek: Bool, isSpokenAudio: Bool) {
         commandCenter.playCommand.isEnabled = true
         commandCenter.pauseCommand.isEnabled = true
         commandCenter.togglePlayPauseCommand.isEnabled = true
-        commandCenter.nextTrackCommand.isEnabled = canGoNext
-        commandCenter.previousTrackCommand.isEnabled = canGoPrevious
+        commandCenter.nextTrackCommand.isEnabled = canGoNext && !isSpokenAudio
+        commandCenter.previousTrackCommand.isEnabled = canGoPrevious && !isSpokenAudio
+        commandCenter.skipForwardCommand.isEnabled = canSeek && isSpokenAudio
+        commandCenter.skipBackwardCommand.isEnabled = canSeek && isSpokenAudio
         commandCenter.changePlaybackPositionCommand.isEnabled = canSeek
     }
 
@@ -64,6 +73,20 @@ final class RemoteCommandCoordinator: @unchecked Sendable {
                 return .commandFailed
             }
             self?.onSeek?(event.positionTime)
+            return .success
+        }
+
+        commandCenter.skipForwardCommand.preferredIntervals = [NSNumber(value: Self.skipForwardInterval)]
+        commandCenter.skipForwardCommand.addTarget { [weak self] _ in
+            guard let onSkip = self?.onSkip else { return .noSuchContent }
+            onSkip(Self.skipForwardInterval)
+            return .success
+        }
+
+        commandCenter.skipBackwardCommand.preferredIntervals = [NSNumber(value: Self.skipBackwardInterval)]
+        commandCenter.skipBackwardCommand.addTarget { [weak self] _ in
+            guard let onSkip = self?.onSkip else { return .noSuchContent }
+            onSkip(-Self.skipBackwardInterval)
             return .success
         }
 

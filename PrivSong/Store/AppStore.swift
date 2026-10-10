@@ -122,6 +122,9 @@ final class AppStore {
         didSet {
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
             player?.setSession(session)
+            player?.isAudiobookEpisode = { [weak self] item in
+                self?.audiobookEpisodeBookIds[item.id] != nil
+            }
             player?.onPlaybackPositionChanged = { [weak self] item, position, duration, isFinished, isCheckpoint in
                 self?.recordAudiobookPlayback(
                     item: item,
