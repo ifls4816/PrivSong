@@ -11,7 +11,7 @@ struct MiniPlayerView: View {
     let expand: () -> Void
 
     var body: some View {
-        let song = player.currentSong ?? store.lastPlayedSong
+        let song = player.currentSong ?? player.restoredSong ?? store.lastPlayedSong
         let isInline = accessoryPlacement == .inline
         let artworkURL = song.flatMap { store.imageURL(for: $0, size: 160) }
         let artworkSize: CGFloat = 36
@@ -63,7 +63,10 @@ struct MiniPlayerView: View {
                 if player.currentSong != nil {
                     player.togglePlayPause()
                 } else if let song {
-                    store.play(song: song, in: store.songs)
+                    // Continue the queue saved from the last run; otherwise start this song.
+                    if !player.resumeRestoredQueue() {
+                        store.play(song: song, in: store.songs)
+                    }
                 }
             } label: {
                 ZStack {
@@ -110,11 +113,14 @@ struct MiniPlayerView: View {
     }
 
     private func miniSubtitle(for song: EmbyAudioItem?) -> String {
+        if player.hasPlaybackFailed {
+            return "播放失败，点按播放重试"
+        }
         return song.map { $0.artistLine.isEmpty ? "暂无艺术家" : $0.artistLine } ?? "播放后会显示当前歌曲"
     }
 
     private func openPlayer() {
-        guard player.currentSong != nil || store.lastPlayedSong != nil else { return }
+        guard player.currentSong != nil || player.restoredSong != nil || store.lastPlayedSong != nil else { return }
         expand()
     }
 }
@@ -150,7 +156,7 @@ struct NowPlayingView: View {
     }
 
     var body: some View {
-        if let song = player.currentSong ?? store.lastPlayedSong {
+        if let song = player.currentSong ?? player.restoredSong ?? store.lastPlayedSong {
             GeometryReader { proxy in
                 let size = sanitizedPageSize(proxy.size)
                 ZStack {
@@ -347,6 +353,13 @@ struct NowPlayingView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityHint("前往艺术家")
+
+                if player.hasPlaybackFailed {
+                    Label("播放失败，点按播放重试", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -395,7 +408,10 @@ struct NowPlayingView: View {
 
             Button {
                 if player.currentSong == nil {
-                    store.play(song: song, in: store.songs)
+                    // Continue the queue saved from the last run; otherwise start this song.
+                    if !player.resumeRestoredQueue() {
+                        store.play(song: song, in: store.songs)
+                    }
                 } else {
                     player.togglePlayPause()
                 }

@@ -30,7 +30,7 @@ struct PrivSongApp: App {
         .onChange(of: scenePhase) { _, phase in
             // Writes are batched while active; persist what's pending before the app may be suspended.
             guard phase == .background else { return }
-            player.flushQueueSnapshot()
+            player.savePlaybackStateNow()
             store.flushAudiobookProgress()
         }
     }

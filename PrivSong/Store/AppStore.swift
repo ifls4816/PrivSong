@@ -356,15 +356,21 @@ final class AppStore {
         }
 
         let songs = try await client.fetchPlaylistSongs(playlistId: playlistId, session: session)
+        // Look the playlist up again: the list may have been refreshed, reordered or had this
+        // playlist deleted while we were waiting, so the index from before is not safe to use.
+        guard let currentIndex = playlists.firstIndex(where: { $0.id == playlistId }) else {
+            return songs
+        }
+        let current = playlists[currentIndex]
         let updatedPlaylist = MusicPlaylist(
-            id: playlist.id,
-            name: playlist.name,
+            id: current.id,
+            name: current.name,
             description: "\(songs.count) 首歌曲",
             songs: songs,
             songCount: songs.count
         )
         var updatedPlaylists = playlists
-        updatedPlaylists[index] = updatedPlaylist
+        updatedPlaylists[currentIndex] = updatedPlaylist
         playlists = updatedPlaylists
         return songs
     }

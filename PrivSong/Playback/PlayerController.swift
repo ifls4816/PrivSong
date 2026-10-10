@@ -90,6 +90,13 @@ final class PlayerController: ObservableObject {
     private var queue: [EmbyAudioItem] = []
     private var queueBeforeShuffle: [EmbyAudioItem]?
     private var restoredQueueCurrentSongID: String?
+    private var restoredQueuePosition: TimeInterval = 0
+    /// Set when every playback source failed; cleared when a track starts. Drives retry on
+    /// network recovery and on the next play tap.
+    @Published private(set) var hasPlaybackFailed = false
+    private var isNetworkAvailable = true
+    /// Whether this track already fell back to its cached file once; prevents a fail loop.
+    private var hasTriedCachedFallback = false
     private var streamCandidates: [AuthenticatedURL] = []
     private var streamCandidateIndex = 0
     private var currentStreamURL: AuthenticatedURL?
@@ -141,9 +148,17 @@ final class PlayerController: ObservableObject {
                 && !path.usesInterfaceType(.wiredEthernet)
                 ? .cellular
                 : .wifi
+            let isAvailable = path.status == .satisfied
             Task { @MainActor in
+                guard let self else { return }
                 // Applies from the next track on, so switching networks never interrupts playback.
-                self?.networkKind = kind
+                self.networkKind = kind
+                let wasAvailable = self.isNetworkAvailable
+                self.isNetworkAvailable = isAvailable
+                // Connection is back: pick up a song that failed while offline.
+                if isAvailable, !wasAvailable {
+                    self.retryFailedPlayback()
+                }
             }
         }
         pathMonitor.start(queue: DispatchQueue(label: "PrivSong.network-path", qos: .utility))
@@ -186,6 +201,7 @@ final class PlayerController: ObservableObject {
         queue = []
         queueBeforeShuffle = nil
         restoredQueueCurrentSongID = nil
+        restoredQueuePosition = 0
         clearQueueSnapshot()
         syncQueueSnapshots(persists: false)
         syncRemoteCommandAvailability()
@@ -465,6 +481,9 @@ final class PlayerController: ObservableObject {
         isSwitchingTracks = true
         currentSong = song
         restoredQueueCurrentSongID = nil
+        restoredQueuePosition = 0
+        hasPlaybackFailed = false
+        hasTriedCachedFallback = false
         elapsed = initialPosition
         duration = max(knownDuration, initialPosition)
         isPlaying = autoplay
@@ -524,11 +543,7 @@ final class PlayerController: ObservableObject {
     ) {
         guard let resource else {
             print("[Player] No playable Emby URL for current item.")
-            isPlaying = false
-            isBuffering = false
-            playbackStatusText = "播放失败"
-            isSwitchingTracks = false
-            syncNowPlaying(force: true)
+            handleAllSourcesFailed()
             return
         }
 
@@ -580,7 +595,17 @@ final class PlayerController: ObservableObject {
     }
 
     private func resume() {
-        guard let currentSong else { return }
+        // Nothing has played since launch: continue the queue saved from the last run. This is
+        // also what the lock screen, headphones and CarPlay play commands land on.
+        guard let currentSong else {
+            resumeRestoredQueue()
+            return
+        }
+        // The track failed (e.g. the network dropped): restart it where it stopped.
+        if hasPlaybackFailed {
+            retryFailedPlayback()
+            return
+        }
         // The queue played to the end and the session was reported stopped: play the track
         // again from the start under a new Emby play session instead of resuming at the end.
         if currentPlaySessionId == nil, let session {
@@ -601,6 +626,43 @@ final class PlayerController: ObservableObject {
         isPlaying = false
         syncNowPlaying(force: true)
         reportPlaybackProgress(force: true, isPaused: true)
+        // Remember where we paused so the next launch can resume from here.
+        persistQueueSnapshot()
+    }
+
+    private func retryFailedPlayback() {
+        guard hasPlaybackFailed, let currentSong, let session else { return }
+        start(
+            song: currentSong,
+            session: session,
+            autoplay: true,
+            startPosition: elapsed,
+            durationOverride: currentDurationOverride
+        )
+    }
+
+    /// Every stream candidate failed. Keep playing from a fully cached copy if there is one;
+    /// otherwise surface the failure so the UI can show it and the next play tap (or the network
+    /// coming back) retries from the same position.
+    private func handleAllSourcesFailed() {
+        if !hasTriedCachedFallback,
+           currentStreamURL?.isFileURL != true,
+           let activeAudioCacheKey,
+           let cachedURL = PlaybackAudioCache.cachedFileURL(for: activeAudioCacheKey) {
+            hasTriedCachedFallback = true
+            playbackStatusText = "正在切换播放源"
+            isBuffering = true
+            currentPlaybackReportMethod = .directPlay
+            replaceCurrentItem(with: AuthenticatedURL(url: cachedURL), autoplay: true, startAt: elapsed)
+            return
+        }
+
+        isPlaying = false
+        isBuffering = false
+        playbackStatusText = "播放失败"
+        hasPlaybackFailed = true
+        isSwitchingTracks = false
+        syncNowPlaying(force: true)
     }
 
     private func stopPlaybackForConfigurationChange() {
@@ -725,12 +787,10 @@ final class PlayerController: ObservableObject {
         print("[Player] AVPlayerItem failed: \(message)")
 
         if currentStreamURL?.isFileURL == true {
-            guard streamCandidates.indices.contains(streamCandidateIndex) else {
-                isPlaying = false
-                isBuffering = false
-                playbackStatusText = "播放失败"
-                isSwitchingTracks = false
-                syncNowPlaying(force: true)
+            // After the cached-copy fallback, the streams have already been tried and failed.
+            guard !hasTriedCachedFallback,
+                  streamCandidates.indices.contains(streamCandidateIndex) else {
+                handleAllSourcesFailed()
                 return
             }
 
@@ -749,11 +809,7 @@ final class PlayerController: ObservableObject {
 
         let nextIndex = streamCandidateIndex + 1
         guard nextIndex < streamCandidates.count else {
-            isPlaying = false
-            isBuffering = false
-            playbackStatusText = "播放失败"
-            isSwitchingTracks = false
-            syncNowPlaying(force: true)
+            handleAllSourcesFailed()
             return
         }
 
@@ -881,12 +937,36 @@ final class PlayerController: ObservableObject {
         if let currentSongID = snapshot.currentSongID,
            snapshot.queue.contains(where: { $0.id == currentSongID }) {
             restoredQueueCurrentSongID = currentSongID
+            restoredQueuePosition = max(snapshot.currentPosition ?? 0, 0)
         } else {
             restoredQueueCurrentSongID = nil
+            restoredQueuePosition = 0
         }
 
         syncQueueSnapshots(persists: false)
         syncRemoteCommandAvailability()
+    }
+
+    /// The song the restored queue was on when the app last ran, before anything has played.
+    var restoredSong: EmbyAudioItem? {
+        guard currentSong == nil, let restoredQueueCurrentSongID else { return nil }
+        return queue.first { $0.id == restoredQueueCurrentSongID }
+    }
+
+    /// Continues the queue saved from the last run, at the saved song and position. Returns
+    /// false when there's nothing to resume, so callers can fall back to starting something new.
+    @discardableResult
+    func resumeRestoredQueue() -> Bool {
+        guard let song = restoredSong, let session else { return false }
+        start(song: song, session: session, autoplay: true, startPosition: restoredQueuePosition)
+        return true
+    }
+
+    /// Saves the queue and current position right away, e.g. on pause or when backgrounding.
+    func savePlaybackStateNow() {
+        guard !queue.isEmpty else { return }
+        persistQueueSnapshot()
+        flushQueueSnapshot()
     }
 
     private func persistQueueSnapshot() {
@@ -902,6 +982,7 @@ final class PlayerController: ObservableObject {
         let store = queueSnapshotStore
         let savedQueue = queue
         let savedQueueBeforeShuffle = queueBeforeShuffle
+        let savedPosition = currentSong != nil ? elapsed : restoredQueuePosition
         let savedShuffleEnabled = isShuffleEnabled
         let savedRepeatMode = repeatMode
         pendingQueueSnapshotWrite = {
@@ -909,6 +990,7 @@ final class PlayerController: ObservableObject {
                 queue: savedQueue,
                 queueBeforeShuffle: savedQueueBeforeShuffle,
                 currentSongID: currentSongID,
+                currentPosition: savedPosition,
                 isShuffleEnabled: savedShuffleEnabled,
                 repeatMode: savedRepeatMode
             )
@@ -1849,6 +1931,8 @@ private struct PlaybackQueueSnapshot: Codable {
     let queue: [EmbyAudioItem]
     let queueBeforeShuffle: [EmbyAudioItem]?
     let currentSongID: String?
+    /// Where the current song was when last saved. Optional so older snapshots still decode.
+    let currentPosition: TimeInterval?
     let isShuffleEnabled: Bool
     let repeatMode: RepeatMode
 }
@@ -1877,6 +1961,7 @@ private struct PlaybackQueueSnapshotStore {
         queue: [EmbyAudioItem],
         queueBeforeShuffle: [EmbyAudioItem]?,
         currentSongID: String?,
+        currentPosition: TimeInterval?,
         isShuffleEnabled: Bool,
         repeatMode: RepeatMode
     ) {
@@ -1886,6 +1971,7 @@ private struct PlaybackQueueSnapshotStore {
             queue: queue,
             queueBeforeShuffle: queueBeforeShuffle,
             currentSongID: currentSongID,
+            currentPosition: currentPosition,
             isShuffleEnabled: isShuffleEnabled,
             repeatMode: repeatMode
         )
