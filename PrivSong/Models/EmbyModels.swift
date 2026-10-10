@@ -625,7 +625,8 @@ struct MusicPlaylist: Identifiable, Codable, Hashable {
     }
 
     var hasCompleteSongList: Bool {
-        songCount.map { $0 <= songs.count } ?? true
+        // With no count from the server, an empty list means "not loaded yet", not "empty".
+        songCount.map { $0 <= songs.count } ?? !songs.isEmpty
     }
 
     var isServerEditable: Bool {

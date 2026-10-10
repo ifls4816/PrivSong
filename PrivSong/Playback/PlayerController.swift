@@ -218,11 +218,14 @@ final class PlayerController: ObservableObject {
 
     func setPlaybackQualityPreferences(_ preferences: PlaybackQualityPreferences) {
         guard preferences != qualityPreferences else { return }
+        let previousQuality = qualityPreferences.quality(for: networkKind)
         qualityPreferences = preferences
 
-        // Restart a streaming track at its current position when the change affects it.
-        // Tracks playing from the local cache use no network, so they're left alone.
-        guard let currentSong,
+        // Restart a streaming track at its current position when the quality for the current
+        // network changed and that alters how the track is served. Tracks playing from the
+        // local cache use no network, so they're left alone.
+        guard preferences.quality(for: networkKind) != previousQuality,
+              let currentSong,
               let session,
               currentStreamURL?.isFileURL == false,
               transcodeBitrate(for: currentSong) != currentTranscodeBitrate else { return }
@@ -547,7 +550,9 @@ final class PlayerController: ObservableObject {
         // The queue played to the end and the session was reported stopped: play the track
         // again from the start under a new Emby play session instead of resuming at the end.
         if currentPlaySessionId == nil, let session {
-            start(song: currentSong, session: session, autoplay: true)
+            // Honour a scrub made after the end; otherwise start over.
+            let isAtEnd = elapsed >= max(duration - 1, 0)
+            start(song: currentSong, session: session, autoplay: true, startPosition: isAtEnd ? 0 : elapsed)
             return
         }
         audioSession.activate()
