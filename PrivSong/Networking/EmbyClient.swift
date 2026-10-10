@@ -408,6 +408,30 @@ struct EmbyClient {
         }
     }
 
+    /// Deletes a song from the Emby library, including its audio file on the server's disk.
+    /// Requires the user to have media deletion permission in Emby. Irreversible.
+    func deleteSong(itemId: String, session embySession: EmbySession) async throws {
+        var components = URLComponents(
+            url: embySession.serverURL.appending(path: "Items/Delete"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "Ids", value: itemId)
+        ]
+        guard let url = components?.url else { throw EmbyError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
+        try await sendEmpty(request)
+
+        // Emby can answer 2xx without deleting (e.g. missing permission); confirm it's gone.
+        let remaining = try await fetchItems(itemIds: [itemId], session: embySession)
+        guard !remaining.contains(where: { $0.id == itemId }) else {
+            throw EmbyError.songDeleteFailed
+        }
+    }
+
     func renamePlaylist(playlistId: String, name: String, session embySession: EmbySession) async throws {
         let playlistName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !playlistName.isEmpty else { throw EmbyError.invalidPlaylistName }
@@ -1328,6 +1352,7 @@ enum EmbyError: LocalizedError {
     case invalidPlaylistName
     case missingPlaylistItemIds
     case playlistDeleteFailed
+    case songDeleteFailed
 
     var errorDescription: String? {
         switch self {
@@ -1350,6 +1375,8 @@ enum EmbyError: LocalizedError {
             return "Emby 未返回可编辑的歌单条目标识，无法编辑该歌单。"
         case .playlistDeleteFailed:
             return "Emby 已响应删除请求，但歌单仍然存在，请检查当前用户是否有删除该歌单的权限。"
+        case .songDeleteFailed:
+            return "Emby 已响应删除请求，但歌曲仍然存在，请检查当前用户是否有删除媒体的权限。"
         }
     }
 }

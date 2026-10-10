@@ -31,6 +31,9 @@ final class AppStore {
         didSet { refreshFavoriteSongs() }
     }
     private(set) var favoriteSongs: [EmbyAudioItem] = []
+    /// Songs deleted from the server this session. Detail screens hold their own copies of song
+    /// lists, so lists filter these out to drop a deleted row everywhere at once.
+    private(set) var deletedSongIds: Set<String> = []
     var recentSongIds: [String] = []
     var cellularOnlineQuality: OnlinePlaybackQuality = .standard {
         didSet {
@@ -404,6 +407,51 @@ final class AppStore {
         guard let session else { throw EmbyError.invalidResponse }
         try await client.renamePlaylist(playlistId: playlistId, name: name, session: session)
         try await refreshPlaylistsFromServer(session: session)
+    }
+
+    /// Deletes the song on the Emby server — its audio file is removed from disk — and then
+    /// drops it from everything held locally. Irreversible.
+    func deleteSong(_ song: EmbyAudioItem) async throws {
+        guard let session else { throw EmbyError.invalidResponse }
+        try await client.deleteSong(itemId: song.id, session: session)
+
+        let id = song.id
+        deletedSongIds.insert(id)
+        player?.removeDeletedSong(song)
+
+        playlists = playlists.map { playlist in
+            guard playlist.songs.contains(where: { $0.id == id }) else { return playlist }
+            let remaining = playlist.songs.filter { $0.id != id }
+            let count = playlist.songCount.map { max($0 - 1, 0) }
+            return MusicPlaylist(
+                id: playlist.id,
+                name: playlist.name,
+                description: "\(count ?? remaining.count) 首歌曲",
+                songs: remaining,
+                songCount: count
+            )
+        }
+        searchResults.removeAll { $0.id == id }
+        mostPlayedSongs.removeAll { $0.id == id }
+        serverFavoriteSongs.removeAll { $0.id == id }
+        if favoriteSongIds.contains(id) {
+            favoriteSongIds.remove(id)
+            persistFavoriteSongIds()
+        }
+        if recentSongIds.contains(id) {
+            recentSongIds.removeAll { $0 == id }
+            UserDefaults.standard.set(recentSongIds, forKey: recentKey)
+        }
+
+        if songs.contains(where: { $0.id == id }) {
+            // Rebuilds albums, artists, recommendations and recents without the song.
+            await applySongs(songs.filter { $0.id != id })
+        } else {
+            dailyRecommendedSongs.removeAll { $0.id == id }
+            recentlyAddedSongs.removeAll { $0.id == id }
+            refreshRecentSongs()
+        }
+        saveLibrarySnapshot()
     }
 
     func refreshAudiobookProgress(for audiobook: Audiobook) async {
@@ -974,6 +1022,7 @@ final class AppStore {
         audiobookProgress = [:]
         searchResults = []
         favoriteSongIds = []
+        deletedSongIds = []
         serverFavoriteSongs = []
         pendingFavoriteSongIds = []
         dailyRecommendedSongs = []

@@ -9,6 +9,8 @@ private enum SongRowLayout {
 struct SongRow: View {
     @Environment(AppStore.self) private var store
     @State private var rowWidth: CGFloat?
+    @State private var isConfirmingDelete = false
+    @State private var deleteErrorMessage: String?
 
     let song: EmbyAudioItem
     let imageURL: AuthenticatedURL?
@@ -46,12 +48,51 @@ struct SongRow: View {
             } label: {
                 Label(store.isFavorite(song) ? "取消喜欢" : "喜欢", systemImage: store.isFavorite(song) ? "star.slash" : "star")
             }
+
+            Divider()
+
+            Button(role: .destructive) {
+                isConfirmingDelete = true
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
         } preview: {
             SongRowContextPreview(
                 song: song,
                 imageURL: imageURL,
                 width: rowWidth.map { $0 + SongRowLayout.cardHorizontalPadding * 2 }
             )
+        }
+        .confirmationDialog("删除「\(song.name)」？", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
+            Button("删除歌曲文件", role: .destructive) {
+                Task { await deleteSong() }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("将在 Emby 服务器上删除这首歌的音频文件，无法恢复。")
+        }
+        .alert("删除失败", isPresented: deleteErrorBinding) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(deleteErrorMessage ?? "")
+        }
+    }
+
+    private var deleteErrorBinding: Binding<Bool> {
+        Binding {
+            deleteErrorMessage != nil
+        } set: { isPresented in
+            if !isPresented {
+                deleteErrorMessage = nil
+            }
+        }
+    }
+
+    private func deleteSong() async {
+        do {
+            try await store.deleteSong(song)
+        } catch {
+            deleteErrorMessage = error.localizedDescription
         }
     }
 
@@ -670,9 +711,11 @@ struct SongRowsCard: View {
     }
 
     var body: some View {
-        // Computed once per render rather than once per row.
-        let songs = visibleSongs
-        let queue = playbackQueue
+        // Computed once per render rather than once per row. Songs deleted from the server are
+        // dropped here, since this list may be a copy taken before the deletion.
+        let deletedSongIds = store.deletedSongIds
+        let songs = deletedSongIds.isEmpty ? visibleSongs : visibleSongs.filter { !deletedSongIds.contains($0.id) }
+        let queue = deletedSongIds.isEmpty ? playbackQueue : playbackQueue.filter { !deletedSongIds.contains($0.id) }
 
         LazyVStack(spacing: 0) {
             ForEach(Array(songs.enumerated()), id: \.element.id) { index, song in

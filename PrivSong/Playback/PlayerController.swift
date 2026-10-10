@@ -162,6 +162,26 @@ final class PlayerController: ObservableObject {
         self.session = session
     }
 
+    /// Forgets a song that was deleted from the server: skips it if it's playing (stopping when
+    /// nothing follows), drops it from the queue, and removes its cached audio file.
+    func removeDeletedSong(_ song: EmbyAudioItem) {
+        if currentSong?.id == song.id {
+            playRelative(offset: 1, wrap: repeatMode == .all)
+            if currentSong?.id == song.id {
+                stopPlaybackForConfigurationChange()
+            }
+        }
+
+        if let session {
+            PlaybackAudioCache.removeCachedFile(for: PlaybackAudioCache.Key(session: session, item: song))
+        }
+        queueBeforeShuffle?.removeAll { $0.id == song.id }
+        if restoredQueueCurrentSongID == song.id {
+            restoredQueueCurrentSongID = nil
+        }
+        applyActiveQueue(queue.filter { $0.id != song.id })
+    }
+
     func clearPersistedQueue() {
         queue = []
         queueBeforeShuffle = nil
@@ -1593,6 +1613,10 @@ enum PlaybackAudioCache {
         }
         DiskCacheMaintenance.markUsed(url)
         return url
+    }
+
+    static func removeCachedFile(for key: Key) {
+        try? FileManager.default.removeItem(at: fileURL(for: key))
     }
 
     static func clearAll() {
