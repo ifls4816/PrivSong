@@ -108,7 +108,7 @@ final class CarPlayCoordinator: NSObject {
         return [
             store.session?.userId ?? "signed-out",
             store.hasLoadedInitialContent ? "loaded" : "not-loaded",
-            store.isLoading ? "loading" : "idle",
+            store.isLoadingContent ? "loading" : "idle",
             store.localizedLibraryStatus,
             playlistSignature,
             audiobookSignature,
@@ -175,7 +175,7 @@ final class CarPlayCoordinator: NSObject {
         if store.session == nil {
             return [statusSection(title: "未连接 Emby", detail: "请先在 iPhone 上连接资料库", imageName: "antenna.radiowaves.left.and.right.slash")]
         }
-        if !store.hasLoadedInitialContent && store.isLoading {
+        if !store.hasLoadedInitialContent && store.isLoadingContent {
             return [statusSection(title: "正在加载资料库", detail: "请稍候", imageName: "arrow.clockwise")]
         }
         return nil

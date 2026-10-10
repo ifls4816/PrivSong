@@ -20,15 +20,15 @@ struct ListenNowView: View {
     }
 
     private var showsLibraryCategorySkeleton: Bool {
-        !store.hasLibraryCategoryContent && store.isLoading
+        !store.hasLibraryCategoryContent && store.isLoadingContent
     }
 
     private var showsPlaylistSkeleton: Bool {
-        store.playlists.isEmpty && store.isLoading
+        store.playlists.isEmpty && store.isLoadingContent
     }
 
     private var showsHomeEmptyState: Bool {
-        !store.hasHomeContent && !store.isLoading
+        !store.hasHomeContent && !store.isLoadingContent
     }
 
     var body: some View {
@@ -577,7 +577,7 @@ struct BrowseView: View {
     @EnvironmentObject private var store: AppStore
 
     private var showsBrowseSkeleton: Bool {
-        !store.hasBrowseContent && store.isLoading
+        !store.hasBrowseContent && store.isLoadingContent
     }
 
     var body: some View {

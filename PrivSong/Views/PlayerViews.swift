@@ -5,7 +5,6 @@ import UIKit
 
 struct MiniPlayerView: View {
     @Environment(\.tabViewBottomAccessoryPlacement) private var accessoryPlacement
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var store: AppStore
     @EnvironmentObject private var player: PlayerController
 
@@ -25,12 +24,6 @@ struct MiniPlayerView: View {
         let contentHeight: CGFloat = 48
         let maxAccessoryWidth: CGFloat = 430
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let isDarkMode = colorScheme == .dark
-        let glassTint = isDarkMode
-            ? Color(red: 0.12, green: 0.12, blue: 0.14).opacity(0.9)
-            : Color(red: 0.984, green: 0.984, blue: 1.0).opacity(0.86)
-        let glassHighlight = Color.white.opacity(isDarkMode ? 0.1 : 0.28)
-        let glassOutline = Color.primary.opacity(isDarkMode ? 0.14 : 0.08)
 
         HStack(spacing: 10) {
             if song != nil {
@@ -107,21 +100,8 @@ struct MiniPlayerView: View {
         .frame(height: contentHeight)
         .frame(maxWidth: maxAccessoryWidth, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
-        .background {
-            shape
-                .fill(glassTint)
-        }
-        .overlay {
-            shape
-                .strokeBorder(glassHighlight, lineWidth: 0.65)
-        }
-        .overlay {
-            shape
-                .strokeBorder(glassOutline, lineWidth: 0.5)
-        }
-        .clipShape(shape)
-        .shadow(color: .white.opacity(0.1), radius: 0.75, y: -0.5)
-        .shadow(color: .black.opacity(0.06), radius: 10, y: 4)
+        // No custom fill: the bottom accessory already sits in the system Liquid Glass capsule,
+        // the same material as the tab bar. Painting over it made the two look different.
         .contentShape(shape)
         .transaction { transaction in
             transaction.animation = nil
@@ -170,11 +150,6 @@ struct NowPlayingView: View {
         revealPlayerControls ? 1 : 0
     }
 
-    private func preloadDisplayedLyricsIfNeeded(for song: EmbyAudioItem) {
-        guard let session = store.session else { return }
-        player.preloadLyrics(for: song, session: session)
-    }
-
     var body: some View {
         if let song = player.currentSong ?? store.lastPlayedSong {
             GeometryReader { proxy in
@@ -192,7 +167,6 @@ struct NowPlayingView: View {
             }
             .onAppear {
                 revealPlayerControls = false
-                preloadDisplayedLyricsIfNeeded(for: song)
                 UIApplication.shared.isIdleTimerDisabled = store.keepsScreenAwakeOnPlayerPage
                 withAnimation(.easeOut(duration: 0.22).delay(0.12)) {
                     revealPlayerControls = true
@@ -209,9 +183,6 @@ struct NowPlayingView: View {
             }
             .onChange(of: store.keepsScreenAwakeOnPlayerPage) { _, enabled in
                 UIApplication.shared.isIdleTimerDisabled = enabled
-            }
-            .onChange(of: song.id) { _, _ in
-                preloadDisplayedLyricsIfNeeded(for: song)
             }
         }
     }
@@ -1066,7 +1037,8 @@ struct LyricsPanelView: View {
 
     private var lines: [LyricLine] {
         guard player.lyricsSongId == song.id else {
-            return [LyricLine(id: -2, time: nil, text: "暂无歌词")]
+            // Requested on appear; about to start loading.
+            return [LyricLine(id: -1, time: nil, text: "正在读取歌曲内置歌词")]
         }
         if !player.lyrics.isEmpty {
             return player.lyrics
@@ -1087,6 +1059,10 @@ struct LyricsPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        // Lyrics are only read while this panel is on screen, and again when the track changes.
+        .task(id: song.id) {
+            player.loadLyricsIfNeeded(for: song)
+        }
     }
 
     private var lyricsScrollView: some View {

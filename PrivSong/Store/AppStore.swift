@@ -12,6 +12,14 @@ final class AppStore: ObservableObject {
     @Published private(set) var songs: [EmbyAudioItem] = []
     @Published var searchResults: [EmbyAudioItem] = []
     @Published var isLoading = false
+    /// True while cached content is being read at launch, so pages show their skeletons
+    /// instead of an empty "暂无资料库" state for that moment.
+    @Published private(set) var isRestoringCachedContent = false
+
+    /// Whether content is on its way, from the cache or from Emby. Drives skeleton screens.
+    var isLoadingContent: Bool {
+        isLoading || isRestoringCachedContent
+    }
     @Published var isSearching = false
     @Published private(set) var hasLoadedInitialContent = false
     @Published var errorMessage: String?
@@ -64,9 +72,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var albumSections: [IndexedSection<MusicAlbum>] = []
     @Published private(set) var artistSections: [IndexedSection<MusicArtist>] = []
     @Published private(set) var playlists: [MusicPlaylist] = []
-    @Published private(set) var audiobookEpisodes: [EmbyAudioItem] = [] {
-        didSet { recomputeAudiobooks() }
-    }
+    /// Set through `applyAudiobookEpisodes(_:)` so grouping and indexing run off the main thread.
+    @Published private(set) var audiobookEpisodes: [EmbyAudioItem] = []
     @Published private(set) var audiobooks: [Audiobook] = []
     @Published private(set) var audiobookSections: [IndexedSection<Audiobook>] = []
     @Published private(set) var audiobookProgress: [String: AudiobookPlaybackProgress] = [:]
@@ -100,6 +107,7 @@ final class AppStore: ObservableObject {
     private var pendingFavoriteSongIds: Set<String> = []
     private var songsById: [String: EmbyAudioItem] = [:]
     private var derivedDataGeneration = 0
+    private var audiobookDataGeneration = 0
     /// Latest position of the audiobook episode that is playing. Kept out of `@Published`
     /// state so the periodic progress reports don't re-render every view observing the store.
     private var liveAudiobookProgress: (episodeId: String, progress: AudiobookPlaybackProgress)?
@@ -286,7 +294,8 @@ final class AppStore: ObservableObject {
 
     private func fetchAndApplyInitialHomeContent(session: EmbySession) async throws {
         let content = try await client.fetchInitialHomeContent(session: session)
-        applyInitialHomeContent(content)
+        guard self.session == session else { return }
+        await applyInitialHomeContent(content)
         await refreshFavoritesFromServer(session: session)
     }
 
@@ -300,9 +309,10 @@ final class AppStore: ObservableObject {
         _ content: InitialHomeContent,
         savedAt: Date = Date(),
         savesSnapshot: Bool = true
-    ) {
+    ) async {
+        // Group audiobooks first so all home content is published together.
+        guard await applyAudiobookEpisodes(content.audiobookEpisodes) else { return }
         playlists = content.playlists
-        audiobookEpisodes = content.audiobookEpisodes
         recentlyAddedSongs = content.recentlyAddedSongs
         mostPlayedSongs = content.mostPlayedSongs
 
@@ -418,9 +428,9 @@ final class AppStore: ObservableObject {
         audiobookEpisodes: [EmbyAudioItem],
         mostPlayedSongs: [EmbyAudioItem]? = nil
     ) async -> Bool {
-        guard await applySongs(songs) else { return false }
+        guard await applySongs(songs),
+              await applyAudiobookEpisodes(audiobookEpisodes) else { return false }
         self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
-        self.audiobookEpisodes = audiobookEpisodes
         if let mostPlayedSongs {
             self.mostPlayedSongs = mostPlayedSongs
         }
@@ -962,11 +972,8 @@ final class AppStore: ObservableObject {
         clearSongs()
         liveAudiobookProgress = nil
         playlists = []
-        audiobookEpisodes = []
-        audiobooks = []
-        audiobookSections = []
+        clearAudiobooks()
         audiobookProgress = [:]
-        audiobookEpisodeBookIds = [:]
         searchResults = []
         favoriteSongIds = []
         serverFavoriteSongs = []
@@ -1156,17 +1163,36 @@ final class AppStore: ObservableObject {
         recentSongs = ordered.isEmpty ? Array(songs.prefix(20)) : ordered
     }
 
-    private func recomputeAudiobooks() {
-        audiobooks = audiobookEpisodes.audiobooks
-        audiobookSections = PinyinIndexer.sections(for: audiobooks, title: \.title)
-        var episodeBookIds: [String: String] = [:]
-        for audiobook in audiobooks {
-            for episode in audiobook.episodes {
-                episodeBookIds[episode.id] = audiobook.id
-            }
+    /// Replaces the audiobook episodes; grouping into books and pinyin indexing run off the
+    /// main thread. Returns false when superseded by a newer call while processing.
+    @discardableResult
+    private func applyAudiobookEpisodes(_ episodes: [EmbyAudioItem]) async -> Bool {
+        guard !episodes.isEmpty else {
+            clearAudiobooks()
+            return true
         }
-        audiobookEpisodeBookIds = episodeBookIds
-        mergeServerAudiobookProgress(from: audiobookEpisodes)
+
+        audiobookDataGeneration += 1
+        let generation = audiobookDataGeneration
+        let derived = await Task.detached(priority: .userInitiated) {
+            DerivedAudiobookData(episodes: episodes)
+        }.value
+        guard generation == audiobookDataGeneration else { return false }
+
+        audiobookEpisodes = episodes
+        audiobooks = derived.audiobooks
+        audiobookSections = derived.sections
+        audiobookEpisodeBookIds = derived.episodeBookIds
+        mergeServerAudiobookProgress(from: episodes)
+        return true
+    }
+
+    private func clearAudiobooks() {
+        audiobookDataGeneration += 1
+        audiobookEpisodes = []
+        audiobooks = []
+        audiobookSections = []
+        audiobookEpisodeBookIds = [:]
     }
 
     private func restoreSession() {
@@ -1179,18 +1205,24 @@ final class AppStore: ObservableObject {
 
         // Snapshot decoding and library indexing run off the main thread so they don't hold
         // up the first frame; the UI fills in as soon as the cached content is ready.
+        isRestoringCachedContent = true
         Task {
             if await restoreLibrarySnapshot(for: restored) {
+                isRestoringCachedContent = false
                 return
             }
 
             if await restoreInitialHomeSnapshot(for: restored) {
+                isRestoringCachedContent = false
                 guard session == restored else { return }
                 await refreshFavoritesFromServer(session: restored)
                 await refreshLibraryIfNeededForToday()
                 return
             }
 
+            // No usable cache. `perform` sets `isLoading` synchronously on entry, so the
+            // skeleton stays up without a gap while content loads from Emby.
+            isRestoringCachedContent = false
             await loadInitialHomeContent(session: restored)
             await refreshLibraryIfNeededForToday()
         }
@@ -1232,9 +1264,9 @@ final class AppStore: ObservableObject {
         }
 
         // A sign-out or a fresher library won the race; don't mix stale snapshot content in.
-        guard await applySongs(snapshot.songs) else { return true }
+        guard await applySongs(snapshot.songs),
+              await applyAudiobookEpisodes(snapshot.audiobookEpisodes) else { return true }
         playlists = snapshot.playlists.isEmpty ? snapshot.songs.generatedPlaylists : snapshot.playlists
-        audiobookEpisodes = snapshot.audiobookEpisodes
         hasLoadedInitialContent = true
         libraryCacheSavedAt = snapshot.savedAt
         updateLibraryStatusFromCache()
@@ -1276,7 +1308,7 @@ final class AppStore: ObservableObject {
             return false
         }
 
-        applyInitialHomeContent(snapshot.content, savedAt: snapshot.savedAt, savesSnapshot: false)
+        await applyInitialHomeContent(snapshot.content, savedAt: snapshot.savedAt, savesSnapshot: false)
         libraryStatus = "Loaded home content from cache."
         return true
     }
@@ -1329,6 +1361,25 @@ final class AppStore: ObservableObject {
 
     private func currentRecommendationDay() -> Int {
         Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0
+    }
+}
+
+/// Audiobooks grouped from their episodes. Pure and nonisolated so it can be built off the main thread.
+private struct DerivedAudiobookData: Sendable {
+    let audiobooks: [Audiobook]
+    let sections: [IndexedSection<Audiobook>]
+    let episodeBookIds: [String: String]
+
+    init(episodes: [EmbyAudioItem]) {
+        audiobooks = episodes.audiobooks
+        sections = PinyinIndexer.sections(for: audiobooks, title: \.title)
+        var episodeBookIds: [String: String] = [:]
+        for audiobook in audiobooks {
+            for episode in audiobook.episodes {
+                episodeBookIds[episode.id] = audiobook.id
+            }
+        }
+        self.episodeBookIds = episodeBookIds
     }
 }
 

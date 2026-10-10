@@ -371,11 +371,19 @@ final class PlayerController: ObservableObject {
         seek(toSeconds: time, shouldPlayAfterSeek: isPlaying)
     }
 
-    func preloadLyrics(for song: EmbyAudioItem, session: EmbySession) {
-        guard currentSong?.id != song.id,
-              lyricsSongId != song.id else { return }
+    /// Reads the song's embedded lyrics on demand (when the lyrics panel shows it), instead of
+    /// opening another connection to the audio file for every track that plays.
+    func loadLyricsIfNeeded(for song: EmbyAudioItem) {
+        guard lyricsSongId != song.id, let session else { return }
 
-        loadEmbeddedLyrics(from: client.originalAudioStreamURL(for: song, session: session), songId: song.id)
+        // The cached copy of the playing track has the same tags and needs no network.
+        let cachedResource = currentSong?.id == song.id
+            ? activeAudioCacheKey.flatMap(PlaybackAudioCache.cachedFileURL(for:)).map { AuthenticatedURL(url: $0) }
+            : nil
+        loadEmbeddedLyrics(
+            from: cachedResource ?? client.originalAudioStreamURL(for: song, session: session),
+            songId: song.id
+        )
     }
 
     private var activeQueue: [EmbyAudioItem] {
@@ -473,10 +481,8 @@ final class PlayerController: ObservableObject {
             cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
         }
         loadArtwork(for: song, session: session)
-        loadEmbeddedLyrics(
-            from: cachedResource ?? client.originalAudioStreamURL(for: song, session: session),
-            songId: song.id
-        )
+        // Lyrics are loaded when the lyrics panel asks for them (loadLyricsIfNeeded).
+        lyricsTask?.cancel()
         reportPlaybackStarted(position: initialPosition)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
