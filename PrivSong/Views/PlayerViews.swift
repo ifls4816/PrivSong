@@ -747,8 +747,6 @@ final class VolumeSliderContainer: UIView {
         visibleSlider.maximumValue = 1
         visibleSlider.value = AVAudioSession.sharedInstance().outputVolume
         visibleSlider.minimumTrackTintColor = .musicRed
-        visibleSlider.maximumTrackTintColor = .musicSliderTrack
-        visibleSlider.thumbTintColor = .musicSliderThumb
         visibleSlider.clipsToBounds = false
         visibleSlider.layer.masksToBounds = false
         visibleSlider.setContentHuggingPriority(.defaultLow, for: .horizontal)

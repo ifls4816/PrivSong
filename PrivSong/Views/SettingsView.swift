@@ -59,7 +59,7 @@ struct SettingsView: View {
 
     private var storageRows: some View {
         Group {
-            AudioCacheLimitMenuRow(selection: $store.audioCacheLimit)
+            AudioCacheLimitMenuRow(selection: Bindable(store).audioCacheLimit)
 
             Button {
                 store.clearCaches()
@@ -103,14 +103,14 @@ struct SettingsView: View {
                 title: "发现页作为首页",
                 icon: "safari",
                 tint: .blue,
-                isOn: $store.startsOnBrowse
+                isOn: Bindable(store).startsOnBrowse
             )
 
             SettingsToggleRow(
                 title: "播放页屏幕常亮",
                 icon: "sun.max",
                 tint: .orange,
-                isOn: $store.keepsScreenAwakeOnPlayerPage
+                isOn: Bindable(store).keepsScreenAwakeOnPlayerPage
             )
         }
     }
@@ -242,14 +242,14 @@ private struct PlaybackQualitySettingsView: View {
                     title: "移动网络音质",
                     icon: "antenna.radiowaves.left.and.right",
                     tint: .orange,
-                    selection: $store.cellularOnlineQuality
+                    selection: Bindable(store).cellularOnlineQuality
                 )
 
                 PlaybackQualityMenuRow(
                     title: "Wi-Fi 音质",
                     icon: "wifi",
                     tint: .blue,
-                    selection: $store.wifiOnlineQuality
+                    selection: Bindable(store).wifiOnlineQuality
                 )
             }
         }
