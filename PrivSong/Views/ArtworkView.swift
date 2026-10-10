@@ -237,10 +237,20 @@ enum ArtworkDiskCache {
     }
 
     static func dataSync(for url: URL) -> Data? {
-        try? Data(contentsOf: fileURL(for: url))
+        let fileURL = fileURL(for: url)
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        // Self-heal entries saved before validation existed (e.g. a server error page stored as
+        // artwork): drop them so the image is downloaded again instead of missing forever.
+        guard isImageData(data) else {
+            try? FileManager.default.removeItem(at: fileURL)
+            return nil
+        }
+        return data
     }
 
     static func insert(_ data: Data, for url: URL) async {
+        // Only real images are cached; an error response must never be stored as artwork.
+        guard isImageData(data) else { return }
         await Task.detached(priority: .utility) {
             do {
                 try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
@@ -261,6 +271,15 @@ enum ArtworkDiskCache {
 
     static func trimToLimit() {
         DiskCacheMaintenance.trim(directoryURL, toBytes: limitBytes)
+    }
+
+    /// Cheap header check (no full decode) that the bytes are a complete image.
+    static func isImageData(_ data: Data) -> Bool {
+        guard !data.isEmpty,
+              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return false
+        }
+        return CGImageSourceGetCount(source) > 0 && CGImageSourceGetStatus(source) == .statusComplete
     }
 
     private static func fileURL(for url: URL) -> URL {

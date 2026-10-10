@@ -926,7 +926,11 @@ private enum ColorExtractor {
         }
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                return nil
+            }
             await ArtworkDiskCache.insert(data, for: imageURL.url)
             return await palette(from: data)
         } catch {
