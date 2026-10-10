@@ -133,7 +133,10 @@ final class PlayerController: ObservableObject {
     private var audioCacheTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
     private var queuePersistTask: Task<Void, Never>?
-    private var pendingQueueSnapshotWrite: (@Sendable () -> Void)?
+    private var pendingQueueWrite: (@Sendable () -> Void)?
+    private var pendingStateWrite: (@Sendable () -> Void)?
+    /// Signature of the queue contents last scheduled for writing.
+    private var scheduledQueueSignature: Int?
 
     init() {
         engine.automaticallyWaitsToMinimizeStalling = true
@@ -947,6 +950,11 @@ final class PlayerController: ObservableObject {
             restoredQueueCurrentSongID = nil
             restoredQueuePosition = 0
         }
+        // Already on disk; the next save only needs the queue file if it changes. (Not for an
+        // old single-file snapshot, which must be rewritten in the new format once.)
+        if snapshot.version >= 2 {
+            scheduledQueueSignature = queueSignature()
+        }
 
         syncQueueSnapshots(persists: false)
         syncRemoteCommandAvailability()
@@ -985,15 +993,25 @@ final class PlayerController: ObservableObject {
         }
 
         let store = queueSnapshotStore
-        let savedQueue = queue
-        let savedQueueBeforeShuffle = queueBeforeShuffle
+
+        // The song list is only rewritten when its contents change. A track change, pause or
+        // mode change touches just the small state file; before, every one of those re-encoded
+        // the whole queue, which can be the entire library.
+        let signature = queueSignature()
+        if signature != scheduledQueueSignature {
+            scheduledQueueSignature = signature
+            let savedQueue = queue
+            let savedQueueBeforeShuffle = queueBeforeShuffle
+            pendingQueueWrite = {
+                store.saveQueue(queue: savedQueue, queueBeforeShuffle: savedQueueBeforeShuffle)
+            }
+        }
+
         let savedPosition = currentSong != nil ? elapsed : restoredQueuePosition
         let savedShuffleEnabled = isShuffleEnabled
         let savedRepeatMode = repeatMode
-        pendingQueueSnapshotWrite = {
-            store.save(
-                queue: savedQueue,
-                queueBeforeShuffle: savedQueueBeforeShuffle,
+        pendingStateWrite = {
+            store.saveState(
                 currentSongID: currentSongID,
                 currentPosition: savedPosition,
                 isShuffleEnabled: savedShuffleEnabled,
@@ -1014,17 +1032,40 @@ final class PlayerController: ObservableObject {
     func flushQueueSnapshot() {
         queuePersistTask?.cancel()
         queuePersistTask = nil
-        guard let write = pendingQueueSnapshotWrite else { return }
-        pendingQueueSnapshotWrite = nil
+        let writes = [pendingQueueWrite, pendingStateWrite].compactMap { $0 }
+        pendingQueueWrite = nil
+        pendingStateWrite = nil
+        guard !writes.isEmpty else { return }
         queuePersistenceQueue.async {
-            write()
+            for write in writes {
+                write()
+            }
         }
+    }
+
+    /// Identifies the queue's contents (ids and order, plus the pre-shuffle order) so unchanged
+    /// queues aren't rewritten. Hashing ids is far cheaper than encoding the songs.
+    private func queueSignature() -> Int {
+        var hasher = Hasher()
+        hasher.combine(queue.count)
+        for song in queue {
+            hasher.combine(song.id)
+        }
+        if let queueBeforeShuffle {
+            hasher.combine(queueBeforeShuffle.count)
+            for song in queueBeforeShuffle {
+                hasher.combine(song.id)
+            }
+        }
+        return hasher.finalize()
     }
 
     private func clearQueueSnapshot() {
         queuePersistTask?.cancel()
         queuePersistTask = nil
-        pendingQueueSnapshotWrite = nil
+        pendingQueueWrite = nil
+        pendingStateWrite = nil
+        scheduledQueueSignature = nil
         let store = queueSnapshotStore
         queuePersistenceQueue.async {
             store.clear()
@@ -1956,63 +1997,105 @@ private struct PlaybackQueueSnapshot: Codable {
     let repeatMode: RepeatMode
 }
 
+/// Persists the play queue as two files so a track change doesn't rewrite the whole queue:
+/// - `playback-queue.json`: the songs (large; written only when the queue's contents change)
+/// - `playback-state.json`: current song, position, shuffle and repeat (tiny; written often)
+/// Reads the old single-file `playback-queue-snapshot.json` once for migration.
 private struct PlaybackQueueSnapshotStore {
-    private let version = 1
-    private let fileName = "playback-queue-snapshot.json"
+    private let version = 2
+    private let legacyVersion = 1
+    private let queueFileName = "playback-queue.json"
+    private let stateFileName = "playback-state.json"
+    private let legacyFileName = "playback-queue-snapshot.json"
 
-    func load() -> PlaybackQueueSnapshot? {
-        let url = snapshotURL
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url) else {
-            return nil
-        }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let snapshot = try? decoder.decode(PlaybackQueueSnapshot.self, from: data),
-              snapshot.version == version else {
-            return nil
-        }
-        return snapshot
+    private struct QueueFile: Codable {
+        let version: Int
+        let queue: [EmbyAudioItem]
+        let queueBeforeShuffle: [EmbyAudioItem]?
     }
 
-    func save(
-        queue: [EmbyAudioItem],
-        queueBeforeShuffle: [EmbyAudioItem]?,
+    private struct StateFile: Codable {
+        let version: Int
+        let savedAt: Date
+        let currentSongID: String?
+        let currentPosition: TimeInterval?
+        let isShuffleEnabled: Bool
+        let repeatMode: RepeatMode
+    }
+
+    func load() -> PlaybackQueueSnapshot? {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        if let queueData = try? Data(contentsOf: url(queueFileName)),
+           let queueFile = try? decoder.decode(QueueFile.self, from: queueData),
+           queueFile.version == version {
+            let state = (try? Data(contentsOf: url(stateFileName)))
+                .flatMap { try? decoder.decode(StateFile.self, from: $0) }
+            return PlaybackQueueSnapshot(
+                version: version,
+                savedAt: state?.savedAt ?? Date(),
+                queue: queueFile.queue,
+                queueBeforeShuffle: queueFile.queueBeforeShuffle,
+                currentSongID: state?.currentSongID,
+                currentPosition: state?.currentPosition,
+                isShuffleEnabled: state?.isShuffleEnabled ?? false,
+                repeatMode: state?.repeatMode ?? RepeatMode.none
+            )
+        }
+
+        guard let legacyData = try? Data(contentsOf: url(legacyFileName)),
+              let legacy = try? decoder.decode(PlaybackQueueSnapshot.self, from: legacyData),
+              legacy.version == legacyVersion else {
+            return nil
+        }
+        return legacy
+    }
+
+    func saveQueue(queue: [EmbyAudioItem], queueBeforeShuffle: [EmbyAudioItem]?) {
+        write(QueueFile(version: version, queue: queue, queueBeforeShuffle: queueBeforeShuffle), to: queueFileName)
+        // The split files now hold everything the old single file did.
+        try? FileManager.default.removeItem(at: url(legacyFileName))
+    }
+
+    func saveState(
         currentSongID: String?,
         currentPosition: TimeInterval?,
         isShuffleEnabled: Bool,
         repeatMode: RepeatMode
     ) {
-        let snapshot = PlaybackQueueSnapshot(
-            version: version,
-            savedAt: Date(),
-            queue: queue,
-            queueBeforeShuffle: queueBeforeShuffle,
-            currentSongID: currentSongID,
-            currentPosition: currentPosition,
-            isShuffleEnabled: isShuffleEnabled,
-            repeatMode: repeatMode
+        write(
+            StateFile(
+                version: version,
+                savedAt: Date(),
+                currentSongID: currentSongID,
+                currentPosition: currentPosition,
+                isShuffleEnabled: isShuffleEnabled,
+                repeatMode: repeatMode
+            ),
+            to: stateFileName
         )
-
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-
-        do {
-            let directory = applicationSupportDirectory
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let data = try encoder.encode(snapshot)
-            try data.write(to: snapshotURL, options: [.atomic])
-        } catch {
-            print("[PlaybackQueueSnapshotStore] Failed to save queue: \(error.localizedDescription)")
-        }
     }
 
     func clear() {
-        try? FileManager.default.removeItem(at: snapshotURL)
+        for name in [queueFileName, stateFileName, legacyFileName] {
+            try? FileManager.default.removeItem(at: url(name))
+        }
     }
 
-    private var snapshotURL: URL {
+    private func write<Value: Encodable>(_ value: Value, to fileName: String) {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        do {
+            try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
+            let data = try encoder.encode(value)
+            try data.write(to: url(fileName), options: [.atomic])
+        } catch {
+            print("[PlaybackQueueSnapshotStore] Failed to save \(fileName): \(error.localizedDescription)")
+        }
+    }
+
+    private func url(_ fileName: String) -> URL {
         applicationSupportDirectory.appendingPathComponent(fileName)
     }
 
