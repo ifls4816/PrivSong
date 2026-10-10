@@ -112,6 +112,8 @@ final class AppStore {
     @ObservationIgnored private var pendingFavoriteSongIds: Set<String> = []
     @ObservationIgnored private var songsById: [String: EmbyAudioItem] = [:]
     @ObservationIgnored private var derivedDataGeneration = 0
+    /// When home content was last fetched from the server; a full refresh shortly after reuses it.
+    @ObservationIgnored private var homeContentFetchedAt: Date?
     @ObservationIgnored private var audiobookDataGeneration = 0
     /// Latest position of the audiobook episode that is playing. Ignored by observation so the
     /// periodic progress reports don't re-render the views that show audiobook progress.
@@ -305,6 +307,7 @@ final class AppStore {
         guard self.session == session else { return }
         await applyInitialHomeContent(content)
         await refreshFavoritesFromServer(session: session)
+        homeContentFetchedAt = Date()
     }
 
     private func loadInitialHomeContent(session: EmbySession) async {
@@ -501,15 +504,28 @@ final class AppStore {
     }
 
     private func fetchAndApplyFullLibrary(session: EmbySession) async throws {
-        async let songs = client.fetchSongs(session: session)
-        async let playlists = client.fetchPlaylistSummaries(session: session)
-        async let audiobookEpisodes = client.fetchAudiobookEpisodes(session: session)
-        async let mostPlayedSongs = client.fetchMostPlayedSongs(session: session, limit: 50)
+        // Right after the home content was fetched (sign-in, or a launch without cache), its
+        // playlists, audiobooks, most-played list and favorites are current. Reuse them rather
+        // than downloading all of it a second time.
+        let reusesHomeContent = homeContentFetchedAt.map { Date().timeIntervalSince($0) < 120 } ?? false
+        homeContentFetchedAt = nil
+
+        let api = client
+        async let songs = api.fetchSongs(session: session)
+        let playlistsTask: Task<[MusicPlaylist], Never>? = reusesHomeContent ? nil : Task {
+            (try? await api.fetchPlaylistSummaries(session: session)) ?? []
+        }
+        let audiobookEpisodesTask: Task<[EmbyAudioItem], Never>? = reusesHomeContent ? nil : Task {
+            (try? await api.fetchAudiobookEpisodes(session: session)) ?? []
+        }
+        let mostPlayedTask: Task<[EmbyAudioItem]?, Never>? = reusesHomeContent ? nil : Task {
+            try? await api.fetchMostPlayedSongs(session: session, limit: 50)
+        }
 
         let loadedSongs = try await songs
-        let loadedPlaylists = (try? await playlists) ?? []
-        let loadedAudiobookEpisodes = (try? await audiobookEpisodes) ?? []
-        let loadedMostPlayedSongs = (try? await mostPlayedSongs) ?? self.mostPlayedSongs
+        let loadedPlaylists = await playlistsTask?.value ?? playlists
+        let loadedAudiobookEpisodes = await audiobookEpisodesTask?.value ?? audiobookEpisodes
+        let loadedMostPlayedSongs = await mostPlayedTask?.value ?? self.mostPlayedSongs
         let mergedPlaylists = await playlistsKeepingLoadedSongs(loadedPlaylists, session: session)
 
         // Signed out or switched servers while this refresh was in flight.
@@ -520,7 +536,7 @@ final class AppStore {
             audiobookEpisodes: loadedAudiobookEpisodes,
             mostPlayedSongs: loadedMostPlayedSongs
         )
-        guard applied, self.session == session else { return }
+        guard applied, self.session == session, !reusesHomeContent else { return }
         await refreshFavoritesFromServer(session: session)
     }
 
@@ -573,6 +589,8 @@ final class AppStore {
 
     func refreshLibrary() async {
         guard let session else { return }
+        // A full refresh should see newly added libraries, so don't use cached views.
+        await client.invalidateCachedLibraryViews()
         await perform {
             try await self.fetchAndApplyFullLibrary(session: session)
         }
@@ -1026,6 +1044,7 @@ final class AppStore {
         player?.clearPersistedQueue()
         clearSongs()
         liveAudiobookProgress = nil
+        homeContentFetchedAt = nil
         playlists = []
         clearAudiobooks()
         audiobookProgress = [:]

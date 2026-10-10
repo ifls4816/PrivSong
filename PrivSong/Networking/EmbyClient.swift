@@ -286,6 +286,9 @@ struct EmbyClient {
         do {
             return try await fetchPlaylistSongsFromPlaylistEndpoint(playlistId: playlistId, session: embySession)
         } catch {
+            // Fall back only when the server says the playlist endpoint isn't usable (4xx or an
+            // unexpected payload). A timeout or lost connection would just fail again.
+            guard Self.isUnsupportedEndpoint(error) else { throw error }
             return try await fetchSongs(
                 session: embySession,
                 searchTerm: nil,
@@ -454,7 +457,33 @@ struct EmbyClient {
         try await sendEmpty(updateRequest)
     }
 
+    /// Library views barely change, but nearly every fetch starts by listing them (six times in a
+    /// single sign-in before this). They're cached per user for a few minutes, and concurrent
+    /// callers share one request.
     private func fetchViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
+        let key = "\(embySession.serverURL.absoluteString)#\(embySession.userId)"
+        return try await LibraryViewsCache.shared.views(for: key) {
+            try await requestViews(session: embySession)
+        }
+    }
+
+    private static func isUnsupportedEndpoint(_ error: Error) -> Bool {
+        switch error as? EmbyError {
+        case .server(let statusCode):
+            return (400..<500).contains(statusCode)
+        case .decoding:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Drops cached library views so the next fetch asks the server again (explicit refresh).
+    func invalidateCachedLibraryViews() async {
+        await LibraryViewsCache.shared.invalidateAll()
+    }
+
+    private func requestViews(session embySession: EmbySession) async throws -> [EmbyLibraryView] {
         var components = URLComponents(
             url: embySession.serverURL.appending(path: "Users/\(embySession.userId)/Views"),
             resolvingAgainstBaseURL: false
@@ -643,12 +672,10 @@ struct EmbyClient {
         filterValue: String?
     ) async throws -> [EmbyAudioItem] {
         let pageLimit = 200
-        var startIndex = 0
-        var songs: [EmbyAudioItem] = []
-        var totalRecordCount: Int?
+        let maxConcurrentPages = 4
 
-        repeat {
-            let response = try await fetchSongPage(
+        @Sendable func page(at startIndex: Int) async throws -> EmbyItemsResponse {
+            try await fetchSongPage(
                 session: embySession,
                 searchTerm: searchTerm,
                 parentId: parentId,
@@ -659,15 +686,50 @@ struct EmbyClient {
                 sortBy: "SortName",
                 sortOrder: "Ascending"
             )
-            songs.append(contentsOf: response.items)
-            totalRecordCount = response.totalRecordCount
+        }
 
-            if response.items.count < pageLimit {
-                break
+        let firstPage = try await page(at: 0)
+        var songs = firstPage.items
+        guard firstPage.items.count == pageLimit else { return songs }
+
+        guard let totalRecordCount = firstPage.totalRecordCount else {
+            // No total reported: page sequentially until a short page.
+            var startIndex = songs.count
+            while true {
+                let response = try await page(at: startIndex)
+                songs.append(contentsOf: response.items)
+                guard response.items.count == pageLimit else { break }
+                startIndex += response.items.count
             }
-            startIndex += response.items.count
-        } while totalRecordCount.map { songs.count < $0 } ?? true
+            return songs
+        }
 
+        // The total is known, so fetch the remaining pages a few at a time instead of one after
+        // another, then reassemble them in order.
+        let remainingStarts = Array(stride(from: pageLimit, to: totalRecordCount, by: pageLimit))
+        var pages: [Int: [EmbyAudioItem]] = [:]
+        try await withThrowingTaskGroup(of: (Int, [EmbyAudioItem]).self) { group in
+            var starts = remainingStarts.makeIterator()
+            for _ in 0..<maxConcurrentPages {
+                guard let start = starts.next() else { break }
+                group.addTask {
+                    let items = try await page(at: start).items
+                    return (start, items)
+                }
+            }
+            while let (start, items) = try await group.next() {
+                pages[start] = items
+                if let next = starts.next() {
+                    group.addTask {
+                        let items = try await page(at: next).items
+                        return (next, items)
+                    }
+                }
+            }
+        }
+        for start in remainingStarts {
+            songs.append(contentsOf: pages[start] ?? [])
+        }
         return songs
     }
 
@@ -1340,6 +1402,37 @@ private struct EmbyPlaylistEntry: Decodable {
     enum CodingKeys: String, CodingKey {
         case itemId = "Id"
         case playlistItemId = "PlaylistItemId"
+    }
+}
+
+private actor LibraryViewsCache {
+    static let shared = LibraryViewsCache()
+
+    private let lifetime: TimeInterval = 300
+    private var entries: [String: (views: [EmbyLibraryView], fetchedAt: Date)] = [:]
+    private var inFlight: [String: Task<[EmbyLibraryView], Error>] = [:]
+
+    func views(
+        for key: String,
+        fetch: @escaping @Sendable () async throws -> [EmbyLibraryView]
+    ) async throws -> [EmbyLibraryView] {
+        if let entry = entries[key], Date().timeIntervalSince(entry.fetchedAt) < lifetime {
+            return entry.views
+        }
+        if let pending = inFlight[key] {
+            return try await pending.value
+        }
+
+        let task = Task { try await fetch() }
+        inFlight[key] = task
+        defer { inFlight[key] = nil }
+        let views = try await task.value
+        entries[key] = (views, Date())
+        return views
+    }
+
+    func invalidateAll() {
+        entries.removeAll()
     }
 }
 
