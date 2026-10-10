@@ -302,6 +302,7 @@ struct HomePlaylistRow: View {
 
 private struct LongPressHomePlaylistRow: View {
     @Environment(AppStore.self) private var store
+    @State private var rowWidth: CGFloat?
 
     let playlist: MusicPlaylist
     let open: () -> Void
@@ -319,8 +320,12 @@ private struct LongPressHomePlaylistRow: View {
             }
             .buttonStyle(.plain)
             .contentShape(.interaction, Rectangle())
-            // The system draws the context-menu preview on its own glass platter.
             .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius, style: .continuous))
+            .onGeometryChange(for: CGFloat.self) { geometry in
+                geometry.size.width
+            } action: { newWidth in
+                rowWidth = newWidth
+            }
             .contextMenu {
                 Button {
                     edit()
@@ -333,6 +338,8 @@ private struct LongPressHomePlaylistRow: View {
                 } label: {
                     Label("删除", systemImage: "trash")
                 }
+            } preview: {
+                HomePlaylistRowContextPreview(playlist: playlist, artworkURLs: artworkURLs, width: rowWidth)
             }
         } else {
             Button(action: open) {
@@ -341,6 +348,18 @@ private struct LongPressHomePlaylistRow: View {
             .buttonStyle(.plain)
             .contentShape(.interaction, Rectangle())
         }
+    }
+}
+
+private struct HomePlaylistRowContextPreview: View {
+    let playlist: MusicPlaylist
+    let artworkURLs: [AuthenticatedURL]
+    let width: CGFloat?
+
+    var body: some View {
+        HomePlaylistRow(playlist: playlist, artworkURLs: artworkURLs)
+            .frame(width: width, alignment: .leading)
+            .liquidGlassContextPreview(cornerRadius: HomePlaylistRowLayout.contextPreviewCornerRadius)
     }
 }
 

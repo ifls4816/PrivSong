@@ -8,6 +8,7 @@ private enum SongRowLayout {
 
 struct SongRow: View {
     @Environment(AppStore.self) private var store
+    @State private var rowWidth: CGFloat?
 
     let song: EmbyAudioItem
     let imageURL: AuthenticatedURL?
@@ -21,8 +22,12 @@ struct SongRow: View {
         }
         .buttonStyle(.plain)
         .contentShape(.interaction, Rectangle())
-        // The system lifts this shape onto its own glass platter for the context-menu preview.
         .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: SongRowLayout.contextPreviewCornerRadius, style: .continuous))
+        .onGeometryChange(for: CGFloat.self) { geometry in
+            geometry.size.width
+        } action: { newWidth in
+            rowWidth = newWidth
+        }
         .contextMenu {
             Button {
                 store.playNext(song)
@@ -41,6 +46,12 @@ struct SongRow: View {
             } label: {
                 Label(store.isFavorite(song) ? "取消喜欢" : "喜欢", systemImage: store.isFavorite(song) ? "star.slash" : "star")
             }
+        } preview: {
+            SongRowContextPreview(
+                song: song,
+                imageURL: imageURL,
+                width: rowWidth.map { $0 + SongRowLayout.cardHorizontalPadding * 2 }
+            )
         }
     }
 
@@ -96,6 +107,37 @@ private struct SongRowContent: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct SongRowContextPreview: View {
+    let song: EmbyAudioItem
+    let imageURL: AuthenticatedURL?
+    let width: CGFloat?
+
+    var body: some View {
+        SongRowContent(song: song, imageURL: imageURL)
+            .padding(.horizontal, SongRowLayout.cardHorizontalPadding)
+            .frame(width: width, alignment: .leading)
+            .liquidGlassContextPreview(cornerRadius: SongRowLayout.contextPreviewCornerRadius)
+    }
+}
+
+extension View {
+    func liquidGlassContextPreview(cornerRadius: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+
+        return self
+            .background {
+                shape
+                    .fill(Color.white.opacity(0.08))
+            }
+            .glassEffect(.regular.tint(Color.white.opacity(0.18)).interactive(), in: shape)
+            .overlay {
+                shape
+                    .strokeBorder(Color.white.opacity(0.24), lineWidth: 0.8)
+            }
+            .shadow(color: Color.black.opacity(0.10), radius: 18, x: 0, y: 10)
     }
 }
 
