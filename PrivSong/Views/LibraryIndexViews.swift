@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ArtistLibraryView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var selectedArtist: MusicArtist?
 
     var body: some View {
@@ -25,7 +25,7 @@ struct ArtistLibraryView: View {
 }
 
 struct AlbumLibraryView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var selectedAlbum: MusicAlbum?
 
     var body: some View {
@@ -49,7 +49,7 @@ struct AlbumLibraryView: View {
 }
 
 struct AudiobookLibraryView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var selectedAudiobook: Audiobook?
 
     var body: some View {
@@ -150,7 +150,7 @@ private struct IndexedSectionRowShape: Shape {
 }
 
 private struct ArtistIndexRow: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let artist: MusicArtist
 
     var body: some View {
@@ -182,7 +182,7 @@ private struct ArtistIndexRow: View {
 }
 
 private struct AlbumIndexRow: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let album: MusicAlbum
 
     var body: some View {
@@ -218,7 +218,7 @@ private struct AlbumIndexRow: View {
 }
 
 private struct AudiobookIndexRow: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let audiobook: Audiobook
 
     var body: some View {
@@ -254,7 +254,7 @@ private struct AudiobookIndexRow: View {
 }
 
 struct MusicFolderLibraryView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     @State private var folders: [MusicFolder] = []
     @State private var isLoading = false
@@ -372,7 +372,7 @@ private struct MusicFolderRow: View {
 }
 
 private struct MusicFolderSongSelectionView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let folder: MusicFolder
 
     @State private var songs: [EmbyAudioItem] = []
@@ -425,7 +425,7 @@ private struct MusicFolderSongSelectionView: View {
                 isShowingSuccess = true
                 selectedSongIds = []
             }
-            .environmentObject(store)
+            .environment(store)
         }
         .alert("写入完成", isPresented: $isShowingSuccess) {
             Button("好", role: .cancel) {}
@@ -531,7 +531,7 @@ private struct MusicFolderSongSelectionView: View {
 }
 
 private struct SelectableSongRowsCard: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let songs: [EmbyAudioItem]
     @Binding var selectedSongIds: Set<String>
 
@@ -610,7 +610,7 @@ private struct SelectableSongRow: View {
 
 private struct RealtimePlaylistWriterSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     let selectedSongs: [EmbyAudioItem]
     let onCompleted: (String) -> Void

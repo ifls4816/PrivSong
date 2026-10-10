@@ -7,7 +7,7 @@ private enum SongRowLayout {
 }
 
 struct SongRow: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var rowWidth: CGFloat?
 
     let song: EmbyAudioItem
@@ -141,7 +141,7 @@ extension View {
 }
 
 struct SongListView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let title: String
     let songs: [EmbyAudioItem]
     var showsEmptyStatus = true
@@ -181,7 +181,7 @@ struct SongListView: View {
 }
 
 struct PaginatedSongListView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let title: String
     let songs: [EmbyAudioItem]
     let pageSize: Int
@@ -255,7 +255,7 @@ struct PaginatedSongListView: View {
 }
 
 struct AlbumDetailView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let album: MusicAlbum
 
     var body: some View {
@@ -277,7 +277,7 @@ struct AlbumDetailView: View {
 }
 
 struct ArtistDetailView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let artist: MusicArtist
 
     var body: some View {
@@ -299,7 +299,7 @@ struct ArtistDetailView: View {
 }
 
 struct AudiobookDetailView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     private let pageSize = 32
 
     let audiobook: Audiobook
@@ -413,7 +413,7 @@ struct AudiobookDetailView: View {
 }
 
 private struct MusicCollectionDetailView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     private let pageSize = 32
 
     let title: String
@@ -504,7 +504,7 @@ private struct MusicCollectionDetailView: View {
 }
 
 private struct SongListPlaybackControls: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let songs: [EmbyAudioItem]
 
     var body: some View {
@@ -587,7 +587,7 @@ private struct AudiobookPlaybackButtons: View {
 }
 
 private struct AudiobookEpisodeRow: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let episode: EmbyAudioItem
     let episodeNumber: Int
     let audiobook: Audiobook
@@ -640,7 +640,7 @@ private struct AudiobookEpisodeRow: View {
 }
 
 struct SongRowsCard: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let songs: [EmbyAudioItem]
     var playbackSongs: [EmbyAudioItem]?
     var limit: Int?

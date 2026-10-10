@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     var body: some View {
         NavigationStack {
@@ -117,7 +117,7 @@ struct SettingsView: View {
 }
 
 private struct EditLibrarySettingsView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""
@@ -233,7 +233,7 @@ private struct EditLibrarySettingsView: View {
 }
 
 private struct PlaybackQualitySettingsView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     var body: some View {
         Form {
@@ -435,7 +435,7 @@ private struct SettingsIcon: View {
 }
 
 struct SignInView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var server = ""
     @State private var username = ""
     @State private var password = ""

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ListenNowView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @Binding private var path: [HomeRoute]
     @Binding private var pendingRoute: HomeRoute?
     @State private var visiblePlaylistCount = 30
@@ -93,7 +93,7 @@ struct ListenNowView: View {
             }
             .sheet(item: $editingPlaylist) { playlist in
                 PlaylistEditSheet(playlist: playlist)
-                    .environmentObject(store)
+                    .environment(store)
             }
             .alert("删除歌单？", isPresented: $isDeleteConfirmationPresented) {
                 Button("删除", role: .destructive) {
@@ -322,7 +322,7 @@ struct HomePlaylistRow: View {
 }
 
 private struct LongPressHomePlaylistRow: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var rowWidth: CGFloat?
 
     let playlist: MusicPlaylist
@@ -396,7 +396,7 @@ private struct HomePlaylistRowContextPreview: View {
 
 private struct PlaylistEditSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     let playlist: MusicPlaylist
 
@@ -469,7 +469,7 @@ private struct PlaylistEditSheet: View {
 }
 
 private struct PlaylistDetailLoaderView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     let playlistID: String
 
     @State private var loadedSongs: [EmbyAudioItem]?
@@ -574,7 +574,7 @@ struct PlaylistArtworkGrid: View {
 }
 
 struct BrowseView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     private var showsBrowseSkeleton: Bool {
         !store.hasBrowseContent && store.isLoadingContent
@@ -937,7 +937,7 @@ private struct SkeletonBlock: View {
 }
 
 struct RecentAddedSection: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -965,7 +965,7 @@ struct RecentAddedSection: View {
 }
 
 struct MostPlayedSection: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

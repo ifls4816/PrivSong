@@ -3,7 +3,7 @@ import UIKit
 
 @main
 struct PrivSongApp: App {
-    @StateObject private var store = SharedAppEnvironment.shared.store
+    @State private var store = SharedAppEnvironment.shared.store
     @StateObject private var player = SharedAppEnvironment.shared.player
     @Environment(\.scenePhase) private var scenePhase
 
@@ -15,15 +15,12 @@ struct PrivSongApp: App {
             diskCapacity: 64 * 1024 * 1024,
             diskPath: nil
         )
-        UISlider.appearance().minimumTrackTintColor = .musicRed
-        UISlider.appearance().maximumTrackTintColor = .musicSliderTrack
-        UISlider.appearance().thumbTintColor = .musicSliderThumb
     }
 
     var body: some Scene {
         WindowGroup {
             RootTabView()
-                .environmentObject(store)
+                .environment(store)
                 .environmentObject(player)
                 .tint(.musicRed)
                 .onAppear {
@@ -55,44 +52,26 @@ final class SharedAppEnvironment {
 
 extension Color {
     static let musicRed = Color(uiColor: .musicRed)
-    static let musicPageBackground = Color(uiColor: UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor.systemGroupedBackground
-        }
-        return UIColor(red: 0.949, green: 0.949, blue: 0.969, alpha: 1)
-    })
-    static let musicCardBackground = Color(uiColor: UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor.secondarySystemGroupedBackground
-        }
-        return UIColor.white
-    })
-    static let musicBrowseAccentBackground = Color(uiColor: UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor.secondarySystemGroupedBackground
-        }
-        return UIColor.white
-    })
-    static let musicSeparatorStroke = Color(uiColor: UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor.separator.withAlphaComponent(0.45)
-        }
-        return UIColor.separator.withAlphaComponent(0.18)
-    })
+    /// System grouped colors keep their elevated and increased-contrast variants.
+    static let musicPageBackground = Color(uiColor: .systemGroupedBackground)
+    static let musicCardBackground = Color(uiColor: .secondarySystemGroupedBackground)
 }
 
 extension UIColor {
-    static let musicRed = UIColor(red: 1.0, green: 0.11, blue: 0.18, alpha: 1)
-    static let musicSliderThumb = UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor(white: 0.92, alpha: 1)
+    /// The app's red, tuned per appearance so small text on it meets the 4.5:1 contrast
+    /// guideline, with stronger variants when Increase Contrast is on.
+    static let musicRed = UIColor { traits in
+        let isDark = traits.userInterfaceStyle == .dark
+        let isHighContrast = traits.accessibilityContrast == .high
+        switch (isDark, isHighContrast) {
+        case (false, false):
+            return UIColor(red: 0.84, green: 0.05, blue: 0.14, alpha: 1)
+        case (false, true):
+            return UIColor(red: 0.70, green: 0.02, blue: 0.10, alpha: 1)
+        case (true, false):
+            return UIColor(red: 1.0, green: 0.27, blue: 0.33, alpha: 1)
+        case (true, true):
+            return UIColor(red: 1.0, green: 0.45, blue: 0.49, alpha: 1)
         }
-        return UIColor.white
-    }
-    static let musicSliderTrack = UIColor { traits in
-        if traits.userInterfaceStyle == .dark {
-            return UIColor.secondaryLabel.withAlphaComponent(0.28)
-        }
-        return UIColor.secondaryLabel.withAlphaComponent(0.22)
     }
 }

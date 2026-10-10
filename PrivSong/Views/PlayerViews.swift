@@ -5,7 +5,7 @@ import UIKit
 
 struct MiniPlayerView: View {
     @Environment(\.tabViewBottomAccessoryPlacement) private var accessoryPlacement
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @EnvironmentObject private var player: PlayerController
 
     let expand: () -> Void
@@ -121,7 +121,7 @@ struct MiniPlayerView: View {
 }
 
 struct NowPlayingView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @EnvironmentObject private var player: PlayerController
     let onOpenAlbum: (EmbyAudioItem) -> Void
     let onOpenArtist: (EmbyAudioItem) -> Void
@@ -1229,7 +1229,7 @@ struct LyricsPanelView: View {
 }
 
 struct QueuePlayerView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @EnvironmentObject private var player: PlayerController
     @State private var isReordering = false
 

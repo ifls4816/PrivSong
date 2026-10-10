@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SearchView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var searchText = ""
     @State private var searchTask: Task<Void, Never>?
     @State private var submittedSearchText = ""

@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 struct RootTabView: View {
-    @EnvironmentObject private var store: AppStore
+    @Environment(AppStore.self) private var store
     @State private var isPlayerExpanded = false
     @State private var selectedTab: AppTab = .home
     @State private var homePath: [HomeRoute] = []

@@ -22,31 +22,26 @@ struct ArtworkView: View {
     }
 
     var body: some View {
-        GeometryReader { proxy in
-            let side = max(proxy.size.width, proxy.size.height)
-
-            Group {
+        // Color.clear takes the proposed size; the overlay fills it and the clip trims the
+        // overflow. Same result as measuring with a GeometryReader, without one per artwork.
+        Color.clear
+            .overlay {
                 if let image {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
                 } else if showsPlaceholder {
                     placeholder
-                } else {
-                    Color.clear
                 }
             }
-            .frame(width: side, height: side)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
-        }
-        .transaction { transaction in
-            transaction.disablesAnimations = true
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-        .clipped()
-        .task(id: url) {
-            await loadImage(from: url)
-        }
+            .transaction { transaction in
+                transaction.disablesAnimations = true
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .accessibilityHidden(true)
+            .task(id: url) {
+                await loadImage(from: url)
+            }
     }
 
     private var placeholder: some View {
@@ -128,7 +123,7 @@ struct ArtworkView: View {
     }
 }
 
-private enum ArtworkDecoder {
+enum ArtworkDecoder {
     static func image(from data: Data, url: URL) async -> UIImage? {
         await Task.detached(priority: .utility) {
             autoreleasepool {
@@ -181,6 +176,7 @@ final class ArtworkImageCache {
         cache.totalCostLimit = 80 * 1024 * 1024
         normalizedCache.countLimit = 300
         normalizedCache.totalCostLimit = 80 * 1024 * 1024
+        normalizedKeys.countLimit = 2_000
     }
 
     func image(for url: URL) -> UIImage? {
@@ -202,7 +198,20 @@ final class ArtworkImageCache {
         normalizedCache.removeAllObjects()
     }
 
+    /// Memoized because `ArtworkView.init` asks for it on every parent re-render, and parsing
+    /// the URL each time adds up across a list of rows.
+    private let normalizedKeys = NSCache<NSURL, NSString>()
+
     private func normalizedCacheKey(for url: URL) -> String {
+        if let cached = normalizedKeys.object(forKey: url as NSURL) {
+            return cached as String
+        }
+        let key = computeNormalizedCacheKey(for: url)
+        normalizedKeys.setObject(key as NSString, forKey: url as NSURL)
+        return key
+    }
+
+    private func computeNormalizedCacheKey(for url: URL) -> String {
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             return url.absoluteString
         }

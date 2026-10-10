@@ -1,54 +1,56 @@
 import Foundation
+import Observation
 import Security
 
 /// Serializes snapshot writes and deletes off the main thread while keeping them in order.
 private let persistenceQueue = DispatchQueue(label: "PrivSong.persistence", qos: .utility)
 
 @MainActor
-final class AppStore: ObservableObject {
-    @Published var session: EmbySession?
+@Observable
+final class AppStore {
+    var session: EmbySession?
     /// Set through `applySongs(_:)` so derived data (albums, artists, index sections) is
     /// computed off the main thread and published together with the songs.
-    @Published private(set) var songs: [EmbyAudioItem] = []
-    @Published var searchResults: [EmbyAudioItem] = []
-    @Published var isLoading = false
+    private(set) var songs: [EmbyAudioItem] = []
+    var searchResults: [EmbyAudioItem] = []
+    var isLoading = false
     /// True while cached content is being read at launch, so pages show their skeletons
     /// instead of an empty "暂无资料库" state for that moment.
-    @Published private(set) var isRestoringCachedContent = false
+    private(set) var isRestoringCachedContent = false
 
     /// Whether content is on its way, from the cache or from Emby. Drives skeleton screens.
     var isLoadingContent: Bool {
         isLoading || isRestoringCachedContent
     }
-    @Published var isSearching = false
-    @Published private(set) var hasLoadedInitialContent = false
-    @Published var errorMessage: String?
-    @Published var favoriteErrorMessage: String?
-    @Published var libraryStatus = "Not connected"
-    @Published var favoriteSongIds: Set<String> = [] {
+    var isSearching = false
+    private(set) var hasLoadedInitialContent = false
+    var errorMessage: String?
+    var favoriteErrorMessage: String?
+    var libraryStatus = "Not connected"
+    var favoriteSongIds: Set<String> = [] {
         didSet { refreshFavoriteSongs() }
     }
-    @Published private(set) var favoriteSongs: [EmbyAudioItem] = []
-    @Published var recentSongIds: [String] = []
-    @Published var cellularOnlineQuality: OnlinePlaybackQuality = .standard {
+    private(set) var favoriteSongs: [EmbyAudioItem] = []
+    var recentSongIds: [String] = []
+    var cellularOnlineQuality: OnlinePlaybackQuality = .standard {
         didSet {
             UserDefaults.standard.set(cellularOnlineQuality.rawValue, forKey: cellularOnlineQualityKey)
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
         }
     }
-    @Published var wifiOnlineQuality: OnlinePlaybackQuality = .lossless {
+    var wifiOnlineQuality: OnlinePlaybackQuality = .lossless {
         didSet {
             UserDefaults.standard.set(wifiOnlineQuality.rawValue, forKey: wifiOnlineQualityKey)
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
         }
     }
-    @Published var startsOnBrowse = false {
+    var startsOnBrowse = false {
         didSet { UserDefaults.standard.set(startsOnBrowse, forKey: startsOnBrowseKey) }
     }
-    @Published var keepsScreenAwakeOnPlayerPage = false {
+    var keepsScreenAwakeOnPlayerPage = false {
         didSet { UserDefaults.standard.set(keepsScreenAwakeOnPlayerPage, forKey: keepsScreenAwakeKey) }
     }
-    @Published var audioCacheLimit: AudioCacheLimit = .defaultValue {
+    var audioCacheLimit: AudioCacheLimit = .defaultValue {
         didSet {
             UserDefaults.standard.set(audioCacheLimit.rawValue, forKey: audioCacheLimitKey)
             PlaybackAudioCache.setLimit(audioCacheLimit)
@@ -63,27 +65,27 @@ final class AppStore: ObservableObject {
             }
         }
     }
-    @Published private(set) var cacheUsageBytes: Int64?
-    @Published private(set) var isClearingCache = false
+    private(set) var cacheUsageBytes: Int64?
+    private(set) var isClearingCache = false
 
     // Cached derived data — recomputed only when source media changes
-    @Published private(set) var albums: [MusicAlbum] = []
-    @Published private(set) var artists: [MusicArtist] = []
-    @Published private(set) var albumSections: [IndexedSection<MusicAlbum>] = []
-    @Published private(set) var artistSections: [IndexedSection<MusicArtist>] = []
-    @Published private(set) var playlists: [MusicPlaylist] = []
+    private(set) var albums: [MusicAlbum] = []
+    private(set) var artists: [MusicArtist] = []
+    private(set) var albumSections: [IndexedSection<MusicAlbum>] = []
+    private(set) var artistSections: [IndexedSection<MusicArtist>] = []
+    private(set) var playlists: [MusicPlaylist] = []
     /// Set through `applyAudiobookEpisodes(_:)` so grouping and indexing run off the main thread.
-    @Published private(set) var audiobookEpisodes: [EmbyAudioItem] = []
-    @Published private(set) var audiobooks: [Audiobook] = []
-    @Published private(set) var audiobookSections: [IndexedSection<Audiobook>] = []
-    @Published private(set) var audiobookProgress: [String: AudiobookPlaybackProgress] = [:]
-    @Published private(set) var recentSongs: [EmbyAudioItem] = []
-    @Published private(set) var serverFavoriteSongs: [EmbyAudioItem] = [] {
+    private(set) var audiobookEpisodes: [EmbyAudioItem] = []
+    private(set) var audiobooks: [Audiobook] = []
+    private(set) var audiobookSections: [IndexedSection<Audiobook>] = []
+    private(set) var audiobookProgress: [String: AudiobookPlaybackProgress] = [:]
+    private(set) var recentSongs: [EmbyAudioItem] = []
+    private(set) var serverFavoriteSongs: [EmbyAudioItem] = [] {
         didSet { refreshFavoriteSongs() }
     }
-    @Published private(set) var dailyRecommendedSongs: [EmbyAudioItem] = []
-    @Published private(set) var recentlyAddedSongs: [EmbyAudioItem] = []
-    @Published private(set) var mostPlayedSongs: [EmbyAudioItem] = []
+    private(set) var dailyRecommendedSongs: [EmbyAudioItem] = []
+    private(set) var recentlyAddedSongs: [EmbyAudioItem] = []
+    private(set) var mostPlayedSongs: [EmbyAudioItem] = []
 
     private let client = EmbyClient()
     private let snapshotStore = LibrarySnapshotStore()
@@ -100,20 +102,20 @@ final class AppStore: ObservableObject {
     private let highRefreshRateKey = "PrefersHighRefreshRate"
     private let audioCacheLimitKey = "AudioCacheLimitMB"
     private let searchResultLimit = 100
-    private var activeSearchToken: UUID?
-    private var libraryCacheSavedAt: Date?
-    private var dailyRecommendationDay: Int?
+    @ObservationIgnored private var activeSearchToken: UUID?
+    @ObservationIgnored private var libraryCacheSavedAt: Date?
+    @ObservationIgnored private var dailyRecommendationDay: Int?
     private var audiobookEpisodeBookIds: [String: String] = [:]
-    private var pendingFavoriteSongIds: Set<String> = []
-    private var songsById: [String: EmbyAudioItem] = [:]
-    private var derivedDataGeneration = 0
-    private var audiobookDataGeneration = 0
-    /// Latest position of the audiobook episode that is playing. Kept out of `@Published`
-    /// state so the periodic progress reports don't re-render every view observing the store.
-    private var liveAudiobookProgress: (episodeId: String, progress: AudiobookPlaybackProgress)?
-    private var lastAudiobookProgressPublish = Date.distantPast
+    @ObservationIgnored private var pendingFavoriteSongIds: Set<String> = []
+    @ObservationIgnored private var songsById: [String: EmbyAudioItem] = [:]
+    @ObservationIgnored private var derivedDataGeneration = 0
+    @ObservationIgnored private var audiobookDataGeneration = 0
+    /// Latest position of the audiobook episode that is playing. Ignored by observation so the
+    /// periodic progress reports don't re-render the views that show audiobook progress.
+    @ObservationIgnored private var liveAudiobookProgress: (episodeId: String, progress: AudiobookPlaybackProgress)?
+    @ObservationIgnored private var lastAudiobookProgressPublish = Date.distantPast
 
-    weak var player: PlayerController? {
+    @ObservationIgnored weak var player: PlayerController? {
         didSet {
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
             player?.setSession(session)

@@ -1,6 +1,6 @@
 import CarPlay
-import Combine
 import Foundation
+import Observation
 import UIKit
 
 @MainActor
@@ -8,7 +8,7 @@ final class CarPlayCoordinator: NSObject {
     private weak var interfaceController: CPInterfaceController?
     private let store: AppStore
     private let player: PlayerController
-    private var cancellables: Set<AnyCancellable> = []
+    private var isObservingStore = false
     private var tabBarTemplate: CPTabBarTemplate?
     private var homeListTemplate: CPListTemplate?
     private var discoveryListTemplate: CPListTemplate?
@@ -33,7 +33,7 @@ final class CarPlayCoordinator: NSObject {
         refreshTask = nil
         cardArtworkTasks.forEach { $0.cancel() }
         cardArtworkTasks.removeAll()
-        cancellables.removeAll()
+        isObservingStore = false
         interfaceController = nil
         tabBarTemplate = nil
         homeListTemplate = nil
@@ -41,20 +41,24 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func observeStoreChanges() {
-        observedStoreContentSignature = storeContentSignature()
-        store.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                Task { @MainActor in
-                    await Task.yield()
-                    guard let self else { return }
-                    let signature = self.storeContentSignature()
-                    guard self.observedStoreContentSignature != signature else { return }
-                    self.observedStoreContentSignature = signature
-                    self.scheduleRootRefresh()
-                }
+        isObservingStore = true
+        observedStoreContentSignature = trackedStoreContentSignature()
+    }
+
+    /// Computes the signature while registering for changes to exactly the store properties it
+    /// reads; `onChange` fires once, so each change re-registers.
+    private func trackedStoreContentSignature() -> String {
+        withObservationTracking {
+            storeContentSignature()
+        } onChange: { [weak self] in
+            Task { @MainActor in
+                guard let self, self.isObservingStore else { return }
+                let signature = self.trackedStoreContentSignature()
+                guard self.observedStoreContentSignature != signature else { return }
+                self.observedStoreContentSignature = signature
+                self.scheduleRootRefresh()
             }
-            .store(in: &cancellables)
+        }
     }
 
     private func scheduleRootRefresh() {
@@ -387,15 +391,17 @@ final class CarPlayCoordinator: NSObject {
             return preparedCardImage(cached)
         }
 
+        // ArtworkDecoder downsamples and decodes off the main thread, so neither CarPlay nor
+        // the phone UI (which shares ArtworkImageCache) has to decode these on the main actor.
         if let diskData = await ArtworkDiskCache.data(for: imageURL.url),
-           let diskImage = UIImage(data: diskData) {
+           let diskImage = await ArtworkDecoder.image(from: diskData, url: imageURL.url) {
             ArtworkImageCache.shared.insert(diskImage, for: imageURL.url)
             return preparedCardImage(diskImage)
         }
 
         do {
             let (data, _) = try await URLSession.shared.data(for: imageURL.request)
-            guard !Task.isCancelled, let image = UIImage(data: data) else {
+            guard !Task.isCancelled, let image = await ArtworkDecoder.image(from: data, url: imageURL.url) else {
                 return placeholderImage(systemName: card.placeholderSystemImageName)
             }
             ArtworkImageCache.shared.insert(image, for: imageURL.url)
