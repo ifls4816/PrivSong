@@ -1024,6 +1024,7 @@ private struct TimedLyricIndexCache: Equatable {
 
 struct LyricsPanelView: View {
     @EnvironmentObject private var player: PlayerController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let song: EmbyAudioItem
     @ObservedObject var timeline: PlaybackTimeline
     let fallbackDuration: TimeInterval
@@ -1042,7 +1043,10 @@ struct LyricsPanelView: View {
         if isScrubbing {
             return scrubElapsed
         }
-        if let seekTarget = timeline.seekTarget {
+        // Use the target only while the seek is in flight. The player keeps `seekTarget` set
+        // for up to ~1 s after the seek lands; reading it then froze the lyrics while the
+        // audio had already moved on.
+        if player.isSeeking, let seekTarget = timeline.seekTarget {
             return seekTarget
         }
         return player.precisePlaybackTime
@@ -1104,22 +1108,26 @@ struct LyricsPanelView: View {
                         // Not lazy: `scrollTo(_:anchor: .center)` needs real row heights. A lazy stack
                         // estimates heights for rows it hasn't built, which left the active line
                         // off-centre.
-                        VStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 18) {
                             ForEach(Array(lines.enumerated()), id: \.element.id) { index, line in
                                 let isActive = activeIndex == index
+                                let distance = abs(index - activeIndex)
                                 Button {
                                     player.seek(toLyric: line)
                                 } label: {
                                     // One text style for every line (scales with Dynamic Type); the
-                                    // active line is emphasised with a scale effect, which animates
-                                    // without re-laying out the text like switching fonts did.
+                                    // active line is emphasised with scale, and other lines fade and
+                                    // soften with distance. A springy, slightly staggered animation
+                                    // makes each line change ripple outward from the current line.
                                     Text(line.text)
-                                        .font(.title2.bold())
-                                        .lineSpacing(2)
+                                        .font(.title.bold())
+                                        .lineSpacing(3)
                                         .multilineTextAlignment(.leading)
-                                        .foregroundStyle(isActive ? .primary : .secondary)
-                                        .scaleEffect(isActive ? 1 : 0.84, anchor: .leading)
-                                        .animation(.easeOut(duration: 0.2), value: isActive)
+                                        .foregroundStyle(.primary)
+                                        .opacity(lyricOpacity(distance: distance))
+                                        .blur(radius: reduceMotion ? 0 : lyricBlur(distance: distance))
+                                        .scaleEffect(isActive || reduceMotion ? 1 : 0.86, anchor: .leading)
+                                        .animation(lyricAnimation(distance: distance), value: activeIndex)
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .contentShape(Rectangle())
                                 }
@@ -1254,12 +1262,38 @@ struct LyricsPanelView: View {
     private func scrollToActiveLyric(_ activeLyricId: Int?, using proxy: ScrollViewProxy, animated: Bool) {
         guard let activeLyricId else { return }
         if animated {
-            withAnimation(.easeInOut(duration: 0.28)) {
+            // A soft spring glides the new line into the centre instead of a linear slide.
+            withAnimation(reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.6, dampingFraction: 0.82)) {
                 proxy.scrollTo(activeLyricId, anchor: .center)
             }
         } else {
             proxy.scrollTo(activeLyricId, anchor: .center)
         }
+    }
+
+    private func lyricOpacity(distance: Int) -> Double {
+        switch distance {
+        case 0:
+            return 1
+        case 1:
+            return 0.5
+        default:
+            return 0.32
+        }
+    }
+
+    private func lyricBlur(distance: Int) -> CGFloat {
+        // Gentle depth-of-field: the current line is sharp, neighbours soften a little.
+        CGFloat(min(distance, 3)) * 0.9
+    }
+
+    private func lyricAnimation(distance: Int) -> Animation {
+        guard !reduceMotion else {
+            return .easeOut(duration: 0.2)
+        }
+        // Lines further from the current one start a touch later, so the change ripples.
+        return .spring(response: 0.5, dampingFraction: 0.68)
+            .delay(Double(min(distance, 6)) * 0.035)
     }
 }
 
