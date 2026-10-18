@@ -101,6 +101,11 @@ final class PlayerController: ObservableObject {
     private var isNetworkAvailable = true
     /// Whether this track already fell back to its cached file once; prevents a fail loop.
     private var hasTriedCachedFallback = false
+    private var stallWatchdogTask: Task<Void, Never>?
+    /// Reconnect attempts for a stalled song; keyed by song so a reconnect (which restarts the
+    /// track) doesn't reset the count.
+    private var stallRecovery: (songId: String, attempts: Int)?
+    private var networkRecoveryTask: Task<Void, Never>?
     private var streamCandidates: [AuthenticatedURL] = []
     private var streamCandidateIndex = 0
     private var currentStreamURL: AuthenticatedURL?
@@ -159,13 +164,14 @@ final class PlayerController: ObservableObject {
             let isAvailable = path.status == .satisfied
             Task { @MainActor in
                 guard let self else { return }
-                // Applies from the next track on, so switching networks never interrupts playback.
+                let previousKind = self.networkKind
                 self.networkKind = kind
                 let wasAvailable = self.isNetworkAvailable
                 self.isNetworkAvailable = isAvailable
-                // Connection is back: pick up a song that failed while offline.
-                if isAvailable, !wasAvailable {
-                    self.retryFailedPlayback()
+                // Back online, or moved to another interface: the current stream's connection is
+                // gone, so reconnect it (or retry a song that failed while offline).
+                if isAvailable, !wasAvailable || previousKind != kind {
+                    self.scheduleNetworkRecovery()
                 }
             }
         }
@@ -253,7 +259,8 @@ final class PlayerController: ObservableObject {
     }
 
     func togglePlayPause() {
-        if isPlaying || engine.timeControlStatus == .playing {
+        // Waiting for data still counts as "playing" here, so a tap while buffering pauses.
+        if isPlaying || engine.timeControlStatus != .paused {
             pause()
         } else {
             resume()
@@ -496,9 +503,16 @@ final class PlayerController: ObservableObject {
         duration = max(knownDuration, initialPosition)
         isPlaying = autoplay
         currentArtwork = nil
-        lyrics = []
-        lyricsSongId = nil
-        isLoadingLyrics = false
+        // Restarting the same song (reconnect, retry) keeps its lyrics: the lyrics panel only
+        // asks again when the song changes, so clearing them here left it stuck on "loading".
+        if lyricsSongId != song.id {
+            lyricsTask?.cancel()
+            lyrics = []
+            lyricsSongId = nil
+            isLoadingLyrics = false
+        }
+        stallWatchdogTask?.cancel()
+        stallWatchdogTask = nil
         playbackStatusText = "正在连接"
         isBuffering = true
         lastNowPlayingDuration = -1
@@ -537,7 +551,6 @@ final class PlayerController: ObservableObject {
         }
         loadArtwork(for: song, session: session)
         // Lyrics are loaded when the lyrics panel asks for them (loadLyricsIfNeeded).
-        lyricsTask?.cancel()
         reportPlaybackStarted(position: initialPosition)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
@@ -573,6 +586,7 @@ final class PlayerController: ObservableObject {
         if let startTime, startTime > 0 {
             let clampedStartTime = max(0, startTime)
             isSeeking = true
+            updateStallWatchdog()
             item.seek(
                 to: CMTime(seconds: clampedStartTime, preferredTimescale: 600),
                 toleranceBefore: .zero,
@@ -638,6 +652,80 @@ final class PlayerController: ObservableObject {
         persistQueueSnapshot()
     }
 
+    /// Arms an 8 s timer whenever a network stream is waiting for data or a seek hasn't landed.
+    /// A connection that died with the network (e.g. Wi-Fi to cellular) otherwise leaves the
+    /// player waiting forever: no sound, frozen clock, until the next track.
+    private func updateStallWatchdog() {
+        let mayBeStuck = currentStreamURL?.isFileURL == false
+            && (engine.timeControlStatus == .waitingToPlayAtSpecifiedRate || isSeeking)
+        guard mayBeStuck else {
+            stallWatchdogTask?.cancel()
+            stallWatchdogTask = nil
+            return
+        }
+        guard stallWatchdogTask == nil else { return }
+
+        let watchedItem = engine.currentItem
+        stallWatchdogTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled, let self else { return }
+            self.stallWatchdogTask = nil
+            guard self.engine.currentItem === watchedItem else { return }
+            self.recoverFromStall()
+        }
+    }
+
+    private func recoverFromStall() {
+        guard let currentSong,
+              engine.timeControlStatus == .waitingToPlayAtSpecifiedRate || isSeeking else { return }
+
+        // Two reconnects per song; after that, show the failure (tap play or a network change
+        // retries) instead of looping.
+        let attempts = (stallRecovery?.songId == currentSong.id ? stallRecovery?.attempts ?? 0 : 0) + 1
+        stallRecovery = (currentSong.id, attempts)
+        guard attempts <= 2 else {
+            handleAllSourcesFailed()
+            return
+        }
+        print("[Player] Playback stalled; reconnecting (attempt \(attempts))")
+        reconnectCurrentTrack()
+    }
+
+    /// Rebuilds the current track's stream at the current position, picking the source and
+    /// quality for the network we're on now.
+    private func reconnectCurrentTrack() {
+        guard let currentSong, let session else { return }
+        let position = isSeeking ? (pendingSeekTarget ?? seekTarget ?? elapsed) : precisePlaybackTime
+        let wantsPlayback = isPlaying || engine.timeControlStatus != .paused
+        start(
+            song: currentSong,
+            session: session,
+            autoplay: wantsPlayback,
+            startPosition: position,
+            durationOverride: currentDurationOverride
+        )
+    }
+
+    /// Called when the network comes back or switches interface (e.g. Wi-Fi to cellular). The
+    /// stream's connection belonged to the old network and is dead, and the quality setting for
+    /// the new network should apply now rather than from the next track.
+    private func scheduleNetworkRecovery() {
+        networkRecoveryTask?.cancel()
+        networkRecoveryTask = Task { [weak self] in
+            // Path updates arrive in bursts while the interfaces switch over.
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, let self else { return }
+            if self.hasPlaybackFailed {
+                self.retryFailedPlayback()
+                return
+            }
+            guard self.currentSong != nil, self.currentStreamURL?.isFileURL == false else { return }
+            // Don't let the background full-file cache download carry on over cellular data.
+            self.cancelAudioCaching()
+            self.reconnectCurrentTrack()
+        }
+    }
+
     private func retryFailedPlayback() {
         guard hasPlaybackFailed, let currentSong, let session else { return }
         start(
@@ -665,6 +753,9 @@ final class PlayerController: ObservableObject {
             return
         }
 
+        // Stop the engine too, so a stream that later recovers on its own can't start playing
+        // behind a "failed" UI.
+        engine.pause()
         isPlaying = false
         isBuffering = false
         playbackStatusText = "播放失败"
@@ -719,6 +810,7 @@ final class PlayerController: ObservableObject {
         let currentItem = engine.currentItem
         let targetTime = CMTime(seconds: clamped, preferredTimescale: 600)
         isSeeking = true
+        updateStallWatchdog()
         seekTarget = clamped
         pendingSeekTarget = clamped
         suppressTimeUpdatesUntil = Date().addingTimeInterval(1.0)
@@ -1217,7 +1309,7 @@ final class PlayerController: ObservableObject {
                 guard let self,
                       observedItem === self.engine.currentItem,
                       observedItem.isPlaybackBufferEmpty,
-                      self.engine.rate == 0 else { return }
+                      self.engine.timeControlStatus != .playing else { return }
                 self.isBuffering = true
                 self.playbackStatusText = "正在缓冲"
             }
@@ -1253,7 +1345,7 @@ final class PlayerController: ObservableObject {
 
         let previousElapsed = elapsed
         elapsed = newElapsed
-        if engine.rate > 0 || newElapsed > previousElapsed + 0.05 {
+        if engine.timeControlStatus == .playing || newElapsed > previousElapsed + 0.05 {
             clearTransientPlaybackStatus()
         }
         reportPlaybackProgress()
@@ -1267,8 +1359,12 @@ final class PlayerController: ObservableObject {
     }
 
     private func syncPlaybackStateFromEngine(forceNowPlaying: Bool) {
-        let playing = engine.timeControlStatus == .playing || engine.rate > 0
-        let buffering = engine.timeControlStatus == .waitingToPlayAtSpecifiedRate && engine.rate == 0
+        // While AVPlayer waits for data its `rate` stays 1, so the old `rate`-based checks showed
+        // a stalled stream as playing (no sound, no spinner). Use the control status instead:
+        // waiting = buffering, and anything but paused means the user wants playback.
+        let playing = engine.timeControlStatus != .paused
+        let buffering = engine.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        updateStallWatchdog()
         // Runs on every 0.5s tick: only touch @Published state when it actually changes,
         // otherwise every observing view (mini player, now playing) re-renders each tick.
         if buffering {
@@ -1346,7 +1442,8 @@ final class PlayerController: ObservableObject {
             song: currentSong,
             elapsed: elapsed,
             duration: duration,
-            isPlaying: isPlaying,
+            // While buffering, report rate 0 so the lock screen doesn't run its clock ahead.
+            isPlaying: isPlaying && !isBuffering,
             artwork: currentArtwork,
             queueIndex: queueIndex,
             queueCount: queueIndex == nil ? nil : queue.count
