@@ -915,18 +915,13 @@ private enum ColorExtractor {
     static func palette(for imageURL: AuthenticatedURL) async -> BackdropPalette? {
         let request = imageURL.request
 
-        if let cachedResponse = URLCache.shared.cachedResponse(for: request),
-           let palette = await palette(from: cachedResponse.data) {
-            return palette
-        }
-
         if let diskData = ArtworkDiskCache.dataSync(for: imageURL.url),
            let palette = await palette(from: diskData) {
             return palette
         }
 
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await ArtworkNetwork.session.data(for: request)
             if let httpResponse = response as? HTTPURLResponse,
                !(200..<300).contains(httpResponse.statusCode) {
                 return nil

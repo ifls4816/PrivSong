@@ -400,7 +400,7 @@ final class CarPlayCoordinator: NSObject {
         }
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: imageURL.request)
+            let (data, _) = try await ArtworkNetwork.session.data(for: imageURL.request)
             guard !Task.isCancelled, let image = await ArtworkDecoder.image(from: data, url: imageURL.url) else {
                 return placeholderImage(systemName: card.placeholderSystemImageName)
             }

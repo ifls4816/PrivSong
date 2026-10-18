@@ -8,13 +8,20 @@ struct PrivSongApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        // Artwork bytes already persist in ArtworkDiskCache, so the shared HTTP cache only needs to
-        // absorb short-term repeats (player backdrop color extraction, API responses).
+        // Artwork has its own disk cache (and its own URLSession that bypasses this one), and the
+        // library is kept in its own snapshot, so the shared HTTP cache stays in memory only.
+        // Writing it to disk just duplicated data that was already stored elsewhere.
         URLCache.shared = URLCache(
-            memoryCapacity: 16 * 1024 * 1024,
-            diskCapacity: 64 * 1024 * 1024,
+            memoryCapacity: 8 * 1024 * 1024,
+            diskCapacity: 0,
             diskPath: nil
         )
+        // One-time cleanup of the up-to-64 MB the earlier disk-backed cache left behind.
+        let purgedKey = "SharedURLCacheDiskPurged"
+        if !UserDefaults.standard.bool(forKey: purgedKey) {
+            URLCache.shared.removeAllCachedResponses()
+            UserDefaults.standard.set(true, forKey: purgedKey)
+        }
     }
 
     var body: some Scene {

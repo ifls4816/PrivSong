@@ -1584,7 +1584,7 @@ final class PlayerController: ObservableObject {
         artworkTask = Task { [weak self, songId = song.id] in
             var artworkData = await ArtworkDiskCache.data(for: url)
             if artworkData == nil,
-               let (downloaded, response) = try? await URLSession.shared.data(for: resource.request),
+               let (downloaded, response) = try? await ArtworkNetwork.session.data(for: resource.request),
                (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true {
                 artworkData = downloaded
                 await ArtworkDiskCache.insert(downloaded, for: url)

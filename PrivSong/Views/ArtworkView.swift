@@ -101,7 +101,7 @@ struct ArtworkView: View {
         }
 
         do {
-            let (data, _) = try await URLSession.shared.data(for: resource.request)
+            let (data, _) = try await ArtworkNetwork.session.data(for: resource.request)
             guard !Task.isCancelled,
                   let loaded = await ArtworkDecoder.image(from: data, url: url) else { return }
             ArtworkImageCache.shared.insert(loaded, for: url)
@@ -221,6 +221,17 @@ final class ArtworkImageCache {
         }
         return components.url?.absoluteString ?? url.absoluteString
     }
+}
+
+/// Network access for artwork. ArtworkDiskCache already keeps every image, so these requests
+/// skip the shared URLCache; going through it stored each image a second time on disk.
+enum ArtworkNetwork {
+    static let session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: configuration)
+    }()
 }
 
 enum ArtworkDiskCache {
