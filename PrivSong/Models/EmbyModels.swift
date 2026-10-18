@@ -93,37 +93,6 @@ struct PlaybackQualityPreferences: Equatable {
     }
 }
 
-enum AudioCacheLimit: Int, CaseIterable, Identifiable, Sendable {
-    case off = 0
-    case mb256 = 256
-    case mb512 = 512
-    case gb1 = 1024
-    case gb2 = 2048
-
-    static let defaultValue: AudioCacheLimit = .mb512
-
-    var id: Int { rawValue }
-
-    var bytes: Int64 {
-        Int64(rawValue) * 1024 * 1024
-    }
-
-    var title: String {
-        switch self {
-        case .off:
-            return "不缓存"
-        case .mb256:
-            return "256 MB"
-        case .mb512:
-            return "512 MB"
-        case .gb1:
-            return "1 GB"
-        case .gb2:
-            return "2 GB"
-        }
-    }
-}
-
 struct EmbyAuthResponse: Decodable {
     let user: EmbyUser
     let accessToken: String

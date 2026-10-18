@@ -53,21 +53,6 @@ final class AppStore {
     var keepsScreenAwakeOnPlayerPage = false {
         didSet { UserDefaults.standard.set(keepsScreenAwakeOnPlayerPage, forKey: keepsScreenAwakeKey) }
     }
-    var audioCacheLimit: AudioCacheLimit = .defaultValue {
-        didSet {
-            UserDefaults.standard.set(audioCacheLimit.rawValue, forKey: audioCacheLimitKey)
-            PlaybackAudioCache.setLimit(audioCacheLimit)
-            if audioCacheLimit == .off {
-                player?.cancelAudioCaching()
-            }
-            Task {
-                await Task.detached(priority: .utility) {
-                    PlaybackAudioCache.trimToLimit()
-                }.value
-                await refreshCacheUsage()
-            }
-        }
-    }
     private(set) var cacheUsageBytes: Int64?
     private(set) var isClearingCache = false
 
@@ -281,7 +266,6 @@ final class AppStore {
         restoreSession()
         Task.detached(priority: .utility) {
             DiskCacheMaintenance.removeOrphanedFiles()
-            PlaybackAudioCache.trimToLimit()
             ArtworkDiskCache.trimToLimit()
         }
     }
@@ -1070,7 +1054,6 @@ final class AppStore {
         }
         clearPersistedSnapshots()
         ArtworkImageCache.shared.clear()
-        player?.cancelAudioCaching()
         ArtworkDiskCache.clear()
         PlaybackAudioCache.clearAll()
         URLCache.shared.removeAllCachedResponses()
@@ -1082,7 +1065,6 @@ final class AppStore {
         isClearingCache = true
         // Only cached song audio. The library snapshot and artwork stay so the app doesn't
         // have to resync from Emby afterwards.
-        player?.cancelAudioCaching()
 
         Task {
             // Deleting hundreds of MB of audio can take a moment; keep it off the main thread.
@@ -1419,9 +1401,8 @@ final class AppStore {
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)
         // The 120Hz toggle was removed: the Info.plist key already enables ProMotion everywhere.
         UserDefaults.standard.removeObject(forKey: highRefreshRateKey)
-        if UserDefaults.standard.object(forKey: audioCacheLimitKey) != nil {
-            audioCacheLimit = AudioCacheLimit(rawValue: UserDefaults.standard.integer(forKey: audioCacheLimitKey)) ?? .defaultValue
-        }
+        // Song caching was removed (it downloaded each song twice), and with it this setting.
+        UserDefaults.standard.removeObject(forKey: audioCacheLimitKey)
     }
 
     private func refreshMostPlayedSongsFromServer() async {

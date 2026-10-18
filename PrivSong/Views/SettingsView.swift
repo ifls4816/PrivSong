@@ -80,8 +80,7 @@ struct SettingsView: View {
 
     private var storageRows: some View {
         Group {
-            AudioCacheLimitMenuRow(selection: Bindable(store).audioCacheLimit)
-
+            // New songs are no longer cached; this clears what earlier versions saved.
             Button {
                 store.clearCaches()
             } label: {
@@ -294,24 +293,6 @@ private struct PlaybackQualityMenuRow: View {
             HStack(spacing: 12) {
                 SettingsIcon(icon: icon, tint: tint)
                 Text(title)
-            }
-        }
-        .pickerStyle(.menu)
-    }
-}
-
-private struct AudioCacheLimitMenuRow: View {
-    @Binding var selection: AudioCacheLimit
-
-    var body: some View {
-        Picker(selection: $selection) {
-            ForEach(AudioCacheLimit.allCases) { limit in
-                Text(limit.title).tag(limit)
-            }
-        } label: {
-            HStack(spacing: 12) {
-                SettingsIcon(icon: "internaldrive", tint: .gray)
-                Text("歌曲缓存上限")
             }
         }
         .pickerStyle(.menu)

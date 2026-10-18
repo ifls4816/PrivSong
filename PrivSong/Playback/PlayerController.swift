@@ -2,7 +2,6 @@ import AVFoundation
 import Combine
 import Foundation
 import Network
-import Synchronization
 import UIKit
 
 struct LyricLine: Identifiable, Hashable, Sendable {
@@ -78,7 +77,6 @@ final class PlayerController: ObservableObject {
     private let nowPlaying = NowPlayingCoordinator.shared
     private let remoteCommands = RemoteCommandCoordinator.shared
     private let client = EmbyClient()
-    private let audioCache = CurrentSongAudioCache()
     private let queueSnapshotStore = PlaybackQueueSnapshotStore()
     private let pathMonitor = NWPathMonitor()
     private var networkKind: PlaybackNetworkKind = .wifi
@@ -135,7 +133,6 @@ final class PlayerController: ObservableObject {
     private var artworkTask: Task<Void, Never>?
     private var lyricsTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
-    private var audioCacheTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
     private var queuePersistTask: Task<Void, Never>?
     private var pendingQueueWrite: (@Sendable () -> Void)?
@@ -457,28 +454,6 @@ final class PlayerController: ObservableObject {
         return streamCandidateIndex == 0 && currentTranscodeBitrate != nil ? .transcode : .directStream
     }
 
-    func cancelAudioCaching() {
-        audioCacheTask?.cancel()
-        audioCacheTask = nil
-    }
-
-    private func cacheCurrentSong(from sourceURL: AuthenticatedURL?, cacheKey: PlaybackAudioCache.Key) {
-        audioCacheTask?.cancel()
-        guard let sourceURL, !sourceURL.isFileURL, PlaybackAudioCache.isEnabled else { return }
-
-        let currentAudioCache = audioCache
-        audioCacheTask = Task {
-            do {
-                // Give the stream the bandwidth while it starts, and skip caching tracks that get skipped quickly.
-                try await Task.sleep(for: PlaybackAudioCache.downloadDelay)
-                _ = try await currentAudioCache.cacheCurrentSong(from: sourceURL, key: cacheKey)
-            } catch is CancellationError {
-            } catch {
-                print("[Player] Failed to cache current song: \(error.localizedDescription)")
-            }
-        }
-    }
-
     private func start(
         song: EmbyAudioItem,
         session: EmbySession,
@@ -487,7 +462,6 @@ final class PlayerController: ObservableObject {
         durationOverride: TimeInterval? = nil
     ) {
         reportPlaybackStoppedIfNeeded(position: elapsed)
-        audioCacheTask?.cancel()
         let normalizedStartPosition = max(0, startPosition)
         let knownDuration = max(song.duration, durationOverride ?? 0)
         let initialPosition = knownDuration > normalizedStartPosition
@@ -527,7 +501,6 @@ final class PlayerController: ObservableObject {
         let cacheKey = PlaybackAudioCache.Key(session: session, item: song)
         let playSessionId = UUID().uuidString
         activeAudioCacheKey = cacheKey
-        PlaybackAudioCache.setProtectedKey(cacheKey)
         currentPlaySessionId = playSessionId
         currentTranscodeBitrate = transcodeBitrate(for: song)
         streamCandidates = client.playbackURLCandidates(
@@ -545,10 +518,6 @@ final class PlayerController: ObservableObject {
         let initialURL = cachedResource ?? streamCandidates.first
         currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedResource != nil)
         replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
-        // Caching downloads the full original file, which would defeat a lower-bitrate transcode.
-        if cachedResource == nil, currentTranscodeBitrate == nil {
-            cacheCurrentSong(from: streamCandidates.first, cacheKey: cacheKey)
-        }
         loadArtwork(for: song, session: session)
         // Lyrics are loaded when the lyrics panel asks for them (loadLyricsIfNeeded).
         reportPlaybackStarted(position: initialPosition)
@@ -720,8 +689,6 @@ final class PlayerController: ObservableObject {
                 return
             }
             guard self.currentSong != nil, self.currentStreamURL?.isFileURL == false else { return }
-            // Don't let the background full-file cache download carry on over cellular data.
-            self.cancelAudioCaching()
             self.reconnectCurrentTrack()
         }
     }
@@ -766,7 +733,6 @@ final class PlayerController: ObservableObject {
 
     private func stopPlaybackForConfigurationChange() {
         reportPlaybackStoppedIfNeeded(position: elapsed)
-        audioCacheTask?.cancel()
         artworkTask?.cancel()
         lyricsTask?.cancel()
 
@@ -784,7 +750,6 @@ final class PlayerController: ObservableObject {
         streamCandidateIndex = 0
         currentDurationOverride = nil
         activeAudioCacheKey = nil
-        PlaybackAudioCache.setProtectedKey(nil)
         seekTarget = nil
         pendingSeekTarget = nil
         suppressTimeUpdatesUntil = .distantPast
@@ -924,10 +889,6 @@ final class PlayerController: ObservableObject {
             startAt: elapsed,
             candidateIndex: nextIndex
         )
-        // If the transcode failed, don't also download the full original in the background.
-        if let activeAudioCacheKey, currentTranscodeBitrate == nil {
-            cacheCurrentSong(from: streamCandidates[nextIndex], cacheKey: activeAudioCacheKey)
-        }
     }
 
     private func shuffledPlaybackQueue(from songs: [EmbyAudioItem], keeping current: EmbyAudioItem?) -> [EmbyAudioItem] {
@@ -1786,17 +1747,11 @@ final class PlayerController: ObservableObject {
     }
 }
 
+/// Song files cached by earlier versions of the app. Nothing new is downloaded any more:
+/// caching fetched each song a second time alongside the stream, doubling its data use. Files
+/// that are already on disk still play from here (no network needed) until the user clears them.
 enum PlaybackAudioCache {
     private static let version = "v3"
-    static let downloadDelay: Duration = .seconds(10)
-
-    private struct State {
-        var limitBytes = AudioCacheLimit.defaultValue.bytes
-        var generation = 0
-        var protectedFileName: String?
-    }
-
-    private static let state = Mutex(State())
 
     struct Key: Hashable {
         let serverHash: String
@@ -1827,30 +1782,12 @@ enum PlaybackAudioCache {
         }
     }
 
-    static var limitBytes: Int64 {
-        state.withLock { $0.limitBytes }
-    }
-
-    static var isEnabled: Bool {
-        limitBytes > 0
-    }
-
-    static func setLimit(_ limit: AudioCacheLimit) {
-        state.withLock { $0.limitBytes = limit.bytes }
-    }
-
-    /// The file the player is reading right now; trimming never removes it.
-    static func setProtectedKey(_ key: Key?) {
-        state.withLock { $0.protectedFileName = key?.fileName }
-    }
-
     static func cachedFileURL(for key: Key) -> URL? {
         let url = fileURL(for: key)
         guard FileManager.default.fileExists(atPath: url.path),
               (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) ?? 0 > 0 else {
             return nil
         }
-        DiskCacheMaintenance.markUsed(url)
         return url
     }
 
@@ -1859,8 +1796,6 @@ enum PlaybackAudioCache {
     }
 
     static func clearAll() {
-        // Downloads that started before this point must not write their file back.
-        state.withLock { $0.generation += 1 }
         try? FileManager.default.removeItem(at: directoryURL)
     }
 
@@ -1868,22 +1803,8 @@ enum PlaybackAudioCache {
         DiskCacheMaintenance.size(of: directoryURL)
     }
 
-    /// Evicts least recently played songs until the cache fits the configured limit.
-    static func trimToLimit() {
-        let (limit, protectedFileName) = state.withLock { ($0.limitBytes, $0.protectedFileName) }
-        DiskCacheMaintenance.trim(directoryURL, toBytes: limit, protecting: protectedFileName)
-    }
-
-    fileprivate static var generation: Int {
-        state.withLock { $0.generation }
-    }
-
-    fileprivate static func fileURL(for key: Key) -> URL {
+    private static func fileURL(for key: Key) -> URL {
         directoryURL.appendingPathComponent(key.fileName, isDirectory: false)
-    }
-
-    fileprivate static func prepareDirectory() throws {
-        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
     }
 
     private static var directoryURL: URL {
@@ -1915,51 +1836,6 @@ enum PlaybackAudioCache {
             hash &*= 1_099_511_628_211
         }
         return String(hash, radix: 16)
-    }
-}
-
-actor CurrentSongAudioCache {
-    func cacheCurrentSong(from sourceURL: AuthenticatedURL, key: PlaybackAudioCache.Key) async throws -> URL? {
-        if let cachedURL = PlaybackAudioCache.cachedFileURL(for: key) {
-            return cachedURL
-        }
-        guard PlaybackAudioCache.isEnabled else { return nil }
-
-        let generation = PlaybackAudioCache.generation
-        let (temporaryURL, response) = try await URLSession.shared.download(for: sourceURL.request)
-        defer { try? FileManager.default.removeItem(at: temporaryURL) }
-        try Task.checkCancellation()
-        let fileSize = try validate(response: response, temporaryURL: temporaryURL)
-
-        // The cache was cleared or shrunk while downloading, or this single file would not fit at all.
-        guard PlaybackAudioCache.generation == generation,
-              fileSize <= PlaybackAudioCache.limitBytes else {
-            return nil
-        }
-
-        try PlaybackAudioCache.prepareDirectory()
-        let destinationURL = PlaybackAudioCache.fileURL(for: key)
-        try? FileManager.default.removeItem(at: destinationURL)
-        do {
-            try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-        } catch {
-            try FileManager.default.copyItem(at: temporaryURL, to: destinationURL)
-        }
-        PlaybackAudioCache.trimToLimit()
-        return destinationURL
-    }
-
-    private func validate(response: URLResponse, temporaryURL: URL) throws -> Int64 {
-        if let httpResponse = response as? HTTPURLResponse,
-           !(200..<300).contains(httpResponse.statusCode) {
-            throw URLError(.badServerResponse)
-        }
-
-        let fileSize = try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-        guard fileSize > 0 else {
-            throw URLError(.zeroByteResource)
-        }
-        return Int64(fileSize)
     }
 }
 
