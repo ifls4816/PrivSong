@@ -10,6 +10,11 @@ struct LyricLine: Identifiable, Hashable, Sendable {
     let text: String
 }
 
+struct PlaybackQueueEntry: Identifiable {
+    let id: UUID
+    let song: EmbyAudioItem
+}
+
 private let seekBackwardTolerance: TimeInterval = 0.35
 
 private struct RemoteCommandAvailability: Equatable {
@@ -57,7 +62,7 @@ final class PlayerController: ObservableObject {
     private(set) var duration: TimeInterval = 0 {
         didSet { timeline.updateDuration(duration) }
     }
-    @Published private(set) var upcomingQueueSnapshot: ArraySlice<EmbyAudioItem> = []
+    @Published private(set) var upcomingQueueSnapshot: ArraySlice<PlaybackQueueEntry> = []
     @Published private(set) var lyrics: [LyricLine] = []
     @Published private(set) var lyricsSongId: String?
     @Published private(set) var isLoadingLyrics = false
@@ -92,6 +97,7 @@ final class PlayerController: ObservableObject {
     private var queue: [EmbyAudioItem] = [] {
         didSet { queueRevision = UUID() }
     }
+    private var queueEntries: [PlaybackQueueEntry] = []
     private var queueBeforeShuffle: [EmbyAudioItem]? {
         didSet { queueRevision = UUID() }
     }
@@ -204,7 +210,7 @@ final class PlayerController: ObservableObject {
             audioSession.deactivate()
         }
         queueSessionGeneration = UUID()
-        queue = []
+        replaceQueue([])
         queueBeforeShuffle = nil
         currentQueueIndex = nil
         restoredQueueIndex = nil
@@ -263,10 +269,10 @@ final class PlayerController: ObservableObject {
         restoredQueueIndex = nil
         if shouldShuffle {
             queueBeforeShuffle = playbackQueue
-            queue = shuffledPlaybackQueue(from: playbackQueue, keeping: song)
+            replaceQueue(shuffledPlaybackQueue(from: playbackQueue, keeping: song))
         } else {
             queueBeforeShuffle = nil
-            queue = playbackQueue
+            replaceQueue(playbackQueue)
         }
 
         start(
@@ -336,14 +342,14 @@ final class PlayerController: ObservableObject {
         let reference = currentSong ?? restoredSong
         if isShuffleEnabled {
             if let originalQueue = queueBeforeShuffle {
-                queue = originalQueue
+                replaceQueue(originalQueue)
             }
             queueBeforeShuffle = nil
             isShuffleEnabled = false
         } else {
             guard !queue.isEmpty else { return }
             queueBeforeShuffle = queue
-            queue = shuffledPlaybackQueue(from: queue, keeping: reference)
+            replaceQueue(shuffledPlaybackQueue(from: queue, keeping: reference))
             isShuffleEnabled = true
         }
         updateQueueReference(to: reference)
@@ -351,7 +357,12 @@ final class PlayerController: ObservableObject {
         syncRemoteCommandAvailability()
     }
 
-    func playQueued(at index: Int) {
+    func playQueued(entryID: UUID) {
+        guard let index = upcomingQueueSnapshot.firstIndex(where: { $0.id == entryID }) else { return }
+        playQueued(at: index)
+    }
+
+    private func playQueued(at index: Int) {
         guard queue.indices.contains(index), let session else { return }
         start(song: queue[index], session: session, autoplay: true, queueIndex: index)
     }
@@ -374,9 +385,9 @@ final class PlayerController: ObservableObject {
         }
         guard songs.indices.contains(removeIndex) else { return }
 
-        var updated = songs
+        var updated = queueEntries
         updated.remove(at: removeIndex)
-        applyActiveQueue(updated)
+        applyActiveQueue(updated.map(\.song), entries: updated)
     }
 
     func clearUpcomingQueue() {
@@ -391,16 +402,16 @@ final class PlayerController: ObservableObject {
     func moveUpcomingQueueItem(from sourceIndex: Int, to destinationIndex: Int) {
         guard sourceIndex != destinationIndex else { return }
 
-        let songs = activeQueue
-        guard let currentIndex = currentQueueIndex ?? restoredQueueIndex else {
-            applyActiveQueue(reordered(songs, moving: sourceIndex, to: destinationIndex))
-            return
-        }
-
-        let upcomingStart = songs.index(after: currentIndex)
-        applyActiveQueue(reordered(
-            songs, moving: upcomingStart + sourceIndex, to: upcomingStart + destinationIndex
-        ))
+        let upcomingStart = upcomingQueueSnapshot.startIndex
+        let source = upcomingStart + sourceIndex
+        let destination = upcomingStart + destinationIndex
+        guard upcomingQueueSnapshot.indices.contains(source),
+              upcomingQueueSnapshot.indices.contains(destination) else { return }
+        // Move the entry with its ID so SwiftUI animates the row instead of replacing its contents.
+        var moved = queueEntries
+        let entry = moved.remove(at: source)
+        moved.insert(entry, at: destination)
+        applyActiveQueue(moved.map(\.song), entries: moved)
     }
 
     func cycleRepeatMode() {
@@ -985,12 +996,27 @@ final class PlayerController: ObservableObject {
         return shuffled
     }
 
-    private func applyActiveQueue(_ songs: [EmbyAudioItem]) {
+    private func replaceQueue(_ songs: [EmbyAudioItem], entries: [PlaybackQueueEntry]? = nil) {
+        queue = songs
+        if let entries {
+            queueEntries = entries
+        } else if songs.isEmpty {
+            queueEntries = []
+        } else {
+            var previousIDs = Dictionary(grouping: queueEntries.reversed(), by: { $0.song.id })
+                .mapValues { $0.map(\.id) }
+            queueEntries = songs.map { song in
+                PlaybackQueueEntry(id: previousIDs[song.id]?.popLast() ?? UUID(), song: song)
+            }
+        }
+    }
+
+    private func applyActiveQueue(_ songs: [EmbyAudioItem], entries: [PlaybackQueueEntry]? = nil) {
         let reference = currentSong ?? restoredSong
         if isShuffleEnabled {
             reconcileOriginalQueue(with: songs)
         }
-        queue = songs
+        replaceQueue(songs, entries: entries)
         updateQueueReference(to: reference)
         syncQueueSnapshots()
         syncRemoteCommandAvailability()
@@ -1054,7 +1080,7 @@ final class PlayerController: ObservableObject {
 
     private func syncQueueSnapshots(persists: Bool = true) {
         let start = (currentQueueIndex ?? restoredQueueIndex).map { $0 + 1 } ?? queue.startIndex
-        upcomingQueueSnapshot = queue[start...]
+        upcomingQueueSnapshot = queueEntries[start...]
         if persists {
             persistQueueSnapshot()
         }
@@ -1079,7 +1105,7 @@ final class PlayerController: ObservableObject {
         // Playback started before the snapshot finished loading; that queue wins.
         guard !snapshot.queue.isEmpty, queue.isEmpty, currentSong == nil else { return }
 
-        queue = snapshot.queue
+        replaceQueue(snapshot.queue)
         queueBeforeShuffle = snapshot.isShuffleEnabled ? snapshot.queueBeforeShuffle : nil
         isShuffleEnabled = snapshot.isShuffleEnabled
         repeatMode = snapshot.repeatMode
@@ -1197,18 +1223,6 @@ final class PlayerController: ObservableObject {
         queuePersistenceQueue.async {
             store.clear()
         }
-    }
-
-    private func reordered(_ songs: [EmbyAudioItem], moving sourceIndex: Int, to destinationIndex: Int) -> [EmbyAudioItem] {
-        guard songs.indices.contains(sourceIndex),
-              songs.indices.contains(destinationIndex) else {
-            return songs
-        }
-
-        var result = songs
-        let moved = result.remove(at: sourceIndex)
-        result.insert(moved, at: destinationIndex)
-        return result
     }
 
     private func configureRemoteCommands() {

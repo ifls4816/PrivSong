@@ -4,6 +4,25 @@ import XCTest
 @testable import PrivSong
 
 final class RegressionTests: XCTestCase {
+    @MainActor
+    func testUpcomingTracksKeepTheirEntryIDsWhenMovedInEitherDirection() throws {
+        let player = PlayerController()
+        let repeated = try song("repeated")
+        player.addToQueueEnd(repeated)
+        player.addToQueueEnd(try song("middle"))
+        player.addToQueueEnd(repeated)
+        player.addToQueueEnd(try song("last"))
+        let initial = player.upcomingQueueSnapshot.map(\.id)
+        XCTAssertEqual(Set(initial).count, 4)
+
+        player.moveUpcomingQueueItem(from: 0, to: 3)
+        XCTAssertEqual(player.upcomingQueueSnapshot.map(\.id), [initial[1], initial[2], initial[3], initial[0]])
+        XCTAssertEqual(player.upcomingQueueSnapshot.map(\.song.id), ["middle", "repeated", "last", "repeated"])
+
+        player.moveUpcomingQueueItem(from: 3, to: 0)
+        XCTAssertEqual(player.upcomingQueueSnapshot.map(\.id), initial)
+    }
+
     func testServerAddressDefaultsToHTTPSAndPreservesExplicitHTTP() throws {
         XCTAssertEqual(try EmbyClient.normalizedServerURL(" music.example.test/emby ").scheme, "https")
         XCTAssertEqual(try EmbyClient.normalizedServerURL("http://192.168.1.5:8096/emby").scheme, "http")

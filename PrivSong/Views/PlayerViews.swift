@@ -1369,22 +1369,18 @@ struct QueuePlayerView: View {
         }
     }
 
-    private func queueList(_ upcoming: ArraySlice<EmbyAudioItem>) -> some View {
+    private func queueList(_ upcoming: ArraySlice<PlaybackQueueEntry>) -> some View {
         List {
-            queueRows(upcoming)
-                .onMove { source, destination in
-                    guard let from = source.first else { return }
-                    player.moveUpcomingQueueItem(from: from, to: destination > from ? destination - 1 : destination)
-                }
-                .onDelete(perform: removeRows)
-        }
-    }
-
-    private func queueRows(_ upcoming: ArraySlice<EmbyAudioItem>) -> some DynamicViewContent {
-        ForEach(upcoming.indices, id: \.self) { index in
-            queueRow(song: upcoming[index], index: index)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            ForEach(upcoming) { entry in
+                queueRow(entry)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            }
+            .onMove { source, destination in
+                guard let from = source.first else { return }
+                player.moveUpcomingQueueItem(from: from, to: destination > from ? destination - 1 : destination)
+            }
+            .onDelete(perform: removeRows)
         }
     }
 
@@ -1394,9 +1390,10 @@ struct QueuePlayerView: View {
         }
     }
 
-    private func queueRow(song: EmbyAudioItem, index: Int) -> some View {
-        Button {
-            player.playQueued(at: index)
+    private func queueRow(_ entry: PlaybackQueueEntry) -> some View {
+        let song = entry.song
+        return Button {
+            player.playQueued(entryID: entry.id)
         } label: {
             HStack(spacing: 10) {
                 ArtworkView(url: store.imageURL(for: song, size: 120), cornerRadius: 5)
