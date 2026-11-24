@@ -872,6 +872,12 @@ final class PlayerController: ObservableObject {
 
     private func seek(toSeconds seconds: TimeInterval, shouldPlayAfterSeek: Bool) {
         let clamped = max(0, min(seconds, max(duration, 0)))
+        if sourceLookupTask != nil {
+            elapsed = clamped
+            persistQueueSnapshot()
+            syncNowPlaying(force: true)
+            return
+        }
         guard currentStreamURL != nil else { return }
 
         seekGeneration += 1
@@ -1377,7 +1383,7 @@ final class PlayerController: ObservableObject {
     }
 
     private func handlePeriodicTime(_ time: CMTime) {
-        guard !isSeeking else { return }
+        guard sourceLookupTask == nil, !isSeeking else { return }
 
         let newElapsed = playbackElapsed(for: time.seconds)
         if let pendingSeekTarget {
