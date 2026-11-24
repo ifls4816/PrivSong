@@ -327,53 +327,40 @@ struct NowPlayingView: View {
     }
 
     private func songHeader(_ song: EmbyAudioItem) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    onOpenAlbum(song)
-                } label: {
-                    Text(song.name)
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.primary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("前往专辑")
-
-                Button {
-                    onOpenArtist(song)
-                } label: {
-                    Text(song.artistLine)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint("前往艺术家")
-
-                if player.hasPlaybackFailed {
-                    Label("播放失败，点按播放重试", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.red)
-                        .lineLimit(1)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
+        VStack(alignment: .leading, spacing: 4) {
             Button {
-                store.toggleFavorite(song)
+                onOpenAlbum(song)
             } label: {
-                Image(systemName: store.isFavorite(song) ? "star.fill" : "star")
-                    .font(.system(size: 18, weight: .semibold))
-                    .frame(width: 34, height: 34)
-                    .foregroundStyle(store.isFavorite(song) ? Color.musicRed : .secondary)
+                Text(song.name)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(store.isFavorite(song) ? "取消喜欢" : "喜欢")
+            .accessibilityHint("前往专辑")
+
+            Button {
+                onOpenArtist(song)
+            } label: {
+                Text(song.artistLine)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("前往艺术家")
+
+            if player.hasPlaybackFailed {
+                Label("播放失败，点按播放重试", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .lineLimit(1)
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func progressControls(song: EmbyAudioItem) -> some View {
@@ -392,7 +379,7 @@ struct NowPlayingView: View {
         let spacing = min(max((width - 236) / 4, 8), 22)
 
         return HStack(spacing: spacing) {
-            shuffleModeButton
+            favoriteButton(song)
 
             Button {
                 player.previous()
@@ -445,38 +432,25 @@ struct NowPlayingView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("下一首")
 
-            repeatModeButton
+            PlaybackModeMenu(width: 36, height: 44)
         }
         .frame(width: width)
         .foregroundStyle(.primary)
     }
 
-    private var shuffleModeButton: some View {
-        Button {
-            player.toggleShuffle()
+    private func favoriteButton(_ song: EmbyAudioItem) -> some View {
+        let isFavorite = store.isFavorite(song)
+        return Button {
+            store.toggleFavorite(song)
         } label: {
-            Image(systemName: "shuffle")
-                .font(.system(size: 17, weight: .semibold))
+            Image(systemName: isFavorite ? "star.fill" : "star")
+                .font(.system(size: 18, weight: .semibold))
                 .frame(width: 36, height: 44)
-                .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
+                .contentShape(Rectangle())
+                .foregroundStyle(isFavorite ? Color.musicRed : .secondary)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("随机播放")
-        .accessibilityValue(player.isShuffleEnabled ? "开" : "关")
-    }
-
-    private var repeatModeButton: some View {
-        Button {
-            player.cycleRepeatMode()
-        } label: {
-            Image(systemName: player.repeatMode.iconName)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 36, height: 44)
-                .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("重复播放")
-        .accessibilityValue(player.repeatMode.accessibilityValue)
+        .accessibilityLabel(isFavorite ? "取消喜欢" : "喜欢")
     }
 
     private var volumeControl: some View {
@@ -1303,27 +1277,7 @@ struct QueuePlayerView: View {
                     .foregroundStyle(.primary)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button {
-                    player.toggleShuffle()
-                } label: {
-                    Image(systemName: "shuffle")
-                        .frame(width: 32, height: 30)
-                        .foregroundStyle(player.isShuffleEnabled ? Color.musicRed : .secondary)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("随机播放")
-                .accessibilityValue(player.isShuffleEnabled ? "开" : "关")
-
-                Button {
-                    player.cycleRepeatMode()
-                } label: {
-                    Image(systemName: player.repeatMode.iconName)
-                        .frame(width: 32, height: 30)
-                        .foregroundStyle(player.repeatMode == .none ? .secondary : Color.musicRed)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("重复播放")
-                .accessibilityValue(player.repeatMode.accessibilityValue)
+                PlaybackModeMenu(width: 32, height: 30)
 
                 Button {
                     player.clearUpcomingQueue()
@@ -1416,6 +1370,47 @@ struct QueuePlayerView: View {
         .buttonStyle(.plain)
         .disabled(editMode.isEditing)
         .accessibilityElement(children: .combine)
+    }
+}
+
+private struct PlaybackModeMenu: View {
+    @EnvironmentObject private var player: PlayerController
+    let width: CGFloat
+    let height: CGFloat
+
+    var body: some View {
+        let isShuffleEnabled = player.isShuffleEnabled
+        let repeatMode = player.repeatMode
+        let icon = isShuffleEnabled && repeatMode == .none ? "shuffle" : repeatMode.iconName
+
+        return Menu {
+            Toggle(isOn: Binding(
+                get: { player.isShuffleEnabled },
+                set: { enabled in
+                    if player.isShuffleEnabled != enabled { player.toggleShuffle() }
+                }
+            )) {
+                Label("随机播放", systemImage: "shuffle")
+            }
+
+            Picker("循环播放", selection: Binding(
+                get: { player.repeatMode },
+                set: { player.setRepeatMode($0) }
+            )) {
+                Text("关闭循环").tag(RepeatMode.none)
+                Text("列表循环").tag(RepeatMode.all)
+                Text("单曲循环").tag(RepeatMode.one)
+            }
+        } label: {
+            Image(systemName: icon)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: width, height: height)
+                .contentShape(Rectangle())
+                .foregroundStyle(isShuffleEnabled || repeatMode != .none ? Color.musicRed : .secondary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("播放模式")
+        .accessibilityValue("随机\(isShuffleEnabled ? "开" : "关")，循环\(repeatMode.accessibilityValue)")
     }
 }
 

@@ -70,7 +70,7 @@ final class PlayerController: ObservableObject {
     @Published private(set) var isBuffering = false
     @Published private(set) var sleepTimerEndDate: Date?
     @Published var isShuffleEnabled = false
-    @Published var repeatMode: RepeatMode = .none
+    @Published private(set) var repeatMode: RepeatMode = .none
 
     /// (item, position, duration, isFinished, isCheckpoint). `isCheckpoint` is true for start,
     /// pause, seek and stop reports, and false for the periodic progress ticks.
@@ -414,15 +414,9 @@ final class PlayerController: ObservableObject {
         applyActiveQueue(moved.map(\.song), entries: moved)
     }
 
-    func cycleRepeatMode() {
-        switch repeatMode {
-        case .none:
-            repeatMode = .all
-        case .all:
-            repeatMode = .one
-        case .one:
-            repeatMode = .none
-        }
+    func setRepeatMode(_ mode: RepeatMode) {
+        guard repeatMode != mode else { return }
+        repeatMode = mode
         persistQueueSnapshot()
         syncRemoteCommandAvailability()
     }
