@@ -2,7 +2,6 @@ import AVFoundation
 import Combine
 import Foundation
 import Network
-import os
 import UIKit
 
 struct LyricLine: Identifiable, Hashable, Sendable {
@@ -59,7 +58,6 @@ final class PlayerController: ObservableObject {
         didSet { timeline.updateDuration(duration) }
     }
     @Published private(set) var upcomingQueueSnapshot: ArraySlice<EmbyAudioItem> = []
-    var upcomingQueueRevision: UUID { queueRevision }
     @Published private(set) var lyrics: [LyricLine] = []
     @Published private(set) var lyricsSongId: String?
     @Published private(set) var isLoadingLyrics = false
@@ -121,7 +119,6 @@ final class PlayerController: ObservableObject {
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
     private var currentPlaybackMedia: EmbyAudioItem?
     private var sourceLookupTask: Task<Void, Never>?
-    private var playbackStartTrace: OSSignpostIntervalState?
     private var lastPlaybackProgressReport = Date.distantPast
     private var activeAudioCacheKey: PlaybackAudioCache.Key?
     private var currentArtwork: UIImage?
@@ -406,21 +403,6 @@ final class PlayerController: ObservableObject {
         ))
     }
 
-    func reorderUpcomingQueue(
-        indices: [Int], before destination: Int?, displayedRange: Range<Int>, revision: UUID
-    ) {
-        guard revision == queueRevision, displayedRange == upcomingQueueSnapshot.indices,
-              !indices.isEmpty, indices.allSatisfy(displayedRange.contains),
-              let end = destination ?? displayedRange.last.map({ $0 + 1 }),
-              end >= displayedRange.lowerBound, end <= displayedRange.upperBound else { return }
-        let sources = Set(indices)
-        let moving = indices.map { queue[$0] }
-        var remaining = queue.enumerated().compactMap { sources.contains($0.offset) ? nil : $0.element }
-        let insertion = end - sources.filter { $0 < end }.count
-        remaining.insert(contentsOf: moving, at: insertion)
-        applyActiveQueue(remaining)
-    }
-
     func cycleRepeatMode() {
         switch repeatMode {
         case .none:
@@ -504,9 +486,7 @@ final class PlayerController: ObservableObject {
         reportPlaybackStoppedIfNeeded(position: elapsed)
         sourceLookupTask?.cancel()
         sourceLookupTask = nil
-        finishPlaybackStartTrace()
-        let trace = PerformanceTrace.playback
-        playbackStartTrace = trace.beginInterval("Start track", id: trace.makeSignpostID())
+
         if currentSong?.id != song.id { currentPlaybackMedia = nil }
         let previousIndex = currentQueueIndex ?? restoredQueueIndex
         if let queueIndex {
@@ -818,7 +798,6 @@ final class PlayerController: ObservableObject {
         isBuffering = false
         playbackStatusText = "播放失败"
         hasPlaybackFailed = true
-        finishPlaybackStartTrace()
         isSwitchingTracks = false
         syncNowPlaying(force: true)
     }
@@ -838,7 +817,6 @@ final class PlayerController: ObservableObject {
         stallRecovery = nil
         hasPlaybackFailed = false
         shouldResumeAfterInterruption = false
-        finishPlaybackStartTrace()
 
         engine.pause()
         engine.replaceCurrentItem(with: nil)
@@ -1417,7 +1395,6 @@ final class PlayerController: ObservableObject {
 
     private func syncPlaybackStateFromEngine(forceNowPlaying: Bool) {
         guard sourceLookupTask == nil else { return }
-        if engine.timeControlStatus == .playing { finishPlaybackStartTrace() }
         // While AVPlayer waits for data its `rate` stays 1, so the old `rate`-based checks showed
         // a stalled stream as playing (no sound, no spinner). Use the control status instead:
         // waiting = buffering, and anything but paused means the user wants playback.
@@ -1437,12 +1414,6 @@ final class PlayerController: ObservableObject {
         }
         syncNowPlaying(force: forceNowPlaying)
         syncRemoteCommandAvailability()
-    }
-
-    private func finishPlaybackStartTrace() {
-        guard let playbackStartTrace else { return }
-        PerformanceTrace.playback.endInterval("Start track", playbackStartTrace)
-        self.playbackStartTrace = nil
     }
 
     private func clearTransientPlaybackStatus() {
@@ -2122,9 +2093,6 @@ struct PlaybackQueueSnapshotStore: Sendable {
     }
 
     func saveQueue(queue: [EmbyAudioItem], queueBeforeShuffle: [EmbyAudioItem]?, checkpoint: State) -> Bool {
-        let trace = PerformanceTrace.playback
-        let span = trace.beginInterval("Write playback queue", id: trace.makeSignpostID())
-        defer { trace.endInterval("Write playback queue", span) }
         // A matching checkpoint is part of the atomic queue write. It remains usable if
         // the app stops before the small state file is written.
         let value = QueueFile(version: 3, queue: queue, queueBeforeShuffle: queueBeforeShuffle, checkpoint: checkpoint)

@@ -37,22 +37,6 @@ struct RootTabView: View {
             } message: {
                 Text(store.favoriteErrorMessage ?? "")
             }
-            .onChange(of: performanceScreen, initial: true) { _, screen in
-                #if canImport(StateReporting)
-                if #available(iOS 27.0, *) { DevicePerformanceReporting.reportScreen(screen) }
-                #endif
-            }
-    }
-
-    private var performanceScreen: String {
-        if store.session == nil { return "sign-in" }
-        if isPlayerExpanded { return "now-playing" }
-        return switch selectedTab {
-        case .home: "home"
-        case .browse: "browse"
-        case .search: "search"
-        case .settings: "settings"
-        }
     }
 
     /// Sign-in covers the app whenever there's no session; it dismisses itself once connected.

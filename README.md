@@ -26,5 +26,3 @@ https://music.example.com
 ## Notes
 
 Server addresses default to HTTPS. For Emby servers on a trusted local network that only support HTTP, enter the full `http://` address and allow Local Network access when iOS prompts. HTTP sends login credentials in plaintext.
-
-The Library, Playback, and Artwork signpost categories mark sync, indexing, snapshot I/O, track startup, and cover loading in Instruments. iOS 27 can also group device metrics by the active screen and library loading state.

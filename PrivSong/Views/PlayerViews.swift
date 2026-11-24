@@ -1369,37 +1369,7 @@ struct QueuePlayerView: View {
         }
     }
 
-    @ViewBuilder
     private func queueList(_ upcoming: ArraySlice<EmbyAudioItem>) -> some View {
-        #if compiler(>=6.4)
-        if #available(iOS 27.0, *) {
-            let revision = player.upcomingQueueRevision
-            List {
-                queueRows(upcoming)
-                    .onDelete(perform: removeRows)
-                    .reorderable()
-            }
-            .reorderContainer(for: Int.self, itemID: \.self, isEnabled: editMode.isEditing) { difference in
-                let destination: Int?
-                switch difference.destination.position {
-                case .before(let item): destination = item
-                case .end: destination = nil
-                @unknown default: return
-                }
-                player.reorderUpcomingQueue(
-                    indices: Array(difference.sources), before: destination,
-                    displayedRange: upcoming.indices, revision: revision
-                )
-            }
-        } else {
-            legacyQueueList(upcoming)
-        }
-        #else
-        legacyQueueList(upcoming)
-        #endif
-    }
-
-    private func legacyQueueList(_ upcoming: ArraySlice<EmbyAudioItem>) -> some View {
         List {
             queueRows(upcoming)
                 .onMove { source, destination in

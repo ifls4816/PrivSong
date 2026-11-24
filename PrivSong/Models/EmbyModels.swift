@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import os
 
 struct EmbySession: Codable, Equatable, Sendable {
     let serverURL: URL
@@ -77,12 +76,6 @@ struct EmbyAccountStorage: Equatable, Sendable {
             }
         }
     }
-}
-
-enum PerformanceTrace {
-    static let library = OSSignposter(subsystem: "local.ifls.PrivSong", category: "Library")
-    static let playback = OSSignposter(subsystem: "local.ifls.PrivSong", category: "Playback")
-    static let artwork = OSSignposter(subsystem: "local.ifls.PrivSong", category: "Artwork")
 }
 
 struct AuthenticatedURL: Hashable, Sendable {

@@ -1,5 +1,4 @@
 import ImageIO
-import os
 import SwiftUI
 import UIKit
 
@@ -215,9 +214,6 @@ final class ArtworkLoader {
     }
 
     private func fetchImage(for resource: AuthenticatedURL, key: ArtworkCacheKey) async -> UIImage? {
-        let trace = PerformanceTrace.artwork
-        let span = trace.beginInterval("Load cover", id: trace.makeSignpostID())
-        defer { trace.endInterval("Load cover", span) }
 
         if let diskData = await ArtworkDiskCache.data(for: key) {
             if let image = await ArtworkDecoder.image(from: diskData, url: key.url) {

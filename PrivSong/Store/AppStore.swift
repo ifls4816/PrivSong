@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import os
 import Security
 
 /// Serializes snapshot writes and deletes off the main thread while keeping them in order.
@@ -1298,9 +1297,6 @@ final class AppStore {
         let previousSongs = songs
         let requiresDailyRecommendation = dailyRecommendationDay != day
         let derived = await Task.detached(priority: .userInitiated) {
-            let trace = PerformanceTrace.library
-            let span = trace.beginInterval("Index music library", id: trace.makeSignpostID())
-            defer { trace.endInterval("Index music library", span) }
             guard previousSongs != newSongs else { return nil as DerivedLibraryData? }
             return DerivedLibraryData(songs: newSongs, day: day)
         }.value
@@ -1478,9 +1474,6 @@ final class AppStore {
         let cached: (LibrarySnapshot?, InitialHomeContentSnapshot?, [String: AudiobookPlaybackProgress]) =
             await withCheckedContinuation { continuation in
                 persistenceQueue.async {
-                    let trace = PerformanceTrace.library
-                    let span = trace.beginInterval("Read library snapshots", id: trace.makeSignpostID())
-                    defer { trace.endInterval("Read library snapshots", span) }
                     if migratesLegacy {
                         account.migrateLegacyFiles([
                             LibrarySnapshotStore.fileName,
@@ -1806,9 +1799,6 @@ struct LibrarySnapshotStore: Sendable {
     }
 
     func save(songs: [EmbyAudioItem], playlists: [MusicPlaylist], audiobookEpisodes: [EmbyAudioItem], savedAt: Date) {
-        let trace = PerformanceTrace.library
-        let span = trace.beginInterval("Write library snapshot", id: trace.makeSignpostID())
-        defer { trace.endInterval("Write library snapshot", span) }
         let snapshot = LibrarySnapshot(
             version: version,
             savedAt: savedAt,

@@ -1,6 +1,5 @@
 import Foundation
 import Network
-import os
 
 struct InitialHomeContent: Codable, Sendable {
     let playlists: [MusicPlaylist]?
@@ -42,9 +41,6 @@ struct EmbyClient {
     }
 
     func fetchSongs(session embySession: EmbySession, searchTerm: String? = nil) async throws -> [EmbyAudioItem] {
-        let trace = PerformanceTrace.library
-        let span = trace.beginInterval("Fetch music library", id: trace.makeSignpostID())
-        defer { trace.endInterval("Fetch music library", span) }
         let views = try await fetchViews(session: embySession)
         let musicViews = views.filter(\.isMusicLibrary)
         guard !musicViews.isEmpty else { return [] }
