@@ -63,8 +63,8 @@ enum DevicePerformanceReporting {
         let category: String
     }
 
-    private static let screenDomain = "local.ifls.PrivSong.screen"
-    private static let syncDomain = "local.ifls.PrivSong.library"
+    private nonisolated static let screenDomain = "local.ifls.PrivSong.screen"
+    private nonisolated static let syncDomain = "local.ifls.PrivSong.library"
     private static let screenReporter = StateReporter.reporter(
         for: screenDomain, stableMetadata: Context.self, volatileMetadata: Context.self
     )
@@ -72,7 +72,7 @@ enum DevicePerformanceReporting {
         for: syncDomain, stableMetadata: Context.self, volatileMetadata: Context.self
     )
 
-    private static let subscription: Task<Void, Never> = Task {
+    private static let subscription = Task.detached(priority: .utility) {
         let logger = Logger(subsystem: "local.ifls.PrivSong", category: "MetricKit")
         let manager = MetricManager(enabledStateReportingDomains: [
             StateReportingDomain(rawValue: screenDomain), StateReportingDomain(rawValue: syncDomain)
