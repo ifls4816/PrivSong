@@ -1,1 +1,2 @@
 CFBundleDisplayName = "PrivSong";
+NSLocalNetworkUsageDescription = "PrivSong connects to your Emby server on the local network to load and play your library.";

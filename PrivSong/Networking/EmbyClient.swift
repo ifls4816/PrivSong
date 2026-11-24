@@ -1,18 +1,19 @@
 import Foundation
+import os
 
-struct InitialHomeContent: Codable {
-    let playlists: [MusicPlaylist]
-    let audiobookEpisodes: [EmbyAudioItem]
-    let dailySeedSongs: [EmbyAudioItem]
-    let recentlyAddedSongs: [EmbyAudioItem]
-    let mostPlayedSongs: [EmbyAudioItem]
+struct InitialHomeContent: Codable, Sendable {
+    let playlists: [MusicPlaylist]?
+    let audiobookEpisodes: [EmbyAudioItem]?
+    let dailySeedSongs: [EmbyAudioItem]?
+    let recentlyAddedSongs: [EmbyAudioItem]?
+    let mostPlayedSongs: [EmbyAudioItem]?
 }
 
 struct EmbyClient {
     private let session: URLSession
     private let jsonDecoder: JSONDecoder
     private let deviceIdKey = "EmbyDeviceId"
-    private let itemFields = "Album,AlbumId,AlbumArtist,AlbumPrimaryImageTag,Artists,Bitrate,Container,DateCreated,ImageTags,IndexNumber,MediaSources,MediaType,ParentId,ParentIndexNumber,PrimaryImageItemId,PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,SortName,UserData"
+    private let itemFields = "Album,AlbumId,AlbumArtist,AlbumPrimaryImageTag,Artists,Bitrate,Container,DateCreated,ImageTags,IndexNumber,MediaType,ParentId,ParentIndexNumber,PrimaryImageItemId,PrimaryImageAspectRatio,ProductionYear,RunTimeTicks,SortName,UserData"
 
     init(session: URLSession = .shared) {
         self.session = session
@@ -20,7 +21,7 @@ struct EmbyClient {
     }
 
     func authenticate(server: String, username: String, password: String) async throws -> EmbySession {
-        let baseURL = try normalizedServerURL(server)
+        let baseURL = try Self.normalizedServerURL(server)
         var request = URLRequest(url: baseURL.appending(path: "Users/AuthenticateByName"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -40,6 +41,9 @@ struct EmbyClient {
     }
 
     func fetchSongs(session embySession: EmbySession, searchTerm: String? = nil) async throws -> [EmbyAudioItem] {
+        let trace = PerformanceTrace.library
+        let span = trace.beginInterval("Fetch music library", id: trace.makeSignpostID())
+        defer { trace.endInterval("Fetch music library", span) }
         let views = try await fetchViews(session: embySession)
         let musicViews = views.filter(\.isMusicLibrary)
         guard !musicViews.isEmpty else { return [] }
@@ -151,11 +155,11 @@ struct EmbyClient {
         )
 
         return InitialHomeContent(
-            playlists: (try? await playlists) ?? [],
-            audiobookEpisodes: (try? await audiobookEpisodes) ?? [],
-            dailySeedSongs: (try? await dailySeedSongs) ?? [],
-            recentlyAddedSongs: (try? await recentlyAddedSongs) ?? [],
-            mostPlayedSongs: (try? await mostPlayedSongs) ?? []
+            playlists: try? await playlists,
+            audiobookEpisodes: try? await audiobookEpisodes,
+            dailySeedSongs: try? await dailySeedSongs,
+            recentlyAddedSongs: try? await recentlyAddedSongs,
+            mostPlayedSongs: try? await mostPlayedSongs
         )
     }
 
@@ -202,7 +206,11 @@ struct EmbyClient {
         return try await fetchAudiobookEpisodes(from: views.filter(\.isAudiobookLibrary), session: embySession)
     }
 
-    func fetchItems(itemIds: [String], session embySession: EmbySession) async throws -> [EmbyAudioItem] {
+    func fetchItems(
+        itemIds: [String],
+        session embySession: EmbySession,
+        includesMediaSources: Bool = false
+    ) async throws -> [EmbyAudioItem] {
         let ids = itemIds
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -221,12 +229,13 @@ struct EmbyClient {
             )
             components?.queryItems = [
                 URLQueryItem(name: "Ids", value: chunk.joined(separator: ",")),
-                URLQueryItem(name: "Fields", value: itemFields),
+                URLQueryItem(name: "Fields", value: includesMediaSources ? "\(itemFields),MediaSources" : itemFields),
                 URLQueryItem(name: "Limit", value: "\(chunk.count)")
             ]
 
             guard let url = components?.url else { throw EmbyError.invalidURL }
             var request = URLRequest(url: url)
+            if includesMediaSources { request.timeoutInterval = 3 }
             request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
 
             let response: EmbyItemsResponse = try await send(request)
@@ -286,7 +295,7 @@ struct EmbyClient {
         do {
             return try await fetchPlaylistSongsFromPlaylistEndpoint(playlistId: playlistId, session: embySession)
         } catch {
-            // Fall back only when the server says the playlist endpoint isn't usable (4xx or an
+            // Fall back only when the server says the playlist endpoint isn't usable (an
             // unexpected payload). A timeout or lost connection would just fail again.
             guard Self.isUnsupportedEndpoint(error) else { throw error }
             return try await fetchSongs(
@@ -364,30 +373,46 @@ struct EmbyClient {
     }
 
     func replacePlaylistSongs(playlistId: String, songs: [EmbyAudioItem], session embySession: EmbySession) async throws {
-        let currentEntries = try await fetchPlaylistEntries(playlistId: playlistId, session: embySession)
-        let currentEntryIds = currentEntries.compactMap(\.playlistItemId)
-        let previousItemIds = currentEntries.map(\.itemId)
-
-        guard currentEntries.isEmpty || currentEntryIds.count == currentEntries.count else {
-            throw EmbyError.missingPlaylistItemIds
-        }
-
-        var removedExistingItems = false
-        do {
-            if !currentEntryIds.isEmpty {
-                try await removePlaylistItems(playlistId: playlistId, entryIds: currentEntryIds, session: embySession)
-            }
-            removedExistingItems = true
-            try await addPlaylistItems(playlistId: playlistId, itemIds: songs.map(\.id), session: embySession)
-        } catch {
-            if removedExistingItems {
-                try? await removeAllPlaylistItems(playlistId: playlistId, session: embySession)
-                if !previousItemIds.isEmpty {
-                    try? await addPlaylistItems(playlistId: playlistId, itemIds: previousItemIds, session: embySession)
+        let key = "\(embySession.account.id)/\(playlistId)"
+        try await PlaylistReplacementGate.shared.run(key: key) {
+            let original = try await fetchPlaylistEntries(playlistId: playlistId, session: embySession)
+            let originalIds = original.map(\.itemId)
+            let replacementIds = songs.map(\.id)
+            guard originalIds != replacementIds else { return }
+            let entryIds = try editableEntryIds(from: original)
+            try Task.checkCancellation()
+            do {
+                try await removePlaylistItems(playlistId: playlistId, entryIds: entryIds, session: embySession)
+                try await addPlaylistItems(playlistId: playlistId, itemIds: replacementIds, session: embySession)
+                let verified = try await fetchPlaylistEntries(playlistId: playlistId, session: embySession)
+                guard verified.map(\.itemId) == replacementIds else {
+                    throw EmbyError.playlistContentsMismatch
                 }
+            } catch {
+                // A rejected response can follow a successful mutation. Re-read the server,
+                // and keep restoration alive even if the original caller was cancelled.
+                let restored = await Task.detached {
+                    await restorePlaylist(playlistId: playlistId, originalIds: originalIds, session: embySession)
+                }.value
+                throw EmbyError.playlistReplacementFailed(reason: error.localizedDescription, restored: restored)
             }
-            throw error
         }
+    }
+
+    private func restorePlaylist(playlistId: String, originalIds: [String], session: EmbySession) async -> Bool {
+        do {
+            let current = try await fetchPlaylistEntries(playlistId: playlistId, session: session)
+            if current.map(\.itemId) == originalIds { return true }
+            let entryIds = try editableEntryIds(from: current)
+            try await removePlaylistItems(playlistId: playlistId, entryIds: entryIds, session: session)
+            try await addPlaylistItems(playlistId: playlistId, itemIds: originalIds, session: session)
+        } catch {
+            // Verify the final state even when a write returned an error.
+        }
+        guard let verified = try? await fetchPlaylistEntries(playlistId: playlistId, session: session) else {
+            return false
+        }
+        return verified.map(\.itemId) == originalIds
     }
 
     func deletePlaylist(playlistId: String, session embySession: EmbySession) async throws {
@@ -470,7 +495,7 @@ struct EmbyClient {
     private static func isUnsupportedEndpoint(_ error: Error) -> Bool {
         switch error as? EmbyError {
         case .server(let statusCode):
-            return (400..<500).contains(statusCode)
+            return [400, 404, 405, 501].contains(statusCode)
         case .decoding:
             return true
         default:
@@ -939,9 +964,9 @@ struct EmbyClient {
                 break
             }
             startIndex += response.items.count
-        } while totalRecordCount.map { songs.count < $0 } ?? true
+        } while totalRecordCount.map { startIndex < $0 } ?? true
 
-        return uniqueSongs(songs)
+        return songs
     }
 
     private func fetchPlaylistSongPage(
@@ -962,7 +987,7 @@ struct EmbyClient {
         ]
         guard let url = components?.url else { throw EmbyError.invalidURL }
 
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
         request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
 
         return try await send(request)
@@ -987,7 +1012,7 @@ struct EmbyClient {
             ]
             guard let url = components?.url else { throw EmbyError.invalidURL }
 
-            var request = URLRequest(url: url)
+            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
             request.setValue(authorizationHeader(accessToken: embySession.accessToken), forHTTPHeaderField: "X-Emby-Authorization")
 
             let response: EmbyPlaylistEntriesResponse = try await send(request)
@@ -1041,13 +1066,10 @@ struct EmbyClient {
         }
     }
 
-    private func removeAllPlaylistItems(playlistId: String, session embySession: EmbySession) async throws {
-        let entries = try await fetchPlaylistEntries(playlistId: playlistId, session: embySession)
-        let entryIds = entries.compactMap(\.playlistItemId)
-        guard entries.isEmpty || entryIds.count == entries.count else {
-            throw EmbyError.missingPlaylistItemIds
-        }
-        try await removePlaylistItems(playlistId: playlistId, entryIds: entryIds, session: embySession)
+    private func editableEntryIds(from entries: [EmbyPlaylistEntry]) throws -> [String] {
+        let ids = entries.compactMap(\.playlistItemId)
+        guard ids.count == entries.count else { throw EmbyError.missingPlaylistItemIds }
+        return ids
     }
 
     private func chunks(from values: [String], size: Int) -> [[String]] {
@@ -1283,16 +1305,21 @@ struct EmbyClient {
 
     func imageURL(for item: EmbyAudioItem, session embySession: EmbySession, size: Int = 600) -> AuthenticatedURL? {
         let imageItemId: String?
-        if item.imageTags?["Primary"] != nil {
+        let imageTag: String?
+        if let tag = item.imageTags?["Primary"], !tag.isEmpty {
             imageItemId = item.id
+            imageTag = tag
         } else if let primaryImageItemId = item.primaryImageItemId, !primaryImageItemId.isEmpty {
             imageItemId = primaryImageItemId
+            imageTag = primaryImageItemId == item.albumId ? item.albumPrimaryImageTag : nil
         } else if let albumId = item.albumId,
                   !albumId.isEmpty,
                   item.albumPrimaryImageTag?.isEmpty == false {
             imageItemId = albumId
+            imageTag = item.albumPrimaryImageTag
         } else {
             imageItemId = nil
+            imageTag = nil
         }
 
         guard let imageItemId else { return nil }
@@ -1305,7 +1332,13 @@ struct EmbyClient {
             URLQueryItem(name: "maxWidth", value: "\(size)"),
             URLQueryItem(name: "quality", value: "90")
         ]
-        return components?.url.map { authenticatedURL($0, session: embySession) }
+        if let imageTag, !imageTag.isEmpty {
+            components?.queryItems?.append(URLQueryItem(name: "Tag", value: imageTag))
+        }
+        return components?.url.map { url in
+            let resource = authenticatedURL(url, session: embySession)
+            return AuthenticatedURL(url: url, httpHeaders: resource.httpHeaders, artworkCacheScope: embySession.account.id)
+        }
     }
 
     private func authenticatedURL(_ url: URL, session embySession: EmbySession) -> AuthenticatedURL {
@@ -1347,14 +1380,20 @@ struct EmbyClient {
         }
     }
 
-    private func normalizedServerURL(_ rawServer: String) throws -> URL {
+    static func normalizedServerURL(_ rawServer: String) throws -> URL {
         var value = rawServer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !value.localizedCaseInsensitiveContains("://") {
-            value = "http://\(value)"
+        if !value.contains("://") {
+            value = "https://\(value)"
         }
-        guard var components = URLComponents(string: value), let host = components.host, !host.isEmpty else {
+        guard var components = URLComponents(string: value),
+              let scheme = components.scheme?.lowercased(), ["https", "http"].contains(scheme),
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil else {
             throw EmbyError.invalidURL
         }
+        components.scheme = scheme
+        components.host = host.lowercased()
         if components.path == "" {
             components.path = "/"
         }
@@ -1436,6 +1475,17 @@ private actor LibraryViewsCache {
     }
 }
 
+private actor PlaylistReplacementGate {
+    static let shared = PlaylistReplacementGate()
+    private var active: Set<String> = []
+
+    func run(key: String, operation: @Sendable () async throws -> Void) async throws {
+        guard active.insert(key).inserted else { throw EmbyError.playlistBusy }
+        defer { active.remove(key) }
+        try await operation()
+    }
+}
+
 enum EmbyError: LocalizedError {
     case invalidURL
     case invalidResponse
@@ -1445,6 +1495,9 @@ enum EmbyError: LocalizedError {
     case invalidPlaylistName
     case missingPlaylistItemIds
     case playlistDeleteFailed
+    case playlistBusy
+    case playlistContentsMismatch
+    case playlistReplacementFailed(reason: String, restored: Bool)
     case songDeleteFailed
 
     var errorDescription: String? {
@@ -1468,6 +1521,14 @@ enum EmbyError: LocalizedError {
             return "Emby 未返回可编辑的歌单条目标识，无法编辑该歌单。"
         case .playlistDeleteFailed:
             return "Emby 已响应删除请求，但歌单仍然存在，请检查当前用户是否有删除该歌单的权限。"
+        case .playlistBusy:
+            return "此歌单正在更新，请稍后再试。"
+        case .playlistContentsMismatch:
+            return "Emby 返回的歌单曲目或顺序与保存内容不一致。"
+        case let .playlistReplacementFailed(reason, restored):
+            return restored
+                ? "覆盖失败，已核对原歌单曲目和顺序均已恢复。\n\(reason)"
+                : "覆盖失败，无法确认原歌单已恢复。请检查 Emby 上的歌单内容。\n\(reason)"
         case .songDeleteFailed:
             return "Emby 已响应删除请求，但歌曲仍然存在，请检查当前用户是否有删除媒体的权限。"
         }

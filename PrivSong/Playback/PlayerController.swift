@@ -2,6 +2,7 @@ import AVFoundation
 import Combine
 import Foundation
 import Network
+import os
 import UIKit
 
 struct LyricLine: Identifiable, Hashable, Sendable {
@@ -57,7 +58,8 @@ final class PlayerController: ObservableObject {
     private(set) var duration: TimeInterval = 0 {
         didSet { timeline.updateDuration(duration) }
     }
-    @Published private(set) var upcomingQueueSnapshot: [EmbyAudioItem] = []
+    @Published private(set) var upcomingQueueSnapshot: ArraySlice<EmbyAudioItem> = []
+    var upcomingQueueRevision: UUID { queueRevision }
     @Published private(set) var lyrics: [LyricLine] = []
     @Published private(set) var lyricsSongId: String?
     @Published private(set) var isLoadingLyrics = false
@@ -77,7 +79,7 @@ final class PlayerController: ObservableObject {
     private let nowPlaying = NowPlayingCoordinator.shared
     private let remoteCommands = RemoteCommandCoordinator.shared
     private let client = EmbyClient()
-    private let queueSnapshotStore = PlaybackQueueSnapshotStore()
+    private var queueSnapshotStore: PlaybackQueueSnapshotStore?
     private let pathMonitor = NWPathMonitor()
     private var networkKind: PlaybackNetworkKind = .wifi
     private var qualityPreferences = PlaybackQualityPreferences()
@@ -89,10 +91,17 @@ final class PlayerController: ObservableObject {
     var isAudiobookEpisode: ((EmbyAudioItem) -> Bool)?
 
     private var session: EmbySession?
-    private var queue: [EmbyAudioItem] = []
-    private var queueBeforeShuffle: [EmbyAudioItem]?
-    private var restoredQueueCurrentSongID: String?
+    private var queue: [EmbyAudioItem] = [] {
+        didSet { queueRevision = UUID() }
+    }
+    private var queueBeforeShuffle: [EmbyAudioItem]? {
+        didSet { queueRevision = UUID() }
+    }
+    private var currentQueueIndex: Int?
+    private var restoredQueueIndex: Int?
     private var restoredQueuePosition: TimeInterval = 0
+    private var queueRevision = UUID()
+    private var queueSessionGeneration = UUID()
     /// Set when every playback source failed; cleared when a track starts. Drives retry on
     /// network recovery and on the next play tap.
     @Published private(set) var hasPlaybackFailed = false
@@ -110,6 +119,9 @@ final class PlayerController: ObservableObject {
     private var currentDurationOverride: TimeInterval?
     private var currentPlaySessionId: String?
     private var currentPlaybackReportMethod: EmbyPlaybackReportMethod = .directStream
+    private var currentPlaybackMedia: EmbyAudioItem?
+    private var sourceLookupTask: Task<Void, Never>?
+    private var playbackStartTrace: OSSignpostIntervalState?
     private var lastPlaybackProgressReport = Date.distantPast
     private var activeAudioCacheKey: PlaybackAudioCache.Key?
     private var currentArtwork: UIImage?
@@ -135,10 +147,9 @@ final class PlayerController: ObservableObject {
     private var sleepTimerTask: Task<Void, Never>?
     private var playbackReportTask: Task<Void, Never>?
     private var queuePersistTask: Task<Void, Never>?
-    private var pendingQueueWrite: (@Sendable () -> Void)?
+    private var pendingQueueWrite: (@Sendable () -> Bool)?
     private var pendingStateWrite: (@Sendable () -> Void)?
-    /// Signature of the queue contents last scheduled for writing.
-    private var scheduledQueueSignature: Int?
+    private var scheduledQueueRevision: UUID?
 
     init() {
         engine.automaticallyWaitsToMinimizeStalling = true
@@ -148,7 +159,6 @@ final class PlayerController: ObservableObject {
         configurePlayerObservers()
         configureAudioSessionObservers()
         configureNetworkMonitor()
-        restorePlaybackQueueSnapshot()
     }
 
     private func configureNetworkMonitor() {
@@ -184,8 +194,34 @@ final class PlayerController: ObservableObject {
         return maxBitrate
     }
 
-    func setSession(_ session: EmbySession?) {
+    func setSession(_ session: EmbySession?, migratesLegacy: Bool = false, forgetPreviousAccount: Bool = false) {
+        guard self.session != session else { return }
+        if self.session != nil {
+            if forgetPreviousAccount {
+                clearQueueSnapshot()
+            } else {
+                savePlaybackStateNow()
+            }
+            stopPlaybackForConfigurationChange(persistsQueue: false)
+            cancelSleepTimer()
+            audioSession.deactivate()
+        }
+        queueSessionGeneration = UUID()
+        queue = []
+        queueBeforeShuffle = nil
+        currentQueueIndex = nil
+        restoredQueueIndex = nil
+        restoredQueuePosition = 0
+        scheduledQueueRevision = nil
+        isShuffleEnabled = false
+        repeatMode = .none
         self.session = session
+        queueSnapshotStore = session.map { PlaybackQueueSnapshotStore(directory: $0.account.directory) }
+        syncQueueSnapshots(persists: false)
+        syncRemoteCommandAvailability()
+        if let session, let queueSnapshotStore {
+            restorePlaybackQueueSnapshot(store: queueSnapshotStore, account: migratesLegacy ? session.account : nil)
+        }
     }
 
     /// Forgets a song that was deleted from the server: skips it if it's playing (stopping when
@@ -202,20 +238,7 @@ final class PlayerController: ObservableObject {
             PlaybackAudioCache.removeCachedFile(for: PlaybackAudioCache.Key(session: session, item: song))
         }
         queueBeforeShuffle?.removeAll { $0.id == song.id }
-        if restoredQueueCurrentSongID == song.id {
-            restoredQueueCurrentSongID = nil
-        }
         applyActiveQueue(queue.filter { $0.id != song.id })
-    }
-
-    func clearPersistedQueue() {
-        queue = []
-        queueBeforeShuffle = nil
-        restoredQueueCurrentSongID = nil
-        restoredQueuePosition = 0
-        clearQueueSnapshot()
-        syncQueueSnapshots(persists: false)
-        syncRemoteCommandAvailability()
     }
 
     func play(
@@ -226,17 +249,21 @@ final class PlayerController: ObservableObject {
         durationOverride: TimeInterval? = nil,
         shuffle: Bool? = nil
     ) {
-        guard !isSwitchingTracks else { return }
+        setSession(session)
+        guard !isSwitchingTracks || sourceLookupTask != nil else { return }
 
-        self.session = session
         var playbackQueue = songs.isEmpty ? [song] : songs
-        if !playbackQueue.contains(song) {
+        let selectedIndex: Int
+        if let match = playbackQueue.firstIndex(where: { $0.id == song.id }) {
+            selectedIndex = match
+        } else {
             playbackQueue.insert(song, at: 0)
+            selectedIndex = 0
         }
 
         let shouldShuffle = shuffle ?? isShuffleEnabled
         isShuffleEnabled = shouldShuffle
-        restoredQueueCurrentSongID = nil
+        restoredQueueIndex = nil
         if shouldShuffle {
             queueBeforeShuffle = playbackQueue
             queue = shuffledPlaybackQueue(from: playbackQueue, keeping: song)
@@ -245,13 +272,13 @@ final class PlayerController: ObservableObject {
             queue = playbackQueue
         }
 
-        syncQueueSnapshots()
         start(
             song: song,
             session: session,
             autoplay: true,
             startPosition: startPosition,
-            durationOverride: durationOverride
+            durationOverride: durationOverride,
+            queueIndex: shouldShuffle ? 0 : selectedIndex
         )
     }
 
@@ -276,7 +303,7 @@ final class PlayerController: ObservableObject {
               let currentSong,
               let session,
               currentStreamURL?.isFileURL == false,
-              transcodeBitrate(for: currentSong) != currentTranscodeBitrate else { return }
+              transcodeBitrate(for: currentPlaybackMedia ?? currentSong) != currentTranscodeBitrate else { return }
 
         start(
             song: currentSong,
@@ -309,6 +336,7 @@ final class PlayerController: ObservableObject {
     }
 
     func toggleShuffle() {
+        let reference = currentSong ?? restoredSong
         if isShuffleEnabled {
             if let originalQueue = queueBeforeShuffle {
                 queue = originalQueue
@@ -318,16 +346,17 @@ final class PlayerController: ObservableObject {
         } else {
             guard !queue.isEmpty else { return }
             queueBeforeShuffle = queue
-            queue = shuffledPlaybackQueue(from: queue, keeping: currentSong)
+            queue = shuffledPlaybackQueue(from: queue, keeping: reference)
             isShuffleEnabled = true
         }
+        updateQueueReference(to: reference)
         syncQueueSnapshots()
         syncRemoteCommandAvailability()
     }
 
-    func playQueued(song: EmbyAudioItem) {
-        guard activeQueue.contains(song), let session else { return }
-        start(song: song, session: session, autoplay: true)
+    func playQueued(at index: Int) {
+        guard queue.indices.contains(index), let session else { return }
+        start(song: queue[index], session: session, autoplay: true, queueIndex: index)
     }
 
     func playNext(_ song: EmbyAudioItem) {
@@ -341,7 +370,7 @@ final class PlayerController: ObservableObject {
     func removeUpcomingQueueItem(at index: Int) {
         let songs = activeQueue
         let removeIndex: Int
-        if let currentIndex = currentQueueReferenceIndex(in: songs) {
+        if let currentIndex = currentQueueIndex ?? restoredQueueIndex {
             removeIndex = songs.index(after: currentIndex) + index
         } else {
             removeIndex = index
@@ -355,7 +384,7 @@ final class PlayerController: ObservableObject {
 
     func clearUpcomingQueue() {
         let songs = activeQueue
-        guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
+        guard let currentIndex = currentQueueIndex ?? restoredQueueIndex else {
             applyActiveQueue([])
             return
         }
@@ -366,20 +395,30 @@ final class PlayerController: ObservableObject {
         guard sourceIndex != destinationIndex else { return }
 
         let songs = activeQueue
-        guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
+        guard let currentIndex = currentQueueIndex ?? restoredQueueIndex else {
             applyActiveQueue(reordered(songs, moving: sourceIndex, to: destinationIndex))
             return
         }
 
         let upcomingStart = songs.index(after: currentIndex)
-        var upcoming = Array(songs[upcomingStart...])
-        guard upcoming.indices.contains(sourceIndex),
-              upcoming.indices.contains(destinationIndex) else {
-            return
-        }
+        applyActiveQueue(reordered(
+            songs, moving: upcomingStart + sourceIndex, to: upcomingStart + destinationIndex
+        ))
+    }
 
-        upcoming = reordered(upcoming, moving: sourceIndex, to: destinationIndex)
-        applyActiveQueue(Array(songs[...currentIndex]) + upcoming)
+    func reorderUpcomingQueue(
+        indices: [Int], before destination: Int?, displayedRange: Range<Int>, revision: UUID
+    ) {
+        guard revision == queueRevision, displayedRange == upcomingQueueSnapshot.indices,
+              !indices.isEmpty, indices.allSatisfy(displayedRange.contains),
+              let end = destination ?? displayedRange.last.map({ $0 + 1 }),
+              end >= displayedRange.lowerBound, end <= displayedRange.upperBound else { return }
+        let sources = Set(indices)
+        let moving = indices.map { queue[$0] }
+        var remaining = queue.enumerated().compactMap { sources.contains($0.offset) ? nil : $0.element }
+        let insertion = end - sources.filter { $0 < end }.count
+        remaining.insert(contentsOf: moving, at: insertion)
+        applyActiveQueue(remaining)
     }
 
     func cycleRepeatMode() {
@@ -459,9 +498,24 @@ final class PlayerController: ObservableObject {
         session: EmbySession,
         autoplay: Bool,
         startPosition: TimeInterval = 0,
-        durationOverride: TimeInterval? = nil
+        durationOverride: TimeInterval? = nil,
+        queueIndex: Int? = nil
     ) {
         reportPlaybackStoppedIfNeeded(position: elapsed)
+        sourceLookupTask?.cancel()
+        sourceLookupTask = nil
+        finishPlaybackStartTrace()
+        let trace = PerformanceTrace.playback
+        playbackStartTrace = trace.beginInterval("Start track", id: trace.makeSignpostID())
+        if currentSong?.id != song.id { currentPlaybackMedia = nil }
+        let previousIndex = currentQueueIndex ?? restoredQueueIndex
+        if let queueIndex {
+            currentQueueIndex = queueIndex
+        } else if let previousIndex, queue.indices.contains(previousIndex), queue[previousIndex].id == song.id {
+            currentQueueIndex = previousIndex
+        } else {
+            currentQueueIndex = queue.firstIndex { $0.id == song.id }
+        }
         let normalizedStartPosition = max(0, startPosition)
         let knownDuration = max(song.duration, durationOverride ?? 0)
         let initialPosition = knownDuration > normalizedStartPosition
@@ -469,7 +523,7 @@ final class PlayerController: ObservableObject {
             : normalizedStartPosition
         isSwitchingTracks = true
         currentSong = song
-        restoredQueueCurrentSongID = nil
+        restoredQueueIndex = nil
         restoredQueuePosition = 0
         hasPlaybackFailed = false
         hasTriedCachedFallback = false
@@ -499,30 +553,63 @@ final class PlayerController: ObservableObject {
         lastPlaybackProgressReport = .distantPast
 
         let cacheKey = PlaybackAudioCache.Key(session: session, item: song)
+        let cachedResource = PlaybackAudioCache.cachedFileURL(for: cacheKey).map { AuthenticatedURL(url: $0) }
+        syncQueueSnapshots()
+        let media = currentPlaybackMedia ?? song
+        if cachedResource == nil,
+           media.sourceBitrate == nil, media.mediaSources == nil, currentPlaybackMedia == nil,
+           qualityPreferences.quality(for: networkKind).bitrate != nil {
+            engine.pause()
+            engine.replaceCurrentItem(with: nil)
+            currentStreamURL = nil
+            sourceLookupTask = Task { [weak self, client] in
+                let details = try? await client.fetchItems(
+                    itemIds: [song.id], session: session, includesMediaSources: true
+                ).first
+                guard let self, !Task.isCancelled, self.session == session else { return }
+                self.sourceLookupTask = nil
+                self.openPlayback(
+                    media: details ?? song, session: session, cacheKey: cacheKey, cachedResource: nil,
+                    autoplay: self.isPlaying, startPosition: self.elapsed
+                )
+            }
+        } else {
+            openPlayback(
+                media: media, session: session, cacheKey: cacheKey, cachedResource: cachedResource,
+                autoplay: autoplay, startPosition: initialPosition
+            )
+        }
+        loadArtwork(for: song, session: session)
+        syncNowPlaying(force: true)
+        syncRemoteCommandAvailability()
+    }
+
+    private func openPlayback(
+        media: EmbyAudioItem,
+        session: EmbySession,
+        cacheKey: PlaybackAudioCache.Key,
+        cachedResource: AuthenticatedURL?,
+        autoplay: Bool,
+        startPosition: TimeInterval
+    ) {
+        currentPlaybackMedia = media
         let playSessionId = UUID().uuidString
         activeAudioCacheKey = cacheKey
         currentPlaySessionId = playSessionId
-        currentTranscodeBitrate = transcodeBitrate(for: song)
+        currentTranscodeBitrate = transcodeBitrate(for: media)
         streamCandidates = client.playbackURLCandidates(
-            for: song,
+            for: media,
             session: session,
             playSessionId: playSessionId,
             transcodeBitrate: currentTranscodeBitrate
         )
         streamCandidateIndex = 0
-        syncQueueSnapshots()
 
         audioSession.activate()
-        // A cached original plays without any network use, so it wins even over a transcode.
-        let cachedResource = PlaybackAudioCache.cachedFileURL(for: cacheKey).map { AuthenticatedURL(url: $0) }
         let initialURL = cachedResource ?? streamCandidates.first
         currentPlaybackReportMethod = playbackReportMethod(isUsingLocalFile: cachedResource != nil)
-        replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: initialPosition, candidateIndex: 0)
-        loadArtwork(for: song, session: session)
-        // Lyrics are loaded when the lyrics panel asks for them (loadLyricsIfNeeded).
-        reportPlaybackStarted(position: initialPosition)
-        syncNowPlaying(force: true)
-        syncRemoteCommandAvailability()
+        replaceCurrentItem(with: initialURL, autoplay: autoplay, startAt: startPosition, candidateIndex: 0)
+        reportPlaybackStarted(position: startPosition)
     }
 
     private func replaceCurrentItem(
@@ -586,6 +673,10 @@ final class PlayerController: ObservableObject {
     }
 
     private func resume() {
+        if sourceLookupTask != nil {
+            isPlaying = true
+            return
+        }
         // Nothing has played since launch: continue the queue saved from the last run. This is
         // also what the lock screen, headphones and CarPlay play commands land on.
         guard let currentSong else {
@@ -727,14 +818,27 @@ final class PlayerController: ObservableObject {
         isBuffering = false
         playbackStatusText = "播放失败"
         hasPlaybackFailed = true
+        finishPlaybackStartTrace()
         isSwitchingTracks = false
         syncNowPlaying(force: true)
     }
 
-    private func stopPlaybackForConfigurationChange() {
+    private func stopPlaybackForConfigurationChange(persistsQueue: Bool = true) {
+        playbackReportTask?.cancel()
         reportPlaybackStoppedIfNeeded(position: elapsed)
+        sourceLookupTask?.cancel()
+        sourceLookupTask = nil
+        currentPlaybackMedia = nil
         artworkTask?.cancel()
         lyricsTask?.cancel()
+        stallWatchdogTask?.cancel()
+        stallWatchdogTask = nil
+        networkRecoveryTask?.cancel()
+        networkRecoveryTask = nil
+        stallRecovery = nil
+        hasPlaybackFailed = false
+        shouldResumeAfterInterruption = false
+        finishPlaybackStartTrace()
 
         engine.pause()
         engine.replaceCurrentItem(with: nil)
@@ -744,6 +848,7 @@ final class PlayerController: ObservableObject {
         isBuffering = false
         playbackStatusText = nil
         currentSong = nil
+        currentQueueIndex = nil
         currentArtwork = nil
         currentStreamURL = nil
         streamCandidates = []
@@ -760,7 +865,7 @@ final class PlayerController: ObservableObject {
         lyricsSongId = nil
         isLoadingLyrics = false
         lastNowPlayingDuration = -1
-        syncQueueSnapshots()
+        syncQueueSnapshots(persists: persistsQueue)
         syncNowPlaying(force: true)
         syncRemoteCommandAvailability()
     }
@@ -812,22 +917,16 @@ final class PlayerController: ObservableObject {
     }
 
     private func playRelative(offset: Int, wrap: Bool) {
-        let songs = activeQueue
-        guard let currentSong,
-              let session,
-              let currentIndex = songs.firstIndex(where: { $0.id == currentSong.id }) else {
-            return
-        }
+        guard let currentIndex = currentQueueIndex else { return }
 
         let targetIndex = currentIndex + offset
-        if songs.indices.contains(targetIndex) {
-            start(song: songs[targetIndex], session: session, autoplay: true)
+        if queue.indices.contains(targetIndex) {
+            playQueued(at: targetIndex)
             return
         }
 
-        guard wrap, !songs.isEmpty else { return }
-        let wrappedIndex = offset > 0 ? songs.startIndex : songs.index(before: songs.endIndex)
-        start(song: songs[wrappedIndex], session: session, autoplay: true)
+        guard wrap, !queue.isEmpty else { return }
+        playQueued(at: offset > 0 ? queue.startIndex : queue.index(before: queue.endIndex))
     }
 
     private func handleTrackEnded() {
@@ -838,9 +937,10 @@ final class PlayerController: ObservableObject {
             return
         }
 
-        let before = currentSong
+        let before = currentPlaySessionId
+        let indexBefore = currentQueueIndex
         playRelative(offset: 1, wrap: repeatMode == .all)
-        if currentSong == before {
+        if currentQueueIndex == indexBefore, currentPlaySessionId == before {
             isPlaying = false
             syncNowPlaying(force: true)
             reportPlaybackStoppedIfNeeded(position: duration)
@@ -894,18 +994,37 @@ final class PlayerController: ObservableObject {
     private func shuffledPlaybackQueue(from songs: [EmbyAudioItem], keeping current: EmbyAudioItem?) -> [EmbyAudioItem] {
         var shuffled = songs.shuffled()
         guard let current else { return shuffled }
-        shuffled.removeAll { $0 == current }
+        if let index = shuffled.firstIndex(where: { $0.id == current.id }) {
+            shuffled.remove(at: index)
+        }
         shuffled.insert(current, at: 0)
         return shuffled
     }
 
     private func applyActiveQueue(_ songs: [EmbyAudioItem]) {
+        let reference = currentSong ?? restoredSong
         if isShuffleEnabled {
             reconcileOriginalQueue(with: songs)
         }
         queue = songs
+        updateQueueReference(to: reference)
         syncQueueSnapshots()
         syncRemoteCommandAvailability()
+    }
+
+    private func updateQueueReference(to reference: EmbyAudioItem?) {
+        let previousIndex = currentQueueIndex ?? restoredQueueIndex
+        let index = reference.flatMap { song in
+            if let previousIndex, queue.indices.contains(previousIndex), queue[previousIndex].id == song.id {
+                return previousIndex
+            }
+            return queue.firstIndex { $0.id == song.id }
+        }
+        if currentSong != nil {
+            currentQueueIndex = index
+        } else {
+            restoredQueueIndex = index
+        }
     }
 
     private func reconcileOriginalQueue(with activeSongs: [EmbyAudioItem]) {
@@ -925,16 +1044,16 @@ final class PlayerController: ObservableObject {
 
     private func insertIntoUpcoming(_ song: EmbyAudioItem, offsetFromCurrent: Int?) {
         guard song.id != currentSong?.id else { return }
-        guard song.id != restoredQueueCurrentSongID else { return }
+        guard song.id != restoredSong?.id else { return }
         var songs = activeQueue
-        guard currentQueueReferenceIndex(in: songs) != nil else {
+        guard let reference = currentSong ?? restoredSong else {
             songs.append(song)
             applyActiveQueue(songs)
             return
         }
 
         songs.removeAll { $0.id == song.id }
-        guard let baseIndex = currentQueueReferenceIndex(in: songs) else {
+        guard let baseIndex = songs.firstIndex(where: { $0.id == reference.id }) else {
             songs.append(song)
             applyActiveQueue(songs)
             return
@@ -949,40 +1068,25 @@ final class PlayerController: ObservableObject {
         applyActiveQueue(songs)
     }
 
-    private func currentQueueReferenceIndex(in songs: [EmbyAudioItem]) -> Int? {
-        // Match by id: full equality compares every field and is slow on large queues.
-        if let currentSong,
-           let index = songs.firstIndex(where: { $0.id == currentSong.id }) {
-            return index
-        }
-        guard let restoredQueueCurrentSongID else { return nil }
-        return songs.firstIndex { $0.id == restoredQueueCurrentSongID }
-    }
-
     private func syncQueueSnapshots(persists: Bool = true) {
-        let songs = activeQueue
-
-        guard let currentIndex = currentQueueReferenceIndex(in: songs) else {
-            upcomingQueueSnapshot = songs
-            if persists {
-                persistQueueSnapshot()
-            }
-            return
-        }
-
-        let nextIndex = songs.index(after: currentIndex)
-        upcomingQueueSnapshot = nextIndex < songs.endIndex ? Array(songs[nextIndex...]) : []
+        let start = (currentQueueIndex ?? restoredQueueIndex).map { $0 + 1 } ?? queue.startIndex
+        upcomingQueueSnapshot = queue[start...]
         if persists {
             persistQueueSnapshot()
         }
     }
 
-    private func restorePlaybackQueueSnapshot() {
-        let store = queueSnapshotStore
+    private func restorePlaybackQueueSnapshot(store: PlaybackQueueSnapshotStore, account: EmbyAccountStorage?) {
+        let generation = queueSessionGeneration
         Task { [weak self] in
-            // The saved queue can hold the whole library; decode it off the main thread.
-            let snapshot = await Task.detached(priority: .userInitiated) { store.load() }.value
-            guard let self, let snapshot else { return }
+            guard self?.queueSessionGeneration == generation else { return }
+            let snapshot = await withCheckedContinuation { continuation in
+                queuePersistenceQueue.async {
+                    account?.migrateLegacyFiles(PlaybackQueueSnapshotStore.fileNames)
+                    continuation.resume(returning: store.load())
+                }
+            }
+            guard let self, self.queueSessionGeneration == generation, let snapshot else { return }
             self.applyRestoredQueueSnapshot(snapshot)
         }
     }
@@ -995,18 +1099,16 @@ final class PlayerController: ObservableObject {
         queueBeforeShuffle = snapshot.isShuffleEnabled ? snapshot.queueBeforeShuffle : nil
         isShuffleEnabled = snapshot.isShuffleEnabled
         repeatMode = snapshot.repeatMode
-        if let currentSongID = snapshot.currentSongID,
-           snapshot.queue.contains(where: { $0.id == currentSongID }) {
-            restoredQueueCurrentSongID = currentSongID
-            restoredQueuePosition = max(snapshot.currentPosition ?? 0, 0)
-        } else {
-            restoredQueueCurrentSongID = nil
-            restoredQueuePosition = 0
+        if let index = snapshot.currentQueueIndex, queue.indices.contains(index),
+           queue[index].id == snapshot.currentSongID {
+            restoredQueueIndex = index
+        } else if let id = snapshot.currentSongID {
+            restoredQueueIndex = queue.firstIndex { $0.id == id }
         }
-        // Already on disk; the next save only needs the queue file if it changes. (Not for an
-        // old single-file snapshot, which must be rewritten in the new format once.)
-        if snapshot.version >= 2 {
-            scheduledQueueSignature = queueSignature()
+        restoredQueuePosition = restoredQueueIndex == nil ? 0 : max(snapshot.currentPosition ?? 0, 0)
+        if let revision = snapshot.queueRevision {
+            queueRevision = revision
+            scheduledQueueRevision = revision
         }
 
         syncQueueSnapshots(persists: false)
@@ -1015,8 +1117,8 @@ final class PlayerController: ObservableObject {
 
     /// The song the restored queue was on when the app last ran, before anything has played.
     var restoredSong: EmbyAudioItem? {
-        guard currentSong == nil, let restoredQueueCurrentSongID else { return nil }
-        return queue.first { $0.id == restoredQueueCurrentSongID }
+        guard currentSong == nil, let restoredQueueIndex else { return nil }
+        return queue[restoredQueueIndex]
     }
 
     /// Continues the queue saved from the last run, at the saved song and position. Returns
@@ -1024,7 +1126,10 @@ final class PlayerController: ObservableObject {
     @discardableResult
     func resumeRestoredQueue() -> Bool {
         guard let song = restoredSong, let session else { return false }
-        start(song: song, session: session, autoplay: true, startPosition: restoredQueuePosition)
+        start(
+            song: song, session: session, autoplay: true,
+            startPosition: restoredQueuePosition, queueIndex: restoredQueueIndex
+        )
         return true
     }
 
@@ -1036,40 +1141,33 @@ final class PlayerController: ObservableObject {
     }
 
     private func persistQueueSnapshot() {
+        guard let store = queueSnapshotStore else { return }
         guard !queue.isEmpty else {
             clearQueueSnapshot()
             return
         }
 
-        let currentSongID = (currentSong?.id ?? restoredQueueCurrentSongID).flatMap { id in
-            queue.contains { $0.id == id } ? id : nil
-        }
-
-        let store = queueSnapshotStore
-
-        // The song list is only rewritten when its contents change. A track change, pause or
-        // mode change touches just the small state file; before, every one of those re-encoded
-        // the whole queue, which can be the entire library.
-        let signature = queueSignature()
-        if signature != scheduledQueueSignature {
-            scheduledQueueSignature = signature
+        let revision = queueRevision
+        let index = currentQueueIndex ?? restoredQueueIndex
+        let state = PlaybackQueueSnapshotStore.State(
+            queueRevision: revision,
+            currentSongID: index.map { queue[$0].id },
+            currentQueueIndex: index,
+            currentPosition: currentSong != nil ? elapsed : restoredQueuePosition,
+            isShuffleEnabled: isShuffleEnabled,
+            repeatMode: repeatMode
+        )
+        if revision != scheduledQueueRevision {
+            scheduledQueueRevision = revision
             let savedQueue = queue
             let savedQueueBeforeShuffle = queueBeforeShuffle
             pendingQueueWrite = {
-                store.saveQueue(queue: savedQueue, queueBeforeShuffle: savedQueueBeforeShuffle)
+                store.saveQueue(queue: savedQueue, queueBeforeShuffle: savedQueueBeforeShuffle, checkpoint: state)
             }
         }
 
-        let savedPosition = currentSong != nil ? elapsed : restoredQueuePosition
-        let savedShuffleEnabled = isShuffleEnabled
-        let savedRepeatMode = repeatMode
         pendingStateWrite = {
-            store.saveState(
-                currentSongID: currentSongID,
-                currentPosition: savedPosition,
-                isShuffleEnabled: savedShuffleEnabled,
-                repeatMode: savedRepeatMode
-            )
+            store.saveState(state)
         }
 
         // Coalesce bursts (play() and start() both sync the queue) into a single write.
@@ -1085,32 +1183,24 @@ final class PlayerController: ObservableObject {
     func flushQueueSnapshot() {
         queuePersistTask?.cancel()
         queuePersistTask = nil
-        let writes = [pendingQueueWrite, pendingStateWrite].compactMap { $0 }
+        let writeQueue = pendingQueueWrite
+        let writeState = pendingStateWrite
+        let revision = scheduledQueueRevision
+        let generation = queueSessionGeneration
         pendingQueueWrite = nil
         pendingStateWrite = nil
-        guard !writes.isEmpty else { return }
-        queuePersistenceQueue.async {
-            for write in writes {
-                write()
+        guard writeQueue != nil || writeState != nil else { return }
+        queuePersistenceQueue.async { [weak self] in
+            if let writeQueue, !writeQueue() {
+                Task { @MainActor [weak self] in
+                    guard let self, self.queueSessionGeneration == generation,
+                          self.scheduledQueueRevision == revision else { return }
+                    self.scheduledQueueRevision = nil
+                }
+            } else {
+                writeState?()
             }
         }
-    }
-
-    /// Identifies the queue's contents (ids and order, plus the pre-shuffle order) so unchanged
-    /// queues aren't rewritten. Hashing ids is far cheaper than encoding the songs.
-    private func queueSignature() -> Int {
-        var hasher = Hasher()
-        hasher.combine(queue.count)
-        for song in queue {
-            hasher.combine(song.id)
-        }
-        if let queueBeforeShuffle {
-            hasher.combine(queueBeforeShuffle.count)
-            for song in queueBeforeShuffle {
-                hasher.combine(song.id)
-            }
-        }
-        return hasher.finalize()
     }
 
     private func clearQueueSnapshot() {
@@ -1118,8 +1208,8 @@ final class PlayerController: ObservableObject {
         queuePersistTask = nil
         pendingQueueWrite = nil
         pendingStateWrite = nil
-        scheduledQueueSignature = nil
-        let store = queueSnapshotStore
+        scheduledQueueRevision = nil
+        guard let store = queueSnapshotStore else { return }
         queuePersistenceQueue.async {
             store.clear()
         }
@@ -1320,6 +1410,8 @@ final class PlayerController: ObservableObject {
     }
 
     private func syncPlaybackStateFromEngine(forceNowPlaying: Bool) {
+        guard sourceLookupTask == nil else { return }
+        if engine.timeControlStatus == .playing { finishPlaybackStartTrace() }
         // While AVPlayer waits for data its `rate` stays 1, so the old `rate`-based checks showed
         // a stalled stream as playing (no sound, no spinner). Use the control status instead:
         // waiting = buffering, and anything but paused means the user wants playback.
@@ -1339,6 +1431,12 @@ final class PlayerController: ObservableObject {
         }
         syncNowPlaying(force: forceNowPlaying)
         syncRemoteCommandAvailability()
+    }
+
+    private func finishPlaybackStartTrace() {
+        guard let playbackStartTrace else { return }
+        PerformanceTrace.playback.endInterval("Start track", playbackStartTrace)
+        self.playbackStartTrace = nil
     }
 
     private func clearTransientPlaybackStatus() {
@@ -1398,7 +1496,7 @@ final class PlayerController: ObservableObject {
         guard force || abs(duration - lastNowPlayingDuration) > 0.5 else { return }
         lastNowPlayingDuration = duration
 
-        let queueIndex = queue.firstIndex { $0.id == currentSong.id }
+        let queueIndex = currentQueueIndex
         nowPlaying.update(
             song: currentSong,
             elapsed: elapsed,
@@ -1416,11 +1514,9 @@ final class PlayerController: ObservableObject {
     private func syncRemoteCommandAvailability() {
         let availability: RemoteCommandAvailability
         if let currentSong {
-            let songs = activeQueue
-            let currentIndex = songs.firstIndex { $0.id == currentSong.id }
             availability = RemoteCommandAvailability(
-                canGoNext: repeatMode == .all || currentIndex.map { $0 < songs.index(before: songs.endIndex) } == true,
-                canGoPrevious: elapsed > 3 || repeatMode == .all || currentIndex.map { $0 > songs.startIndex } == true,
+                canGoNext: repeatMode == .all || currentQueueIndex.map { $0 + 1 < queue.endIndex } == true,
+                canGoPrevious: elapsed > 3 || repeatMode == .all || currentQueueIndex.map { $0 > queue.startIndex } == true,
                 canSeek: duration > 0,
                 isSpokenAudio: currentSong.isAudiobookAudio || isAudiobookEpisode?(currentSong) == true
             )
@@ -1441,7 +1537,7 @@ final class PlayerController: ObservableObject {
     private func reportPlaybackStarted(position: TimeInterval) {
         guard let currentSong, let session, let currentPlaySessionId else { return }
 
-        let item = currentSong
+        let item = currentPlaybackMedia ?? currentSong
         let activeSession = session
         let playSessionId = currentPlaySessionId
         let playMethod = currentPlaybackReportMethod
@@ -1476,7 +1572,7 @@ final class PlayerController: ObservableObject {
         guard force || now.timeIntervalSince(lastPlaybackProgressReport) >= 5 else { return }
         lastPlaybackProgressReport = now
 
-        let item = currentSong
+        let item = currentPlaybackMedia ?? currentSong
         let activeSession = session
         let playSessionId = currentPlaySessionId
         let playMethod = currentPlaybackReportMethod
@@ -1504,7 +1600,7 @@ final class PlayerController: ObservableObject {
     private func reportPlaybackStoppedIfNeeded(position: TimeInterval? = nil) {
         guard let currentSong, let session, let currentPlaySessionId else { return }
 
-        let item = currentSong
+        let item = currentPlaybackMedia ?? currentSong
         let activeSession = session
         let playSessionId = currentPlaySessionId
         let playMethod = currentPlaybackReportMethod
@@ -1572,31 +1668,16 @@ final class PlayerController: ObservableObject {
             syncNowPlaying(force: true)
             return
         }
-
-        // The player page shows the same 600px artwork, so it's usually cached already.
-        let url = resource.url
-        if let cached = ArtworkImageCache.shared.image(for: url) {
+        if let cached = ArtworkLoader.shared.cachedImage(for: resource) {
             currentArtwork = cached
             syncNowPlaying(force: true)
             return
         }
 
-        artworkTask = Task { [weak self, songId = song.id] in
-            var artworkData = await ArtworkDiskCache.data(for: url)
-            if artworkData == nil,
-               let (downloaded, response) = try? await ArtworkNetwork.session.data(for: resource.request),
-               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true {
-                artworkData = downloaded
-                await ArtworkDiskCache.insert(downloaded, for: url)
-            }
-
-            guard let artworkData,
-                  let image = UIImage(data: artworkData),
-                  !Task.isCancelled,
-                  let self,
-                  self.currentSong?.id == songId else {
-                return
-            }
+        artworkTask = Task { [weak self] in
+            guard let image = await ArtworkLoader.shared.image(for: resource),
+                  !Task.isCancelled, let self, self.session == session,
+                  self.currentSong?.id == song.id else { return }
             self.currentArtwork = image
             self.syncNowPlaying(force: true)
         }
@@ -1943,7 +2024,7 @@ private extension AuthenticatedURL {
     }
 }
 
-enum RepeatMode: String, Codable {
+enum RepeatMode: String, Codable, Sendable {
     case none
     case all
     case one
@@ -1958,12 +2039,14 @@ enum RepeatMode: String, Codable {
     }
 }
 
-private struct PlaybackQueueSnapshot: Codable {
+struct PlaybackQueueSnapshot: Codable, Sendable {
     let version: Int
     let savedAt: Date
     let queue: [EmbyAudioItem]
     let queueBeforeShuffle: [EmbyAudioItem]?
     let currentSongID: String?
+    let currentQueueIndex: Int?
+    let queueRevision: UUID?
     /// Where the current song was when last saved. Optional so older snapshots still decode.
     let currentPosition: TimeInterval?
     let isShuffleEnabled: Bool
@@ -1974,23 +2057,25 @@ private struct PlaybackQueueSnapshot: Codable {
 /// - `playback-queue.json`: the songs (large; written only when the queue's contents change)
 /// - `playback-state.json`: current song, position, shuffle and repeat (tiny; written often)
 /// Reads the old single-file `playback-queue-snapshot.json` once for migration.
-private struct PlaybackQueueSnapshotStore {
-    private let version = 2
-    private let legacyVersion = 1
-    private let queueFileName = "playback-queue.json"
-    private let stateFileName = "playback-state.json"
-    private let legacyFileName = "playback-queue-snapshot.json"
+struct PlaybackQueueSnapshotStore: Sendable {
+    let directory: URL
+    private static let queueFileName = "playback-queue.json"
+    private static let stateFileName = "playback-state.json"
+    private static let legacyFileName = "playback-queue-snapshot.json"
+    static let fileNames = [queueFileName, stateFileName, legacyFileName]
 
     private struct QueueFile: Codable {
         let version: Int
         let queue: [EmbyAudioItem]
         let queueBeforeShuffle: [EmbyAudioItem]?
+        let checkpoint: State?
     }
 
-    private struct StateFile: Codable {
-        let version: Int
-        let savedAt: Date
+    struct State: Codable, Sendable {
+        let queueRevision: UUID?
+        var savedAt = Date()
         let currentSongID: String?
+        let currentQueueIndex: Int?
         let currentPosition: TimeInterval?
         let isShuffleEnabled: Bool
         let repeatMode: RepeatMode
@@ -2000,82 +2085,74 @@ private struct PlaybackQueueSnapshotStore {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
 
-        if let queueData = try? Data(contentsOf: url(queueFileName)),
+        if let queueData = try? Data(contentsOf: url(Self.queueFileName)),
            let queueFile = try? decoder.decode(QueueFile.self, from: queueData),
-           queueFile.version == version {
-            let state = (try? Data(contentsOf: url(stateFileName)))
-                .flatMap { try? decoder.decode(StateFile.self, from: $0) }
+           queueFile.version == 2 || (queueFile.version == 3 && queueFile.checkpoint?.queueRevision != nil) {
+            let latest = (try? Data(contentsOf: url(Self.stateFileName)))
+                .flatMap { try? decoder.decode(State.self, from: $0) }
+            let state = latest?.queueRevision == queueFile.checkpoint?.queueRevision
+                ? latest ?? queueFile.checkpoint
+                : queueFile.checkpoint
             return PlaybackQueueSnapshot(
-                version: version,
+                version: queueFile.version,
                 savedAt: state?.savedAt ?? Date(),
                 queue: queueFile.queue,
                 queueBeforeShuffle: queueFile.queueBeforeShuffle,
                 currentSongID: state?.currentSongID,
+                currentQueueIndex: state?.currentQueueIndex,
+                queueRevision: queueFile.checkpoint?.queueRevision,
                 currentPosition: state?.currentPosition,
                 isShuffleEnabled: state?.isShuffleEnabled ?? false,
                 repeatMode: state?.repeatMode ?? RepeatMode.none
             )
         }
 
-        guard let legacyData = try? Data(contentsOf: url(legacyFileName)),
+        guard let legacyData = try? Data(contentsOf: url(Self.legacyFileName)),
               let legacy = try? decoder.decode(PlaybackQueueSnapshot.self, from: legacyData),
-              legacy.version == legacyVersion else {
+              legacy.version == 1 else {
             return nil
         }
         return legacy
     }
 
-    func saveQueue(queue: [EmbyAudioItem], queueBeforeShuffle: [EmbyAudioItem]?) {
-        write(QueueFile(version: version, queue: queue, queueBeforeShuffle: queueBeforeShuffle), to: queueFileName)
-        // The split files now hold everything the old single file did.
-        try? FileManager.default.removeItem(at: url(legacyFileName))
+    func saveQueue(queue: [EmbyAudioItem], queueBeforeShuffle: [EmbyAudioItem]?, checkpoint: State) -> Bool {
+        let trace = PerformanceTrace.playback
+        let span = trace.beginInterval("Write playback queue", id: trace.makeSignpostID())
+        defer { trace.endInterval("Write playback queue", span) }
+        // A matching checkpoint is part of the atomic queue write. It remains usable if
+        // the app stops before the small state file is written.
+        let value = QueueFile(version: 3, queue: queue, queueBeforeShuffle: queueBeforeShuffle, checkpoint: checkpoint)
+        guard write(value, to: Self.queueFileName) else { return false }
+        try? FileManager.default.removeItem(at: url(Self.legacyFileName))
+        return true
     }
 
-    func saveState(
-        currentSongID: String?,
-        currentPosition: TimeInterval?,
-        isShuffleEnabled: Bool,
-        repeatMode: RepeatMode
-    ) {
-        write(
-            StateFile(
-                version: version,
-                savedAt: Date(),
-                currentSongID: currentSongID,
-                currentPosition: currentPosition,
-                isShuffleEnabled: isShuffleEnabled,
-                repeatMode: repeatMode
-            ),
-            to: stateFileName
-        )
+    func saveState(_ state: State) {
+        _ = write(state, to: Self.stateFileName)
     }
 
     func clear() {
-        for name in [queueFileName, stateFileName, legacyFileName] {
+        for name in Self.fileNames {
             try? FileManager.default.removeItem(at: url(name))
         }
     }
 
-    private func write<Value: Encodable>(_ value: Value, to fileName: String) {
+    private func write<Value: Encodable>(_ value: Value, to fileName: String) -> Bool {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         do {
-            try FileManager.default.createDirectory(at: applicationSupportDirectory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try encoder.encode(value)
             try data.write(to: url(fileName), options: [.atomic])
+            return true
         } catch {
             print("[PlaybackQueueSnapshotStore] Failed to save \(fileName): \(error.localizedDescription)")
+            return false
         }
     }
 
     private func url(_ fileName: String) -> URL {
-        applicationSupportDirectory.appendingPathComponent(fileName)
-    }
-
-    private var applicationSupportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("PrivSong", isDirectory: true)
+        directory.appendingPathComponent(fileName)
     }
 }
 

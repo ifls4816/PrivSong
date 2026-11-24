@@ -445,8 +445,7 @@ private struct PlaylistDetailLoaderView: View {
     @Environment(AppStore.self) private var store
     let playlistID: String
 
-    @State private var loadedSongs: [EmbyAudioItem]?
-    @State private var isLoading = false
+    @State private var isLoading = true
     @State private var errorMessage: String?
 
     private var playlist: MusicPlaylist? {
@@ -459,10 +458,9 @@ private struct PlaylistDetailLoaderView: View {
 
     var body: some View {
         Group {
-            if let loadedSongs {
-                PaginatedSongListView(title: title, songs: loadedSongs)
-            } else if let playlist, playlist.hasCompleteSongList {
+            if let playlist, playlist.hasCompleteSongList {
                 PaginatedSongListView(title: playlist.name, songs: playlist.songs)
+                    .refreshable { await loadSongs() }
             } else if isLoading {
                 ProgressView()
                     .controlSize(.large)
@@ -483,25 +481,25 @@ private struct PlaylistDetailLoaderView: View {
             }
         }
         .task(id: playlistID) {
-            await loadSongsIfNeeded()
+            await loadSongs()
         }
     }
 
-    private func loadSongsIfNeeded() async {
-        guard loadedSongs == nil,
-              let playlist,
-              !playlist.hasCompleteSongList else {
+    private func loadSongs() async {
+        guard let playlist, playlist.isServerEditable else {
+            isLoading = false
             return
         }
 
         isLoading = true
         errorMessage = nil
+        defer { isLoading = false }
         do {
-            loadedSongs = try await store.loadPlaylistSongsIfNeeded(playlistId: playlistID)
+            _ = try await store.loadPlaylistSongsIfNeeded(playlistId: playlistID)
+        } catch is CancellationError {
         } catch {
             errorMessage = error.localizedDescription
         }
-        isLoading = false
     }
 }
 

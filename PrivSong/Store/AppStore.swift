@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 import Security
 
 /// Serializes snapshot writes and deletes off the main thread while keeping them in order.
@@ -8,12 +9,14 @@ private let persistenceQueue = DispatchQueue(label: "PrivSong.persistence", qos:
 @MainActor
 @Observable
 final class AppStore {
-    var session: EmbySession?
+    private(set) var session: EmbySession?
     /// Set through `applySongs(_:)` so derived data (albums, artists, index sections) is
     /// computed off the main thread and published together with the songs.
     private(set) var songs: [EmbyAudioItem] = []
     var searchResults: [EmbyAudioItem] = []
-    var isLoading = false
+    private var isConnecting = false
+    private var isRefreshingLibrary = false
+    var isLoading: Bool { isConnecting || isRefreshingLibrary }
     /// True while cached content is being read at launch, so pages show their skeletons
     /// instead of an empty "暂无资料库" state for that moment.
     private(set) var isRestoringCachedContent = false
@@ -62,6 +65,7 @@ final class AppStore {
     private(set) var albumSections: [IndexedSection<MusicAlbum>] = []
     private(set) var artistSections: [IndexedSection<MusicArtist>] = []
     private(set) var playlists: [MusicPlaylist] = []
+    @ObservationIgnored private var generatedPlaylists: [MusicPlaylist] = []
     /// Set through `applyAudiobookEpisodes(_:)` so grouping and indexing run off the main thread.
     private(set) var audiobookEpisodes: [EmbyAudioItem] = []
     private(set) var audiobooks: [Audiobook] = []
@@ -75,14 +79,12 @@ final class AppStore {
     private(set) var recentlyAddedSongs: [EmbyAudioItem] = []
     private(set) var mostPlayedSongs: [EmbyAudioItem] = []
 
-    private let client = EmbyClient()
-    private let snapshotStore = LibrarySnapshotStore()
-    private let initialHomeSnapshotStore = InitialHomeContentSnapshotStore()
-    private let audiobookProgressStore = AudiobookProgressStore()
+    private let client: EmbyClient
     private let sessionTokenStore = KeychainSessionTokenStore()
     private let sessionKey = "EmbySession"
     private let favoritesKey = "FavoriteSongIds"
     private let recentKey = "RecentSongIds"
+    private let legacyAccountKey = "LegacyEmbyAccount"
     private let cellularOnlineQualityKey = "CellularOnlinePlaybackQuality"
     private let wifiOnlineQualityKey = "WiFiOnlinePlaybackQuality"
     private let startsOnBrowseKey = "StartsOnBrowse"
@@ -91,6 +93,11 @@ final class AppStore {
     private let audioCacheLimitKey = "AudioCacheLimitMB"
     private let searchResultLimit = 100
     @ObservationIgnored private var activeSearchToken: UUID?
+    @ObservationIgnored private var sessionGeneration = UUID()
+    @ObservationIgnored private var signInAttempt: UUID?
+    @ObservationIgnored private var libraryRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var playlistRevision = 0
+    @ObservationIgnored private var favoriteRevision = 0
     @ObservationIgnored private var libraryCacheSavedAt: Date?
     @ObservationIgnored private var dailyRecommendationDay: Int?
     private var audiobookEpisodeBookIds: [String: String] = [:]
@@ -108,7 +115,7 @@ final class AppStore {
     @ObservationIgnored weak var player: PlayerController? {
         didSet {
             player?.setPlaybackQualityPreferences(playbackQualityPreferences)
-            player?.setSession(session)
+            player?.setSession(session, migratesLegacy: session.map { ownsLegacyData($0.account) } ?? false)
             player?.isAudiobookEpisode = { [weak self] item in
                 self?.audiobookEpisodeBookIds[item.id] != nil
             }
@@ -261,9 +268,10 @@ final class AppStore {
         player?.addToQueueEnd(song)
     }
 
-    init() {
+    init(client: EmbyClient = EmbyClient(), restoresSession: Bool = true) {
+        self.client = client
         restoreLocalState()
-        restoreSession()
+        if restoresSession { restoreSession() }
         Task.detached(priority: .utility) {
             DiskCacheMaintenance.removeOrphanedFiles()
             ArtworkDiskCache.trimToLimit()
@@ -271,63 +279,118 @@ final class AppStore {
     }
 
     func signIn(server: String, username: String, password: String) async {
-        await perform {
-            let session = try await client.authenticate(server: server, username: username, password: password)
-            self.session = session
-            self.player?.setSession(session)
-            self.persist(session)
-            try await self.fetchAndApplyInitialHomeContent(session: session)
-        }
-
-        if session != nil {
-            Task {
-                await refreshLibrary()
+        let attempt = UUID()
+        signInAttempt = attempt
+        isConnecting = true
+        errorMessage = nil
+        defer {
+            if signInAttempt == attempt {
+                signInAttempt = nil
+                isConnecting = false
             }
         }
-    }
-
-    private func fetchAndApplyInitialHomeContent(session: EmbySession) async throws {
-        let content = try await client.fetchInitialHomeContent(session: session)
-        guard self.session == session else { return }
-        await applyInitialHomeContent(content)
-        await refreshFavoritesFromServer(session: session)
-        homeContentFetchedAt = Date()
-    }
-
-    private func loadInitialHomeContent(session: EmbySession) async {
-        await perform {
-            try await self.fetchAndApplyInitialHomeContent(session: session)
+        do {
+            let authenticated = try await client.authenticate(server: server, username: username, password: password)
+            guard signInAttempt == attempt, !Task.isCancelled else { return }
+            let accountChanged = session?.account != authenticated.account
+            activateSession(authenticated)
+            persist(authenticated)
+            let generation = sessionGeneration
+            if accountChanged || !hasLoadedInitialContent {
+                await restoreAccountContent(for: authenticated, generation: generation)
+            }
+            guard sessionGeneration == generation else { return }
+            if !hasLoadedInitialContent {
+                await loadInitialHomeContent(session: authenticated, generation: generation)
+            }
+            guard sessionGeneration == generation else { return }
+            Task {
+                guard sessionGeneration == generation else { return }
+                await refreshLibrary()
+            }
+        } catch is CancellationError {
+        } catch {
+            guard signInAttempt == attempt else { return }
+            errorMessage = Self.connectionError(error, server: server)
         }
     }
 
+    private static func connectionError(_ error: Error, server: String) -> String {
+        guard let urlError = error as? URLError,
+              let host = (try? EmbyClient.normalizedServerURL(server))?.host,
+              isLocalHost(host) else {
+            return error.localizedDescription
+        }
+        switch urlError.code {
+        case .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .timedOut:
+            return "无法连接到局域网 Emby。请检查服务器地址和网络，并在系统设置中确认已允许私音访问本地网络。"
+        default:
+            return error.localizedDescription
+        }
+    }
+
+    private static func isLocalHost(_ host: String) -> Bool {
+        let name = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+        if name.contains(":") {
+            return name == "::1" || name.hasPrefix("fe80:") || name.hasPrefix("fc") || name.hasPrefix("fd")
+        }
+        if name.hasSuffix(".local") || !name.contains(".") || name.hasPrefix("192.168.") ||
+            name.hasPrefix("10.") || name.hasPrefix("127.") || name.hasPrefix("169.254.") {
+            return true
+        }
+        let parts = name.split(separator: ".")
+        return parts.first == "172" && parts.count == 4 && Int(parts[1]).map { (16...31).contains($0) } == true
+    }
+
+    private func loadInitialHomeContent(session: EmbySession, generation: UUID) async {
+        do {
+            let content = try await client.fetchInitialHomeContent(session: session)
+            guard sessionGeneration == generation, !Task.isCancelled else { return }
+            guard await applyInitialHomeContent(content, session: session, generation: generation) else { return }
+            if content.playlists != nil, content.audiobookEpisodes != nil, content.mostPlayedSongs != nil {
+                homeContentFetchedAt = Date()
+            }
+        } catch is CancellationError {
+        } catch {
+            guard sessionGeneration == generation else { return }
+            errorMessage = error.localizedDescription
+            libraryStatus = error.localizedDescription
+        }
+    }
+
+    @discardableResult
     private func applyInitialHomeContent(
         _ content: InitialHomeContent,
-        savedAt: Date = Date(),
+        session: EmbySession,
+        generation: UUID,
         savesSnapshot: Bool = true
-    ) async {
-        // Group audiobooks first so all home content is published together.
-        guard await applyAudiobookEpisodes(content.audiobookEpisodes) else { return }
-        playlists = content.playlists
-        recentlyAddedSongs = content.recentlyAddedSongs
-        mostPlayedSongs = content.mostPlayedSongs
+    ) async -> Bool {
+        if let episodes = content.audiobookEpisodes, !(await applyAudiobookEpisodes(episodes)) { return false }
+        guard sessionGeneration == generation, !Task.isCancelled else { return false }
+        if let loaded = content.playlists { playlists = loaded }
+        if let loaded = content.recentlyAddedSongs { recentlyAddedSongs = loaded }
+        if let loaded = content.mostPlayedSongs { mostPlayedSongs = loaded }
 
         let day = currentRecommendationDay()
         let dailySeed = firstNonEmptySongList(
-            content.dailySeedSongs,
-            content.recentlyAddedSongs,
-            content.mostPlayedSongs
+            content.dailySeedSongs ?? [],
+            recentlyAddedSongs,
+            mostPlayedSongs
         )
-        dailyRecommendationDay = day
-        dailyRecommendedSongs = DerivedLibraryData.dailyRecommendation(from: dailySeed, day: day, limit: 50)
+        if !dailySeed.isEmpty || !hasLoadedInitialContent {
+            dailyRecommendationDay = day
+            dailyRecommendedSongs = DerivedLibraryData.dailyRecommendation(from: dailySeed, day: day, limit: 50)
+        }
         hasLoadedInitialContent = true
         libraryStatus = "Loaded home content."
 
         if savesSnapshot {
-            let store = initialHomeSnapshotStore
+            let store = InitialHomeContentSnapshotStore(directory: session.account.directory)
             persistenceQueue.async {
                 store.save(content)
             }
         }
+        return true
     }
 
     private func firstNonEmptySongList(_ candidates: [EmbyAudioItem]...) -> [EmbyAudioItem] {
@@ -341,28 +404,36 @@ final class AppStore {
         }
 
         let playlist = playlists[index]
-        guard !playlist.hasCompleteSongList else {
+        guard playlist.isServerEditable else {
             return playlist.songs
         }
 
-        let songs = try await client.fetchPlaylistSongs(playlistId: playlistId, session: session)
-        // Look the playlist up again: the list may have been refreshed, reordered or had this
-        // playlist deleted while we were waiting, so the index from before is not safe to use.
-        guard let currentIndex = playlists.firstIndex(where: { $0.id == playlistId }) else {
-            return songs
+        let generation = sessionGeneration
+        let revision = playlistRevision
+        let loaded: [EmbyAudioItem]
+        do {
+            loaded = try await client.fetchPlaylistSongs(playlistId: playlistId, session: session)
+        } catch {
+            try checkSession(generation)
+            if playlist.hasCompleteSongList { return playlist.songs }
+            throw error
         }
+        try checkSession(generation)
+        guard let currentIndex = playlists.firstIndex(where: { $0.id == playlistId }) else { return [] }
         let current = playlists[currentIndex]
+        guard playlistRevision == revision else { return current.songs }
+        guard current.songs != loaded || current.songCount != loaded.count else { return loaded }
+        playlistRevision += 1
         let updatedPlaylist = MusicPlaylist(
             id: current.id,
             name: current.name,
-            description: "\(songs.count) 首歌曲",
-            songs: songs,
-            songCount: songs.count
+            description: "\(loaded.count) 首歌曲",
+            songs: loaded,
+            songCount: loaded.count
         )
-        var updatedPlaylists = playlists
-        updatedPlaylists[currentIndex] = updatedPlaylist
-        playlists = updatedPlaylists
-        return songs
+        playlists[currentIndex] = updatedPlaylist
+        saveLibrarySnapshot()
+        return loaded
     }
 
     func fetchRealtimeMusicFolders() async throws -> [MusicFolder] {
@@ -382,37 +453,77 @@ final class AppStore {
 
     func createRealtimePlaylist(name: String, songs: [EmbyAudioItem]) async throws -> MusicPlaylist {
         guard let session else { throw EmbyError.invalidResponse }
+        let generation = sessionGeneration
         let playlist = try await client.createPlaylist(name: name, songs: songs, session: session)
-        try await refreshPlaylistsFromServer(session: session)
+        try checkSession(generation)
+        playlistRevision += 1
+        playlists.removeAll { !$0.isServerEditable }
+        playlists.append(playlist)
+        saveLibrarySnapshot()
         return playlist
     }
 
     func replaceRealtimePlaylist(playlistId: String, songs: [EmbyAudioItem]) async throws {
         guard let session else { throw EmbyError.invalidResponse }
-        try await client.replacePlaylistSongs(playlistId: playlistId, songs: songs, session: session)
-        try await refreshPlaylistsFromServer(session: session, updatedPlaylistId: playlistId, updatedSongs: songs)
+        let generation = sessionGeneration
+        do {
+            try await client.replacePlaylistSongs(playlistId: playlistId, songs: songs, session: session)
+        } catch let error as EmbyError {
+            try checkSession(generation)
+            if case .playlistReplacementFailed(_, false) = error {
+                _ = try? await loadPlaylistSongsIfNeeded(playlistId: playlistId)
+            }
+            throw error
+        }
+        try checkSession(generation)
+        playlistRevision += 1
+        if let index = playlists.firstIndex(where: { $0.id == playlistId }) {
+            playlists[index] = MusicPlaylist(
+                id: playlistId, name: playlists[index].name, description: "\(songs.count) 首歌曲",
+                songs: songs, songCount: songs.count
+            )
+            saveLibrarySnapshot()
+        }
     }
 
     func deletePlaylist(playlistId: String) async throws {
         guard let session else { throw EmbyError.invalidResponse }
+        let generation = sessionGeneration
         try await client.deletePlaylist(playlistId: playlistId, session: session)
-        try await refreshPlaylistsFromServer(session: session)
+        try checkSession(generation)
+        playlistRevision += 1
+        playlists.removeAll { $0.id == playlistId }
+        if playlists.isEmpty { playlists = generatedPlaylists }
+        saveLibrarySnapshot()
     }
 
     func renamePlaylist(playlistId: String, name: String) async throws {
         guard let session else { throw EmbyError.invalidResponse }
+        let generation = sessionGeneration
         try await client.renamePlaylist(playlistId: playlistId, name: name, session: session)
-        try await refreshPlaylistsFromServer(session: session)
+        try checkSession(generation)
+        playlistRevision += 1
+        if let index = playlists.firstIndex(where: { $0.id == playlistId }) {
+            let playlist = playlists[index]
+            playlists[index] = MusicPlaylist(
+                id: playlist.id, name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                description: playlist.description, songs: playlist.songs, songCount: playlist.songCount
+            )
+            saveLibrarySnapshot()
+        }
     }
 
     /// Deletes the song on the Emby server — its audio file is removed from disk — and then
     /// drops it from everything held locally. Irreversible.
     func deleteSong(_ song: EmbyAudioItem) async throws {
         guard let session else { throw EmbyError.invalidResponse }
+        let generation = sessionGeneration
         try await client.deleteSong(itemId: song.id, session: session)
+        try checkSession(generation)
 
         let id = song.id
         deletedSongIds.insert(id)
+        playlistRevision += 1
         player?.removeDeletedSong(song)
 
         playlists = playlists.map { playlist in
@@ -436,27 +547,29 @@ final class AppStore {
         }
         if recentSongIds.contains(id) {
             recentSongIds.removeAll { $0 == id }
-            UserDefaults.standard.set(recentSongIds, forKey: recentKey)
+            UserDefaults.standard.set(recentSongIds, forKey: accountKey(recentKey, session.account))
         }
 
         if songs.contains(where: { $0.id == id }) {
             // Rebuilds albums, artists, recommendations and recents without the song.
-            await applySongs(songs.filter { $0.id != id })
+            guard await applySongs(songs.filter { $0.id != id }) else { return }
         } else {
             dailyRecommendedSongs.removeAll { $0.id == id }
             recentlyAddedSongs.removeAll { $0.id == id }
             refreshRecentSongs()
         }
-        saveLibrarySnapshot()
+        if sessionGeneration == generation { saveLibrarySnapshot() }
     }
 
     func refreshAudiobookProgress(for audiobook: Audiobook) async {
         guard let session else { return }
+        let generation = sessionGeneration
         let episodeIds = audiobook.episodes.map(\.id)
         guard !episodeIds.isEmpty else { return }
 
         do {
             let refreshedEpisodes = try await client.fetchItems(itemIds: episodeIds, session: session)
+            try checkSession(generation)
             mergeServerAudiobookProgress(
                 from: refreshedEpisodes,
                 updatesExisting: true,
@@ -468,26 +581,7 @@ final class AppStore {
         }
     }
 
-    private func applyFullLibrary(
-        songs: [EmbyAudioItem],
-        playlists: [MusicPlaylist],
-        audiobookEpisodes: [EmbyAudioItem],
-        mostPlayedSongs: [EmbyAudioItem]? = nil
-    ) async -> Bool {
-        guard await applySongs(songs),
-              await applyAudiobookEpisodes(audiobookEpisodes) else { return false }
-        self.playlists = playlists.isEmpty ? songs.generatedPlaylists : playlists
-        if let mostPlayedSongs {
-            self.mostPlayedSongs = mostPlayedSongs
-        }
-        self.hasLoadedInitialContent = true
-        self.libraryCacheSavedAt = Date()
-        self.saveLibrarySnapshot()
-        self.updateLibraryStatus()
-        return true
-    }
-
-    private func fetchAndApplyFullLibrary(session: EmbySession) async throws {
+    private func fetchAndApplyFullLibrary(session: EmbySession, generation: UUID) async throws {
         // Right after the home content was fetched (sign-in, or a launch without cache), its
         // playlists, audiobooks, most-played list and favorites are current. Reuse them rather
         // than downloading all of it a second time.
@@ -495,33 +589,43 @@ final class AppStore {
         homeContentFetchedAt = nil
 
         let api = client
-        async let songs = api.fetchSongs(session: session)
-        let playlistsTask: Task<[MusicPlaylist], Never>? = reusesHomeContent ? nil : Task {
-            (try? await api.fetchPlaylistSummaries(session: session)) ?? []
-        }
-        let audiobookEpisodesTask: Task<[EmbyAudioItem], Never>? = reusesHomeContent ? nil : Task {
-            (try? await api.fetchAudiobookEpisodes(session: session)) ?? []
-        }
-        let mostPlayedTask: Task<[EmbyAudioItem]?, Never>? = reusesHomeContent ? nil : Task {
-            try? await api.fetchMostPlayedSongs(session: session, limit: 50)
-        }
+        let revision = playlistRevision
+        async let songsRequest = api.fetchSongs(session: session)
+        let cachedPlaylists = playlists.filter(\.isServerEditable)
+        let cachedEpisodes = audiobookEpisodes
+        let cachedMostPlayed = mostPlayedSongs
+        async let playlistsRequest: [MusicPlaylist]? = reusesHomeContent ? cachedPlaylists
+            : (try? await api.fetchPlaylistSummaries(session: session))
+        async let audiobookRequest: [EmbyAudioItem]? = reusesHomeContent ? cachedEpisodes
+            : (try? await api.fetchAudiobookEpisodes(session: session))
+        async let mostPlayedRequest: [EmbyAudioItem]? = reusesHomeContent ? cachedMostPlayed
+            : (try? await api.fetchMostPlayedSongs(session: session, limit: 50))
 
-        let loadedSongs = try await songs
-        let loadedPlaylists = await playlistsTask?.value ?? playlists
-        let loadedAudiobookEpisodes = await audiobookEpisodesTask?.value ?? audiobookEpisodes
-        let loadedMostPlayedSongs = await mostPlayedTask?.value ?? self.mostPlayedSongs
-        let mergedPlaylists = await playlistsKeepingLoadedSongs(loadedPlaylists, session: session)
-
-        // Signed out or switched servers while this refresh was in flight.
-        guard self.session == session else { return }
-        let applied = await applyFullLibrary(
-            songs: loadedSongs,
-            playlists: mergedPlaylists,
-            audiobookEpisodes: loadedAudiobookEpisodes,
-            mostPlayedSongs: loadedMostPlayedSongs
-        )
-        guard applied, self.session == session, !reusesHomeContent else { return }
-        await refreshFavoritesFromServer(session: session)
+        let loadedSongs = try await songsRequest
+        let (summaries, episodes, mostPlayed) = await (playlistsRequest, audiobookRequest, mostPlayedRequest)
+        try checkSession(generation)
+        let filteredSongs = deletedSongIds.isEmpty ? loadedSongs : loadedSongs.filter { !deletedSongIds.contains($0.id) }
+        guard await applySongs(filteredSongs) else { return }
+        try checkSession(generation)
+        if let episodes, !(await applyAudiobookEpisodes(episodes)) { return }
+        try checkSession(generation)
+        if let summaries, playlistRevision == revision {
+            let merged = await playlistsKeepingLoadedSongs(summaries, session: session)
+            try checkSession(generation)
+            if playlistRevision == revision {
+                playlists = merged.isEmpty ? generatedPlaylists : merged
+            }
+        }
+        if let mostPlayed { mostPlayedSongs = mostPlayed.filter { !deletedSongIds.contains($0.id) } }
+        hasLoadedInitialContent = true
+        if summaries != nil, episodes != nil {
+            libraryCacheSavedAt = Date()
+        } else {
+            errorMessage = "部分资料库同步失败，已保留已有的歌单和有声书。"
+        }
+        saveLibrarySnapshot()
+        updateLibraryStatus()
+        await refreshFavoritesFromServer(session: session, generation: generation)
     }
 
     /// Playlist summaries come without songs. Reuse songs already loaded for playlists whose
@@ -529,14 +633,12 @@ final class AppStore {
     /// downloading every playlist's full track list on each refresh.
     private func playlistsKeepingLoadedSongs(
         _ summaries: [MusicPlaylist],
-        session: EmbySession,
-        discardingSongsOf editedPlaylistId: String? = nil
+        session: EmbySession
     ) async -> [MusicPlaylist] {
         let existingById = Dictionary(playlists.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var merged = summaries.map { summary -> MusicPlaylist in
-            // An edited playlist can keep its track count while its contents changed.
-            guard summary.id != editedPlaylistId,
-                  let existing = existingById[summary.id],
+            // These tracks are provisional. Opening the playlist fetches the latest entries.
+            guard let existing = existingById[summary.id],
                   !existing.songs.isEmpty,
                   existing.songs.count == summary.songCount else {
                 return summary
@@ -572,44 +674,41 @@ final class AppStore {
     }
 
     func refreshLibrary() async {
-        guard let session else { return }
-        // A full refresh should see newly added libraries, so don't use cached views.
-        await client.invalidateCachedLibraryViews()
-        await perform {
-            try await self.fetchAndApplyFullLibrary(session: session)
+        guard let session, !isRestoringCachedContent else { return }
+        if let running = libraryRefreshTask {
+            await running.value
+            return
         }
+        let generation = sessionGeneration
+        isRefreshingLibrary = true
+        errorMessage = nil
+        let refresh = Task {
+            await client.invalidateCachedLibraryViews()
+            do {
+                try checkSession(generation)
+                try await fetchAndApplyFullLibrary(session: session, generation: generation)
+            } catch is CancellationError {
+            } catch {
+                if sessionGeneration == generation {
+                    errorMessage = error.localizedDescription
+                    if !hasLoadedInitialContent { libraryStatus = error.localizedDescription }
+                }
+            }
+            if sessionGeneration == generation {
+                libraryRefreshTask = nil
+                isRefreshingLibrary = false
+            }
+        }
+        libraryRefreshTask = refresh
+        await refresh.value
     }
 
-    private func refreshPlaylistsFromServer(
-        session: EmbySession,
-        updatedPlaylistId: String? = nil,
-        updatedSongs: [EmbyAudioItem]? = nil
-    ) async throws {
-        let summaries = try await client.fetchPlaylistSummaries(session: session)
-        var refreshedPlaylists = await playlistsKeepingLoadedSongs(
-            summaries,
-            session: session,
-            discardingSongsOf: updatedPlaylistId
-        )
-        if let updatedPlaylistId, let updatedSongs,
-           let index = refreshedPlaylists.firstIndex(where: { $0.id == updatedPlaylistId }) {
-            let playlist = refreshedPlaylists[index]
-            refreshedPlaylists[index] = MusicPlaylist(
-                id: playlist.id,
-                name: playlist.name,
-                description: "\(updatedSongs.count) 首歌曲",
-                songs: updatedSongs,
-                songCount: updatedSongs.count
-            )
-        }
-        playlists = refreshedPlaylists.isEmpty ? songs.generatedPlaylists : refreshedPlaylists
-        saveLibrarySnapshot()
-        updateLibraryStatus()
-    }
-
-    private func refreshFavoritesFromServer(session: EmbySession) async {
+    private func refreshFavoritesFromServer(session: EmbySession, generation: UUID) async {
+        let revision = favoriteRevision
         do {
             let favoriteSongs = try await client.fetchFavoriteSongs(session: session)
+            try checkSession(generation)
+            guard favoriteRevision == revision else { return }
             applyServerFavoriteSongs(favoriteSongs)
         } catch is CancellationError {
         } catch {
@@ -617,18 +716,14 @@ final class AppStore {
         }
     }
 
-    private func refreshFavoritesFromServer() async {
-        guard let session else { return }
-        await refreshFavoritesFromServer(session: session)
-    }
-
     private func applyServerFavoriteSongs(_ songs: [EmbyAudioItem]) {
         var seen = Set<String>()
         let musicFavorites = songs.filter { song in
-            song.isAudio && !song.isAudiobookAudio && seen.insert(song.id).inserted
+            song.isAudio && !song.isAudiobookAudio && !deletedSongIds.contains(song.id)
+                && !pendingFavoriteSongIds.contains(song.id) && seen.insert(song.id).inserted
         }
-        serverFavoriteSongs = musicFavorites
-        favoriteSongIds = Set(musicFavorites.map(\.id))
+        serverFavoriteSongs = musicFavorites + serverFavoriteSongs.filter { pendingFavoriteSongIds.contains($0.id) }
+        favoriteSongIds = Set(musicFavorites.map(\.id)).union(favoriteSongIds.intersection(pendingFavoriteSongIds))
         persistFavoriteSongIds()
     }
 
@@ -720,10 +815,11 @@ final class AppStore {
     }
 
     func registerPlayback(song: EmbyAudioItem) {
+        guard let account = session?.account else { return }
         recentSongIds.removeAll { $0 == song.id }
         recentSongIds.insert(song.id, at: 0)
         recentSongIds = Array(recentSongIds.prefix(50))
-        UserDefaults.standard.set(recentSongIds, forKey: recentKey)
+        UserDefaults.standard.set(recentSongIds, forKey: accountKey(recentKey, account))
         refreshRecentSongs()
     }
 
@@ -732,8 +828,11 @@ final class AppStore {
     }
 
     func toggleFavorite(_ song: EmbyAudioItem) {
+        guard let session else { return }
         guard !pendingFavoriteSongIds.contains(song.id) else { return }
 
+        let generation = sessionGeneration
+        favoriteRevision += 1
         favoriteErrorMessage = nil
         let shouldFavorite = !favoriteSongIds.contains(song.id)
         let previousServerSong = serverFavoriteSongs.first { $0.id == song.id }
@@ -741,18 +840,16 @@ final class AppStore {
         applyFavorite(song: song, isFavorite: shouldFavorite)
 
         Task {
-            guard let session else {
-                rollbackFavorite(song: song, previousServerSong: previousServerSong, wasFavorite: !shouldFavorite)
-                favoriteErrorMessage = "收藏同步失败：未连接到 Emby"
-                return
-            }
-
             do {
+                try checkSession(generation)
                 try await client.setFavorite(itemId: song.id, isFavorite: shouldFavorite, session: session)
+                guard sessionGeneration == generation else { return }
                 pendingFavoriteSongIds.remove(song.id)
             } catch is CancellationError {
-                pendingFavoriteSongIds.remove(song.id)
+                guard sessionGeneration == generation else { return }
+                rollbackFavorite(song: song, previousServerSong: previousServerSong, wasFavorite: !shouldFavorite)
             } catch {
+                guard sessionGeneration == generation else { return }
                 rollbackFavorite(song: song, previousServerSong: previousServerSong, wasFavorite: !shouldFavorite)
                 favoriteErrorMessage = "收藏同步失败：\(error.localizedDescription)"
             }
@@ -1009,7 +1106,8 @@ final class AppStore {
     }
 
     private func saveAudiobookProgress() {
-        let store = audiobookProgressStore
+        guard let account = session?.account else { return }
+        let store = AudiobookProgressStore(directory: account.directory)
         let progress = audiobookProgress
         persistenceQueue.async {
             store.save(progress)
@@ -1023,20 +1121,63 @@ final class AppStore {
     }
 
     func signOut() {
-        session = nil
-        player?.setSession(nil)
-        player?.clearPersistedQueue()
+        let account = session?.account
+        signInAttempt = nil
+        isConnecting = false
+        activateSession(nil, forgetPreviousAccount: true)
+        UserDefaults.standard.removeObject(forKey: sessionKey)
+        do {
+            try sessionTokenStore.deleteAllTokens()
+        } catch {
+            print("[AppStore] Failed to clear Emby session token: \(error.localizedDescription)")
+        }
+        if let account {
+            if ownsLegacyData(account) { UserDefaults.standard.set("", forKey: legacyAccountKey) }
+            clearPersistedSnapshots(for: account)
+            UserDefaults.standard.removeObject(forKey: accountKey(favoritesKey, account))
+            UserDefaults.standard.removeObject(forKey: accountKey(recentKey, account))
+            ArtworkLoader.shared.clear(scope: account.id)
+        }
+        URLCache.shared.removeAllCachedResponses()
+        cacheUsageBytes = nil
+    }
+
+    private func activateSession(_ newSession: EmbySession?, forgetPreviousAccount: Bool = false) {
+        let previousAccount = session?.account
+        let accountChanged = newSession?.account != previousAccount
+        // The stop callback checkpoints progress against the old session.
+        player?.setSession(
+            newSession,
+            migratesLegacy: newSession.map { ownsLegacyData($0.account) } ?? false,
+            forgetPreviousAccount: forgetPreviousAccount
+        )
+        if accountChanged { flushAudiobookProgress() }
+        session = newSession
+        sessionGeneration = UUID()
+        libraryRefreshTask?.cancel()
+        libraryRefreshTask = nil
+        isRefreshingLibrary = false
+        isRestoringCachedContent = false
+        activeSearchToken = nil
+        isSearching = false
+        searchResults = []
+        pendingFavoriteSongIds = []
+        derivedDataGeneration += 1
+        audiobookDataGeneration += 1
+        homeContentFetchedAt = nil
+        guard accountChanged else { return }
+
         clearSongs()
         liveAudiobookProgress = nil
-        homeContentFetchedAt = nil
+        lastAudiobookProgressPublish = .distantPast
+        generatedPlaylists = []
         playlists = []
         clearAudiobooks()
         audiobookProgress = [:]
-        searchResults = []
         favoriteSongIds = []
+        recentSongIds = []
         deletedSongIds = []
         serverFavoriteSongs = []
-        pendingFavoriteSongIds = []
         dailyRecommendedSongs = []
         recentlyAddedSongs = []
         mostPlayedSongs = []
@@ -1046,18 +1187,11 @@ final class AppStore {
         errorMessage = nil
         favoriteErrorMessage = nil
         libraryStatus = "Not connected"
-        UserDefaults.standard.removeObject(forKey: sessionKey)
-        do {
-            try sessionTokenStore.deleteAllTokens()
-        } catch {
-            print("[AppStore] Failed to clear Emby session token: \(error.localizedDescription)")
-        }
-        clearPersistedSnapshots()
-        ArtworkImageCache.shared.clear()
-        ArtworkDiskCache.clear()
-        PlaybackAudioCache.clearAll()
-        URLCache.shared.removeAllCachedResponses()
-        cacheUsageBytes = nil
+    }
+
+    private func checkSession(_ generation: UUID) throws {
+        try Task.checkCancellation()
+        guard sessionGeneration == generation else { throw CancellationError() }
     }
 
     func clearCaches() {
@@ -1078,10 +1212,11 @@ final class AppStore {
     }
 
     /// Queued behind any pending snapshot write so a late save can't resurrect the file.
-    private func clearPersistedSnapshots() {
-        let librarySnapshots = snapshotStore
-        let homeSnapshots = initialHomeSnapshotStore
-        let progressStore = audiobookProgressStore
+    private func clearPersistedSnapshots(for account: EmbyAccountStorage) {
+        let directory = account.directory
+        let librarySnapshots = LibrarySnapshotStore(directory: directory)
+        let homeSnapshots = InitialHomeContentSnapshotStore(directory: directory)
+        let progressStore = AudiobookProgressStore(directory: directory)
         persistenceQueue.async {
             librarySnapshots.clear()
             homeSnapshots.clear()
@@ -1129,23 +1264,6 @@ final class AppStore {
         return (left, right)
     }
 
-    private func perform(_ operation: () async throws -> Void) async {
-        isLoading = true
-        errorMessage = nil
-        defer { isLoading = false }
-
-        do {
-            try await operation()
-        } catch is CancellationError {
-            // Cancellations are expected for superseded async UI work.
-        } catch {
-            errorMessage = error.localizedDescription
-            if songs.isEmpty, audiobookEpisodes.isEmpty {
-                libraryStatus = error.localizedDescription
-            }
-        }
-    }
-
     private func persist(_ session: EmbySession) {
         do {
             try sessionTokenStore.saveToken(session.accessToken, for: session)
@@ -1172,10 +1290,27 @@ final class AppStore {
         derivedDataGeneration += 1
         let generation = derivedDataGeneration
         let day = currentRecommendationDay()
+        let previousSongs = songs
+        let requiresDailyRecommendation = dailyRecommendationDay != day
         let derived = await Task.detached(priority: .userInitiated) {
-            DerivedLibraryData(songs: newSongs, day: day)
+            let trace = PerformanceTrace.library
+            let span = trace.beginInterval("Index music library", id: trace.makeSignpostID())
+            defer { trace.endInterval("Index music library", span) }
+            guard previousSongs != newSongs else { return nil as DerivedLibraryData? }
+            return DerivedLibraryData(songs: newSongs, day: day)
         }.value
-        guard generation == derivedDataGeneration else { return false }
+        guard generation == derivedDataGeneration, !Task.isCancelled else { return false }
+        guard let derived else {
+            if requiresDailyRecommendation {
+                let recommendation = await Task.detached(priority: .utility) {
+                    DerivedLibraryData.dailyRecommendation(from: newSongs, day: day, limit: 50)
+                }.value
+                guard generation == derivedDataGeneration, !Task.isCancelled else { return false }
+                dailyRecommendationDay = day
+                dailyRecommendedSongs = recommendation
+            }
+            return true
+        }
 
         songs = newSongs
         songsById = derived.songsById
@@ -1186,7 +1321,8 @@ final class AppStore {
         dailyRecommendationDay = day
         dailyRecommendedSongs = derived.dailyRecommendedSongs
         recentlyAddedSongs = derived.recentlyAddedSongs
-        if playlists.isEmpty {
+        generatedPlaylists = derived.generatedPlaylists
+        if !playlists.contains(where: \.isServerEditable) {
             playlists = derived.generatedPlaylists
         }
         refreshRecentSongs()
@@ -1203,10 +1339,10 @@ final class AppStore {
         artists = []
         albumSections = []
         artistSections = []
+        generatedPlaylists = []
         recentSongs = []
         dailyRecommendedSongs = []
         recentlyAddedSongs = []
-        mostPlayedSongs = []
         dailyRecommendationDay = nil
     }
 
@@ -1231,10 +1367,12 @@ final class AppStore {
 
         audiobookDataGeneration += 1
         let generation = audiobookDataGeneration
+        let previousEpisodes = audiobookEpisodes
         let derived = await Task.detached(priority: .userInitiated) {
-            DerivedAudiobookData(episodes: episodes)
+            previousEpisodes == episodes ? nil : DerivedAudiobookData(episodes: episodes)
         }.value
-        guard generation == audiobookDataGeneration else { return false }
+        guard generation == audiobookDataGeneration, !Task.isCancelled else { return false }
+        guard let derived else { return true }
 
         audiobookEpisodes = episodes
         audiobooks = derived.audiobooks
@@ -1255,33 +1393,41 @@ final class AppStore {
     private func restoreSession() {
         guard let data = UserDefaults.standard.data(forKey: sessionKey),
               let restored = restoredSession(from: data) else {
+            if UserDefaults.standard.string(forKey: legacyAccountKey) == nil {
+                UserDefaults.standard.set("", forKey: legacyAccountKey)
+            }
             return
         }
-        session = restored
-        player?.setSession(restored)
-
-        // Snapshot decoding and library indexing run off the main thread so they don't hold
-        // up the first frame; the UI fills in as soon as the cached content is ready.
+        let defaults = UserDefaults.standard
+        if defaults.string(forKey: legacyAccountKey) == nil {
+            defaults.set(restored.account.id, forKey: legacyAccountKey)
+            for key in [favoritesKey, recentKey] {
+                let scopedKey = accountKey(key, restored.account)
+                if defaults.object(forKey: scopedKey) == nil, let values = defaults.stringArray(forKey: key) {
+                    defaults.set(values, forKey: scopedKey)
+                }
+                defaults.removeObject(forKey: key)
+            }
+        }
+        activateSession(restored)
+        let generation = sessionGeneration
         isRestoringCachedContent = true
         Task {
-            if await restoreLibrarySnapshot(for: restored) {
+            await restoreAccountContent(for: restored, generation: generation)
+            guard sessionGeneration == generation else { return }
+            if !hasLoadedInitialContent {
+                isRestoringCachedContent = true
+                await loadInitialHomeContent(session: restored, generation: generation)
+                guard sessionGeneration == generation else { return }
                 isRestoringCachedContent = false
-                return
             }
-
-            if await restoreInitialHomeSnapshot(for: restored) {
-                isRestoringCachedContent = false
-                guard session == restored else { return }
-                await refreshFavoritesFromServer(session: restored)
-                await refreshLibraryIfNeededForToday()
-                return
+            if libraryCacheSavedAt.map({ Calendar.current.isDateInToday($0) }) == true {
+                async let favorites: Void = refreshFavoritesFromServer(session: restored, generation: generation)
+                async let mostPlayed: Void = refreshMostPlayedSongsFromServer(session: restored, generation: generation)
+                _ = await (favorites, mostPlayed)
+            } else {
+                await refreshLibrary()
             }
-
-            // No usable cache. `perform` sets `isLoading` synchronously on entry, so the
-            // skeleton stays up without a gap while content loads from Emby.
-            isRestoringCachedContent = false
-            await loadInitialHomeContent(session: restored)
-            await refreshLibraryIfNeededForToday()
         }
     }
 
@@ -1309,29 +1455,57 @@ final class AppStore {
         return nil
     }
 
-    private func restoreLibrarySnapshot(for restoredSession: EmbySession) async -> Bool {
-        let store = snapshotStore
-        let loaded = await Task.detached(priority: .userInitiated, operation: { store.load() }).value
-        // Signed out while the snapshot was loading.
-        guard session == restoredSession else { return true }
-        guard let snapshot = loaded,
-              (!snapshot.songs.isEmpty || !snapshot.audiobookEpisodes.isEmpty),
-              Calendar.current.isDateInToday(snapshot.savedAt) else {
-            return false
+    private func restoreAccountContent(for session: EmbySession, generation: UUID) async {
+        guard sessionGeneration == generation, !Task.isCancelled else { return }
+        isRestoringCachedContent = true
+        defer {
+            if sessionGeneration == generation { isRestoringCachedContent = false }
         }
-
-        // A sign-out or a fresher library won the race; don't mix stale snapshot content in.
-        guard await applySongs(snapshot.songs),
-              await applyAudiobookEpisodes(snapshot.audiobookEpisodes) else { return true }
-        playlists = snapshot.playlists.isEmpty ? snapshot.songs.generatedPlaylists : snapshot.playlists
-        hasLoadedInitialContent = true
-        libraryCacheSavedAt = snapshot.savedAt
-        updateLibraryStatusFromCache()
-        Task {
-            await refreshMostPlayedSongsFromServer()
-            await refreshFavoritesFromServer()
+        let account = session.account
+        let defaults = UserDefaults.standard
+        favoriteSongIds = Set(defaults.stringArray(forKey: accountKey(favoritesKey, account)) ?? [])
+        recentSongIds = defaults.stringArray(forKey: accountKey(recentKey, account)) ?? []
+        let directory = account.directory
+        let libraryStore = LibrarySnapshotStore(directory: directory)
+        let homeStore = InitialHomeContentSnapshotStore(directory: directory)
+        let progressStore = AudiobookProgressStore(directory: directory)
+        let migratesLegacy = ownsLegacyData(account)
+        let cached: (LibrarySnapshot?, InitialHomeContentSnapshot?, [String: AudiobookPlaybackProgress]) =
+            await withCheckedContinuation { continuation in
+                persistenceQueue.async {
+                    let trace = PerformanceTrace.library
+                    let span = trace.beginInterval("Read library snapshots", id: trace.makeSignpostID())
+                    defer { trace.endInterval("Read library snapshots", span) }
+                    if migratesLegacy {
+                        account.migrateLegacyFiles([
+                            LibrarySnapshotStore.fileName,
+                            InitialHomeContentSnapshotStore.fileName,
+                            AudiobookProgressStore.fileName
+                        ])
+                    }
+                    continuation.resume(returning: (libraryStore.load(), homeStore.load(), progressStore.load()))
+                }
+            }
+        guard sessionGeneration == generation, !Task.isCancelled else { return }
+        audiobookProgress.merge(cached.2) { live, saved in
+            live.updatedAt >= saved.updatedAt ? live : saved
         }
-        return true
+        if let snapshot = cached.0 {
+            guard await applySongs(snapshot.songs),
+                  sessionGeneration == generation,
+                  await applyAudiobookEpisodes(snapshot.audiobookEpisodes),
+                  sessionGeneration == generation else { return }
+            playlists = snapshot.playlists.isEmpty ? generatedPlaylists : snapshot.playlists
+            mostPlayedSongs = cached.1?.content.mostPlayedSongs ?? []
+            hasLoadedInitialContent = true
+            libraryCacheSavedAt = snapshot.savedAt
+            updateLibraryStatusFromCache()
+        } else if let snapshot = cached.1 {
+            guard await applyInitialHomeContent(
+                snapshot.content, session: session, generation: generation, savesSnapshot: false
+            ) else { return }
+            libraryStatus = "Loaded home content from cache."
+        }
     }
 
     private func updateLibraryStatusFromCache() {
@@ -1346,48 +1520,32 @@ final class AppStore {
         }
     }
 
-    private func shouldRefreshCachedLibrary() -> Bool {
-        guard let libraryCacheSavedAt else { return true }
-        return !Calendar.current.isDateInToday(libraryCacheSavedAt)
-    }
-
-    private func refreshLibraryIfNeededForToday() async {
-        guard shouldRefreshCachedLibrary() else { return }
-        await refreshLibrary()
-    }
-
-    private func restoreInitialHomeSnapshot(for restoredSession: EmbySession) async -> Bool {
-        let store = initialHomeSnapshotStore
-        let loaded = await Task.detached(priority: .userInitiated, operation: { store.load() }).value
-        guard session == restoredSession else { return true }
-        guard let snapshot = loaded,
-              Calendar.current.isDateInToday(snapshot.savedAt) else {
-            return false
-        }
-
-        await applyInitialHomeContent(snapshot.content, savedAt: snapshot.savedAt, savesSnapshot: false)
-        libraryStatus = "Loaded home content from cache."
-        return true
-    }
-
     private func saveLibrarySnapshot() {
-        guard !songs.isEmpty || !audiobookEpisodes.isEmpty else { return }
-        let store = snapshotStore
+        guard let account = session?.account, hasLoadedInitialContent else { return }
+        let store = LibrarySnapshotStore(directory: account.directory)
         let savedSongs = songs
         let savedPlaylists = playlists
         let savedAudiobookEpisodes = audiobookEpisodes
+        let savedAt = libraryCacheSavedAt ?? Date(timeIntervalSince1970: 0)
         persistenceQueue.async {
-            store.save(songs: savedSongs, playlists: savedPlaylists, audiobookEpisodes: savedAudiobookEpisodes)
+            store.save(songs: savedSongs, playlists: savedPlaylists, audiobookEpisodes: savedAudiobookEpisodes, savedAt: savedAt)
         }
     }
 
     private func persistFavoriteSongIds() {
-        UserDefaults.standard.set(Array(favoriteSongIds).sorted(), forKey: favoritesKey)
+        guard let account = session?.account else { return }
+        UserDefaults.standard.set(Array(favoriteSongIds).sorted(), forKey: accountKey(favoritesKey, account))
+    }
+
+    private func accountKey(_ key: String, _ account: EmbyAccountStorage) -> String {
+        "\(key).\(account.id)"
+    }
+
+    private func ownsLegacyData(_ account: EmbyAccountStorage) -> Bool {
+        UserDefaults.standard.string(forKey: legacyAccountKey) == account.id
     }
 
     private func restoreLocalState() {
-        favoriteSongIds = Set(UserDefaults.standard.stringArray(forKey: favoritesKey) ?? [])
-        recentSongIds = UserDefaults.standard.stringArray(forKey: recentKey) ?? []
         if let rawValue = UserDefaults.standard.string(forKey: cellularOnlineQualityKey),
            let quality = OnlinePlaybackQuality(rawValue: rawValue) {
             cellularOnlineQuality = quality
@@ -1396,7 +1554,6 @@ final class AppStore {
            let quality = OnlinePlaybackQuality(rawValue: rawValue) {
             wifiOnlineQuality = quality
         }
-        audiobookProgress = audiobookProgressStore.load()
         startsOnBrowse = UserDefaults.standard.bool(forKey: startsOnBrowseKey)
         keepsScreenAwakeOnPlayerPage = UserDefaults.standard.bool(forKey: keepsScreenAwakeKey)
         // The 120Hz toggle was removed: the Info.plist key already enables ProMotion everywhere.
@@ -1405,10 +1562,11 @@ final class AppStore {
         UserDefaults.standard.removeObject(forKey: audioCacheLimitKey)
     }
 
-    private func refreshMostPlayedSongsFromServer() async {
-        guard let session else { return }
+    private func refreshMostPlayedSongsFromServer(session: EmbySession, generation: UUID) async {
         do {
-            mostPlayedSongs = try await client.fetchMostPlayedSongs(session: session, limit: 50)
+            let fresh = try await client.fetchMostPlayedSongs(session: session, limit: 50)
+            try checkSession(generation)
+            mostPlayedSongs = fresh.filter { !deletedSongIds.contains($0.id) }
         } catch is CancellationError {
         } catch {
             print("[AppStore] Failed to refresh most played songs: \(error.localizedDescription)")
@@ -1499,7 +1657,7 @@ private struct DerivedLibraryData: Sendable {
     }
 }
 
-private struct LibrarySnapshot: Codable {
+struct LibrarySnapshot: Codable, Sendable {
     let version: Int
     let savedAt: Date
     let songs: [EmbyAudioItem]
@@ -1621,9 +1779,10 @@ private enum KeychainSessionTokenError: LocalizedError {
     }
 }
 
-private struct LibrarySnapshotStore {
+struct LibrarySnapshotStore: Sendable {
+    static let fileName = "library-snapshot.json"
+    let directory: URL
     private let version = 2
-    private let fileName = "library-snapshot.json"
 
     func load() -> LibrarySnapshot? {
         let url = snapshotURL
@@ -1641,10 +1800,13 @@ private struct LibrarySnapshotStore {
         return snapshot
     }
 
-    func save(songs: [EmbyAudioItem], playlists: [MusicPlaylist], audiobookEpisodes: [EmbyAudioItem]) {
+    func save(songs: [EmbyAudioItem], playlists: [MusicPlaylist], audiobookEpisodes: [EmbyAudioItem], savedAt: Date) {
+        let trace = PerformanceTrace.library
+        let span = trace.beginInterval("Write library snapshot", id: trace.makeSignpostID())
+        defer { trace.endInterval("Write library snapshot", span) }
         let snapshot = LibrarySnapshot(
             version: version,
-            savedAt: Date(),
+            savedAt: savedAt,
             songs: songs,
             playlists: playlists,
             audiobookEpisodes: audiobookEpisodes
@@ -1654,7 +1816,6 @@ private struct LibrarySnapshotStore {
         encoder.dateEncodingStrategy = .iso8601
 
         do {
-            let directory = applicationSupportDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try encoder.encode(snapshot)
             try data.write(to: snapshotURL, options: [.atomic])
@@ -1668,25 +1829,20 @@ private struct LibrarySnapshotStore {
     }
 
     private var snapshotURL: URL {
-        applicationSupportDirectory.appendingPathComponent(fileName)
-    }
-
-    private var applicationSupportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("PrivSong", isDirectory: true)
+        directory.appendingPathComponent(Self.fileName)
     }
 }
 
-private struct InitialHomeContentSnapshot: Codable {
+private struct InitialHomeContentSnapshot: Codable, Sendable {
     let version: Int
     let savedAt: Date
     let content: InitialHomeContent
 }
 
-private struct InitialHomeContentSnapshotStore {
+private struct InitialHomeContentSnapshotStore: Sendable {
+    static let fileName = "initial-home-snapshot.json"
+    let directory: URL
     private let version = 2
-    private let fileName = "initial-home-snapshot.json"
 
     func load() -> InitialHomeContentSnapshot? {
         let url = snapshotURL
@@ -1715,7 +1871,6 @@ private struct InitialHomeContentSnapshotStore {
         encoder.dateEncodingStrategy = .iso8601
 
         do {
-            let directory = applicationSupportDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try encoder.encode(snapshot)
             try data.write(to: snapshotURL, options: [.atomic])
@@ -1729,26 +1884,21 @@ private struct InitialHomeContentSnapshotStore {
     }
 
     private var snapshotURL: URL {
-        applicationSupportDirectory.appendingPathComponent(fileName)
-    }
-
-    private var applicationSupportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("PrivSong", isDirectory: true)
+        directory.appendingPathComponent(Self.fileName)
     }
 }
 
-struct AudiobookPlaybackProgress: Codable, Hashable {
+struct AudiobookPlaybackProgress: Codable, Hashable, Sendable {
     let position: TimeInterval
     let duration: TimeInterval
     let updatedAt: Date
     let isFinished: Bool
 }
 
-private struct AudiobookProgressStore {
+private struct AudiobookProgressStore: Sendable {
+    static let fileName = "audiobook-progress.json"
+    let directory: URL
     private let version = 1
-    private let fileName = "audiobook-progress.json"
 
     func load() -> [String: AudiobookPlaybackProgress] {
         let url = progressURL
@@ -1772,7 +1922,6 @@ private struct AudiobookProgressStore {
         encoder.dateEncodingStrategy = .iso8601
 
         do {
-            let directory = applicationSupportDirectory
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             let data = try encoder.encode(snapshot)
             try data.write(to: progressURL, options: [.atomic])
@@ -1786,13 +1935,7 @@ private struct AudiobookProgressStore {
     }
 
     private var progressURL: URL {
-        applicationSupportDirectory.appendingPathComponent(fileName)
-    }
-
-    private var applicationSupportDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        return base.appendingPathComponent("PrivSong", isDirectory: true)
+        directory.appendingPathComponent(Self.fileName)
     }
 
     private struct Snapshot: Codable {

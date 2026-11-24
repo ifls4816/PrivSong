@@ -1,19 +1,99 @@
+import CryptoKit
 import Foundation
+import os
 
-struct EmbySession: Codable, Equatable {
+struct EmbySession: Codable, Equatable, Sendable {
     let serverURL: URL
     let userId: String
     let username: String
     let accessToken: String
+
+    let account: EmbyAccountStorage
+
+    init(serverURL: URL, userId: String, username: String, accessToken: String) {
+        self.serverURL = serverURL
+        self.userId = userId
+        self.username = username
+        self.accessToken = accessToken
+        self.account = EmbyAccountStorage(serverURL: serverURL, userId: userId)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case serverURL, userId, username, accessToken
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            serverURL: values.decode(URL.self, forKey: .serverURL),
+            userId: values.decode(String.self, forKey: .userId),
+            username: values.decode(String.self, forKey: .username),
+            accessToken: values.decode(String.self, forKey: .accessToken)
+        )
+    }
+}
+
+struct EmbyAccountStorage: Equatable, Sendable {
+    let id: String
+
+    init(serverURL: URL, userId: String) {
+        var components = URLComponents(url: serverURL, resolvingAgainstBaseURL: false)
+        if var address = components {
+            address.scheme = address.scheme?.lowercased()
+            address.host = address.host?.lowercased()
+            address.percentEncodedPath = address.percentEncodedPath.replacingOccurrences(
+                of: #"/+$"#, with: "", options: .regularExpression
+            )
+            components = address
+        }
+        let address = components?.string ?? serverURL.absoluteString
+        id = SHA256.hash(data: Data("\(address)\n\(userId)".utf8))
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    static var legacyDirectory: URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("PrivSong", isDirectory: true)
+    }
+
+    var directory: URL {
+        Self.legacyDirectory.appendingPathComponent("Accounts", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
+    }
+
+    func migrateLegacyFiles(_ names: [String]) {
+        let manager = FileManager.default
+        for name in names {
+            let source = Self.legacyDirectory.appendingPathComponent(name)
+            let destination = directory.appendingPathComponent(name)
+            guard manager.fileExists(atPath: source.path),
+                  !manager.fileExists(atPath: destination.path) else { continue }
+            do {
+                try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+                try manager.moveItem(at: source, to: destination)
+            } catch {
+                print("[EmbyAccountStorage] Failed to migrate \(name): \(error.localizedDescription)")
+            }
+        }
+    }
+}
+
+enum PerformanceTrace {
+    static let library = OSSignposter(subsystem: "local.ifls.PrivSong", category: "Library")
+    static let playback = OSSignposter(subsystem: "local.ifls.PrivSong", category: "Playback")
+    static let artwork = OSSignposter(subsystem: "local.ifls.PrivSong", category: "Artwork")
 }
 
 struct AuthenticatedURL: Hashable, Sendable {
     let url: URL
     let httpHeaders: [String: String]
+    let artworkCacheScope: String?
 
-    init(url: URL, httpHeaders: [String: String] = [:]) {
+    init(url: URL, httpHeaders: [String: String] = [:], artworkCacheScope: String? = nil) {
         self.url = url
         self.httpHeaders = httpHeaders
+        self.artworkCacheScope = artworkCacheScope
     }
 
     var isFileURL: Bool {

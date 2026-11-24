@@ -1,4 +1,5 @@
 import ImageIO
+import os
 import SwiftUI
 import UIKit
 
@@ -15,8 +16,8 @@ struct ArtworkView: View {
         self.cornerRadius = cornerRadius
         self.showsPlaceholder = showsPlaceholder
 
-        let exactImage = url.flatMap { ArtworkImageCache.shared.image(for: $0.url) }
-        let cachedImage = exactImage ?? url.flatMap { ArtworkImageCache.shared.fallbackImage(for: $0.url) }
+        let exactImage = url.flatMap { ArtworkLoader.shared.cachedImage(for: $0) }
+        let cachedImage = exactImage ?? url.flatMap { ArtworkLoader.shared.cachedImage(for: $0, allowsFallback: true) }
         _image = State(initialValue: cachedImage)
         _displayedURL = State(initialValue: exactImage == nil ? nil : url)
     }
@@ -69,8 +70,7 @@ struct ArtworkView: View {
             return
         }
 
-        let url = resource.url
-        if let cached = ArtworkImageCache.shared.image(for: url) {
+        if let cached = ArtworkLoader.shared.cachedImage(for: resource) {
             withoutAnimation {
                 image = cached
                 displayedURL = resource
@@ -78,41 +78,17 @@ struct ArtworkView: View {
             return
         }
 
-        if let fallback = ArtworkImageCache.shared.fallbackImage(for: url) {
+        if displayedURL != resource {
             withoutAnimation {
-                image = fallback
-                displayedURL = nil
-            }
-        } else if displayedURL != resource {
-            withoutAnimation {
-                image = nil
+                image = ArtworkLoader.shared.cachedImage(for: resource, allowsFallback: true)
                 displayedURL = nil
             }
         }
 
-        if let diskData = await ArtworkDiskCache.data(for: url),
-           let cached = await ArtworkDecoder.image(from: diskData, url: url) {
-            ArtworkImageCache.shared.insert(cached, for: url)
-            withoutAnimation {
-                image = cached
-                displayedURL = resource
-            }
-            return
-        }
-
-        do {
-            let (data, _) = try await ArtworkNetwork.session.data(for: resource.request)
-            guard !Task.isCancelled,
-                  let loaded = await ArtworkDecoder.image(from: data, url: url) else { return }
-            ArtworkImageCache.shared.insert(loaded, for: url)
-            await ArtworkDiskCache.insert(data, for: url)
+        guard let loaded = await ArtworkLoader.shared.image(for: resource), !Task.isCancelled else { return }
+        withoutAnimation {
             image = loaded
             displayedURL = resource
-        } catch {
-            withoutAnimation {
-                image = nil
-                displayedURL = nil
-            }
         }
     }
 
@@ -164,146 +140,181 @@ enum ArtworkDecoder {
     }
 }
 
-@MainActor
-final class ArtworkImageCache {
-    static let shared = ArtworkImageCache()
+private struct ArtworkCacheKey: Hashable, Sendable {
+    let url: URL
+    let scope: String?
 
-    private let cache = NSCache<NSURL, UIImage>()
-    private let normalizedCache = NSCache<NSString, UIImage>()
-
-    private init() {
-        cache.countLimit = 300
-        cache.totalCostLimit = 80 * 1024 * 1024
-        normalizedCache.countLimit = 300
-        normalizedCache.totalCostLimit = 80 * 1024 * 1024
-        normalizedKeys.countLimit = 2_000
+    init(_ resource: AuthenticatedURL) {
+        url = resource.url
+        scope = resource.artworkCacheScope
     }
 
-    func image(for url: URL) -> UIImage? {
-        cache.object(forKey: url as NSURL)
-    }
-
-    func fallbackImage(for url: URL) -> UIImage? {
-        normalizedCache.object(forKey: normalizedCacheKey(for: url) as NSString)
-    }
-
-    func insert(_ image: UIImage, for url: URL) {
-        let pixelCost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
-        cache.setObject(image, forKey: url as NSURL, cost: pixelCost)
-        normalizedCache.setObject(image, forKey: normalizedCacheKey(for: url) as NSString, cost: pixelCost)
-    }
-
-    func clear() {
-        cache.removeAllObjects()
-        normalizedCache.removeAllObjects()
-    }
-
-    /// Memoized because `ArtworkView.init` asks for it on every parent re-render, and parsing
-    /// the URL each time adds up across a list of rows.
-    private let normalizedKeys = NSCache<NSURL, NSString>()
-
-    private func normalizedCacheKey(for url: URL) -> String {
-        if let cached = normalizedKeys.object(forKey: url as NSURL) {
-            return cached as String
-        }
-        let key = computeNormalizedCacheKey(for: url)
-        normalizedKeys.setObject(key as NSString, forKey: url as NSURL)
-        return key
-    }
-
-    private func computeNormalizedCacheKey(for url: URL) -> String {
-        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url.absoluteString
-        }
-        let sizeKeys = Set(["maxheight", "maxwidth", "quality"])
-        components.queryItems = components.queryItems?.filter { item in
-            !sizeKeys.contains(item.name.lowercased())
-        }
-        return components.url?.absoluteString ?? url.absoluteString
+    var memoryKey: NSString {
+        "\(scope ?? "")\n\(url.absoluteString)" as NSString
     }
 }
 
-/// Network access for artwork. ArtworkDiskCache already keeps every image, so these requests
-/// skip the shared URLCache; going through it stored each image a second time on disk.
-enum ArtworkNetwork {
-    static let session: URLSession = {
+@MainActor
+final class ArtworkLoader {
+    static let shared = ArtworkLoader()
+
+    private let images = NSCache<NSString, UIImage>()
+    private let fallbackKeys = NSCache<NSString, NSString>()
+    private let normalizedKeys = NSCache<NSString, NSString>()
+    private var inFlight: [ArtworkCacheKey: Task<UIImage?, Never>] = [:]
+    private var bytesSinceTrim = 0
+    private let session: URLSession
+
+    private init() {
+        images.countLimit = 300
+        images.totalCostLimit = 80 * 1024 * 1024
+        fallbackKeys.countLimit = 300
+        normalizedKeys.countLimit = 2_000
+
         let configuration = URLSessionConfiguration.default
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: configuration)
-    }()
+        session = URLSession(configuration: configuration)
+    }
+
+    func cachedImage(for resource: AuthenticatedURL, allowsFallback: Bool = false) -> UIImage? {
+        let key = ArtworkCacheKey(resource)
+        if let image = images.object(forKey: key.memoryKey) { return image }
+        guard allowsFallback, let fallback = fallbackKeys.object(forKey: normalizedKey(for: key)) else { return nil }
+        return images.object(forKey: fallback)
+    }
+
+    func image(for resource: AuthenticatedURL) async -> UIImage? {
+        if let cached = cachedImage(for: resource) { return cached }
+        let key = ArtworkCacheKey(resource)
+        if let pending = inFlight[key] { return await pending.value }
+
+        let task = Task { [self] in
+            let image = await fetchImage(for: resource, key: key)
+            guard !Task.isCancelled else { return nil as UIImage? }
+            inFlight[key] = nil
+            if let image {
+                let cost = Int(image.size.width * image.scale * image.size.height * image.scale * 4)
+                images.setObject(image, forKey: key.memoryKey, cost: cost)
+                fallbackKeys.setObject(key.memoryKey, forKey: normalizedKey(for: key))
+            }
+            return image
+        }
+        inFlight[key] = task
+        return await task.value
+    }
+
+    func clear(scope: String) {
+        for key in Array(inFlight.keys) where key.scope == scope {
+            inFlight.removeValue(forKey: key)?.cancel()
+        }
+        images.removeAllObjects()
+        fallbackKeys.removeAllObjects()
+        normalizedKeys.removeAllObjects()
+        ArtworkDiskCache.clear(scope: scope)
+    }
+
+    private func fetchImage(for resource: AuthenticatedURL, key: ArtworkCacheKey) async -> UIImage? {
+        let trace = PerformanceTrace.artwork
+        let span = trace.beginInterval("Load cover", id: trace.makeSignpostID())
+        defer { trace.endInterval("Load cover", span) }
+
+        if let diskData = await ArtworkDiskCache.data(for: key) {
+            if let image = await ArtworkDecoder.image(from: diskData, url: key.url) {
+                return image
+            }
+            if !Task.isCancelled { ArtworkDiskCache.remove(key) }
+        }
+
+        guard !Task.isCancelled else { return nil }
+        do {
+            let (data, response) = try await session.data(for: resource.request)
+            guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
+                  !Task.isCancelled,
+                  let image = await ArtworkDecoder.image(from: data, url: key.url),
+                  !Task.isCancelled else { return nil }
+            bytesSinceTrim += data.count
+            let shouldTrim = bytesSinceTrim >= 16 * 1024 * 1024
+            if shouldTrim { bytesSinceTrim = 0 }
+            ArtworkDiskCache.insert(data, for: key, trimsAfterWrite: shouldTrim)
+            return image
+        } catch {
+            return nil
+        }
+    }
+
+    private func normalizedKey(for key: ArtworkCacheKey) -> NSString {
+        let exact = key.memoryKey
+        if let cached = normalizedKeys.object(forKey: exact) { return cached }
+        guard var components = URLComponents(url: key.url, resolvingAgainstBaseURL: false) else {
+            return exact
+        }
+        let sizeKeys = Set(["maxheight", "maxwidth", "quality"])
+        components.queryItems = components.queryItems?.filter { !sizeKeys.contains($0.name.lowercased()) }
+        let normalized = "\(key.scope ?? "")\n\(components.string ?? key.url.absoluteString)" as NSString
+        normalizedKeys.setObject(normalized, forKey: exact)
+        return normalized
+    }
 }
 
 enum ArtworkDiskCache {
     private static let limitBytes: Int64 = 200 * 1024 * 1024
+    private static let queue = DispatchQueue(label: "PrivSong.artwork-cache", qos: .utility)
 
-    static func data(for url: URL) async -> Data? {
-        await Task.detached(priority: .utility) {
-            let data = dataSync(for: url)
-            if data != nil {
-                DiskCacheMaintenance.markUsed(fileURL(for: url))
+    fileprivate static func data(for key: ArtworkCacheKey) async -> Data? {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                let url = fileURL(for: key)
+                let hasImageTag = URLComponents(url: key.url, resolvingAgainstBaseURL: false)?
+                    .queryItems?.contains(where: { $0.name == "Tag" }) == true
+                if !hasImageTag, let createdAt = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate,
+                   Date().timeIntervalSince(createdAt) > 7 * 24 * 60 * 60 {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                let data = try? Data(contentsOf: url)
+                if data != nil { DiskCacheMaintenance.markUsed(url) }
+                continuation.resume(returning: data)
             }
-            return data
-        }.value
-    }
-
-    static func dataSync(for url: URL) -> Data? {
-        let fileURL = fileURL(for: url)
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        // Self-heal entries saved before validation existed (e.g. a server error page stored as
-        // artwork): drop them so the image is downloaded again instead of missing forever.
-        guard isImageData(data) else {
-            try? FileManager.default.removeItem(at: fileURL)
-            return nil
         }
-        return data
     }
 
-    static func insert(_ data: Data, for url: URL) async {
-        // Only real images are cached; an error response must never be stored as artwork.
-        guard isImageData(data) else { return }
-        await Task.detached(priority: .utility) {
+    fileprivate static func insert(_ data: Data, for key: ArtworkCacheKey, trimsAfterWrite: Bool) {
+        queue.async {
+            guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                  CGImageSourceGetStatus(source) == .statusComplete else { return }
+            let url = fileURL(for: key)
             do {
-                try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-                try data.write(to: fileURL(for: url), options: [.atomic])
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: url, options: [.atomic])
             } catch {
                 print("[ArtworkDiskCache] Failed to save artwork: \(error.localizedDescription)")
             }
-        }.value
+            if trimsAfterWrite { DiskCacheMaintenance.trim(directoryURL, toBytes: limitBytes) }
+        }
     }
 
-    static func clear() {
-        try? FileManager.default.removeItem(at: directoryURL)
+    fileprivate static func remove(_ key: ArtworkCacheKey) {
+        queue.async { try? FileManager.default.removeItem(at: fileURL(for: key)) }
     }
 
-    static func totalSize() -> Int64 {
-        DiskCacheMaintenance.size(of: directoryURL)
+    static func clear(scope: String) {
+        queue.async {
+            try? FileManager.default.removeItem(at: directoryURL.appendingPathComponent(scope, isDirectory: true))
+        }
     }
 
     static func trimToLimit() {
-        DiskCacheMaintenance.trim(directoryURL, toBytes: limitBytes)
+        queue.async { DiskCacheMaintenance.trim(directoryURL, toBytes: limitBytes) }
     }
 
-    /// Cheap header check (no full decode) that the bytes are a complete image.
-    static func isImageData(_ data: Data) -> Bool {
-        guard !data.isEmpty,
-              let source = CGImageSourceCreateWithData(data as CFData, nil) else {
-            return false
-        }
-        return CGImageSourceGetCount(source) > 0 && CGImageSourceGetStatus(source) == .statusComplete
-    }
-
-    private static func fileURL(for url: URL) -> URL {
-        directoryURL.appendingPathComponent(cacheKey(for: url)).appendingPathExtension("image")
-    }
-
-    private static func cacheKey(for url: URL) -> String {
+    private static func fileURL(for key: ArtworkCacheKey) -> URL {
         var hash: UInt64 = 14_695_981_039_346_656_037
-        for scalar in url.absoluteString.unicodeScalars {
-            hash ^= UInt64(scalar.value)
+        for byte in key.url.absoluteString.utf8 {
+            hash ^= UInt64(byte)
             hash &*= 1_099_511_628_211
         }
-        return String(hash, radix: 16)
+        return directoryURL.appendingPathComponent(key.scope ?? "Unscoped", isDirectory: true)
+            .appendingPathComponent(String(hash, radix: 16)).appendingPathExtension("image")
     }
 
     private static var directoryURL: URL {

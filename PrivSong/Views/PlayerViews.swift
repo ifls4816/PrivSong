@@ -876,15 +876,16 @@ private struct PlayerPageBackground: View {
     @MainActor
     private func updatePalette(for imageURL: AuthenticatedURL?) async {
         guard loadedImageURL != imageURL else { return }
-        loadedImageURL = imageURL
 
         guard let imageURL else {
+            loadedImageURL = nil
             palette = nil
             return
         }
 
         let extractedPalette = await ColorExtractor.palette(for: imageURL)
-        guard loadedImageURL == imageURL else { return }
+        guard !Task.isCancelled else { return }
+        loadedImageURL = imageURL
         palette = extractedPalette ?? .fallback
     }
 }
@@ -912,36 +913,11 @@ private struct PaletteColor: Equatable, Sendable {
 }
 
 private enum ColorExtractor {
+    @MainActor
     static func palette(for imageURL: AuthenticatedURL) async -> BackdropPalette? {
-        let request = imageURL.request
-
-        if let diskData = ArtworkDiskCache.dataSync(for: imageURL.url),
-           let palette = await palette(from: diskData) {
-            return palette
-        }
-
-        do {
-            let (data, response) = try await ArtworkNetwork.session.data(for: request)
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200..<300).contains(httpResponse.statusCode) {
-                return nil
-            }
-            await ArtworkDiskCache.insert(data, for: imageURL.url)
-            return await palette(from: data)
-        } catch {
-            return nil
-        }
-    }
-
-    private static func palette(from data: Data) async -> BackdropPalette? {
-        await Task.detached(priority: .utility) {
-            guard
-                let image = UIImage(data: data),
-                let cgImage = image.cgImage
-            else {
-                return nil
-            }
-
+        guard let image = await ArtworkLoader.shared.image(for: imageURL), !Task.isCancelled else { return nil }
+        return await Task.detached(priority: .utility) {
+            guard let cgImage = image.cgImage else { return nil }
             return makePalette(from: cgImage)
         }.value
     }
@@ -1378,29 +1354,11 @@ struct QueuePlayerView: View {
                 ContentUnavailableView("没有待播放歌曲", systemImage: "music.note.list")
                     .foregroundStyle(.secondary)
             } else {
-                // System list: drag handles in edit mode, swipe to delete otherwise.
-                List {
-                    ForEach(upcoming) { song in
-                        queueRow(song: song)
-                            .listRowBackground(Color.clear)
-                            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-                    }
-                    .onMove { source, destination in
-                        guard let from = source.first else { return }
-                        // `onMove` reports the destination before removal; the player expects
-                        // the final index.
-                        player.moveUpcomingQueueItem(from: from, to: destination > from ? destination - 1 : destination)
-                    }
-                    .onDelete { offsets in
-                        for index in offsets.sorted(by: >) {
-                            player.removeUpcomingQueueItem(at: index)
-                        }
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .scrollIndicators(.hidden)
-                .environment(\.editMode, $editMode)
+                queueList(upcoming)
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .scrollIndicators(.hidden)
+                    .environment(\.editMode, $editMode)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -1411,9 +1369,64 @@ struct QueuePlayerView: View {
         }
     }
 
-    private func queueRow(song: EmbyAudioItem) -> some View {
+    @ViewBuilder
+    private func queueList(_ upcoming: ArraySlice<EmbyAudioItem>) -> some View {
+        #if compiler(>=6.4)
+        if #available(iOS 27.0, *) {
+            let revision = player.upcomingQueueRevision
+            List {
+                queueRows(upcoming)
+                    .onDelete(perform: removeRows)
+                    .reorderable()
+            }
+            .reorderContainer(for: Int.self, itemID: \.self, isEnabled: editMode.isEditing) { difference in
+                let destination: Int?
+                switch difference.destination.position {
+                case .before(let item): destination = item
+                case .end: destination = nil
+                @unknown default: return
+                }
+                player.reorderUpcomingQueue(
+                    indices: Array(difference.sources), before: destination,
+                    displayedRange: upcoming.indices, revision: revision
+                )
+            }
+        } else {
+            legacyQueueList(upcoming)
+        }
+        #else
+        legacyQueueList(upcoming)
+        #endif
+    }
+
+    private func legacyQueueList(_ upcoming: ArraySlice<EmbyAudioItem>) -> some View {
+        List {
+            queueRows(upcoming)
+                .onMove { source, destination in
+                    guard let from = source.first else { return }
+                    player.moveUpcomingQueueItem(from: from, to: destination > from ? destination - 1 : destination)
+                }
+                .onDelete(perform: removeRows)
+        }
+    }
+
+    private func queueRows(_ upcoming: ArraySlice<EmbyAudioItem>) -> some DynamicViewContent {
+        ForEach(upcoming.indices, id: \.self) { index in
+            queueRow(song: upcoming[index], index: index)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+        }
+    }
+
+    private func removeRows(_ offsets: IndexSet) {
+        for index in offsets.sorted(by: >) {
+            player.removeUpcomingQueueItem(at: index)
+        }
+    }
+
+    private func queueRow(song: EmbyAudioItem, index: Int) -> some View {
         Button {
-            player.playQueued(song: song)
+            player.playQueued(at: index)
         } label: {
             HStack(spacing: 10) {
                 ArtworkView(url: store.imageURL(for: song, size: 120), cornerRadius: 5)

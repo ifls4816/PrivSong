@@ -167,6 +167,7 @@ private struct EditLibrarySettingsView: View {
                 Text("连接信息")
             } footer: {
                 Text("修改连接信息需要重新输入密码并重新连接 Emby。")
+                Text("地址默认使用 HTTPS。局域网服务器只支持 HTTP 时，请填写完整的 http:// 地址。HTTP 登录会明文传输。")
             }
 
             Section {
@@ -226,7 +227,7 @@ private struct EditLibrarySettingsView: View {
 
                     Button("取消", role: .cancel) {}
                 } message: {
-                    Text("断开后会清除本地资料库快照和封面缓存，需要重新连接 Emby。")
+                    Text("断开后会停止播放，并清除此账号的本地队列、播放记录、资料库快照和封面缓存。")
                 }
             }
         }
@@ -422,7 +423,7 @@ struct SignInView: View {
                         VStack(spacing: 0) {
                             SignInInputRow(
                                 title: "服务器",
-                                placeholder: "http://192.168.x.x:8080",
+                                placeholder: "https://music.example.com",
                                 icon: "server.rack",
                                 tint: .blue,
                                 kind: .server,
@@ -495,7 +496,7 @@ struct SignInView: View {
                                 Text("支持局域网地址或 HTTPS 域名")
                                     .font(.footnote.weight(.semibold))
                                     .foregroundStyle(.primary)
-                                Text("连接成功后会自动同步资料库，并优先使用本地缓存启动。")
+                                Text("地址默认使用 HTTPS。局域网服务器只支持 HTTP 时，请填写完整的 http:// 地址。HTTP 登录会明文传输。")
                                     .font(.footnote)
                                     .foregroundStyle(.secondary)
                             }

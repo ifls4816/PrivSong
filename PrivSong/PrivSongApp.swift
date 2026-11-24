@@ -1,5 +1,10 @@
 import SwiftUI
 import UIKit
+#if canImport(StateReporting)
+import MetricKit
+import os
+import StateReporting
+#endif
 
 @main
 struct PrivSongApp: App {
@@ -27,9 +32,15 @@ struct PrivSongApp: App {
     var body: some Scene {
         WindowGroup {
             RootTabView()
+                .id(store.session?.account.id)
                 .environment(store)
                 .environmentObject(player)
                 .tint(.musicRed)
+                .onChange(of: store.isLoadingContent, initial: true) { _, isLoading in
+                    #if canImport(StateReporting)
+                    if #available(iOS 27.0, *) { DevicePerformanceReporting.reportSync(isLoading) }
+                    #endif
+                }
                 .onAppear {
                     store.player = player
                 }
@@ -42,6 +53,46 @@ struct PrivSongApp: App {
         }
     }
 }
+
+#if canImport(StateReporting)
+@available(iOS 27.0, *)
+@MainActor
+enum DevicePerformanceReporting {
+    @ReportableMetadata
+    private struct Context: Sendable {
+        let category: String
+    }
+
+    private static let screenDomain = "local.ifls.PrivSong.screen"
+    private static let syncDomain = "local.ifls.PrivSong.library"
+    private static let screenReporter = StateReporter.reporter(
+        for: screenDomain, stableMetadata: Context.self, volatileMetadata: Context.self
+    )
+    private static let syncReporter = StateReporter.reporter(
+        for: syncDomain, stableMetadata: Context.self, volatileMetadata: Context.self
+    )
+
+    private static let subscription: Task<Void, Never> = Task {
+        let logger = Logger(subsystem: "local.ifls.PrivSong", category: "MetricKit")
+        let manager = MetricManager(enabledStateReportingDomains: [
+            StateReportingDomain(screenDomain), StateReportingDomain(syncDomain)
+        ])
+        for await report in manager.metricReports {
+            logger.info("Received local performance report with \(report.stateEntries.count, privacy: .public) state entries")
+        }
+    }
+
+    static func reportScreen(_ screen: String) {
+        _ = subscription
+        screenReporter.reportTransition(to: screen)
+    }
+
+    static func reportSync(_ isLoading: Bool) {
+        _ = subscription
+        syncReporter.reportTransition(to: isLoading ? "loading" : "idle")
+    }
+}
+#endif
 
 @MainActor
 final class SharedAppEnvironment {

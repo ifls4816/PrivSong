@@ -383,38 +383,16 @@ final class CarPlayCoordinator: NSObject {
     }
 
     private func cardImage(for card: CarPlayCardDescriptor) async -> UIImage {
-        guard let imageURL = card.imageURL else {
+        guard let resource = card.imageURL,
+              let image = await ArtworkLoader.shared.image(for: resource) else {
             return placeholderImage(systemName: card.placeholderSystemImageName)
         }
-
-        if let cached = ArtworkImageCache.shared.image(for: imageURL.url) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL.url) {
-            return preparedCardImage(cached)
-        }
-
-        // ArtworkDecoder downsamples and decodes off the main thread, so neither CarPlay nor
-        // the phone UI (which shares ArtworkImageCache) has to decode these on the main actor.
-        if let diskData = await ArtworkDiskCache.data(for: imageURL.url),
-           let diskImage = await ArtworkDecoder.image(from: diskData, url: imageURL.url) {
-            ArtworkImageCache.shared.insert(diskImage, for: imageURL.url)
-            return preparedCardImage(diskImage)
-        }
-
-        do {
-            let (data, _) = try await ArtworkNetwork.session.data(for: imageURL.request)
-            guard !Task.isCancelled, let image = await ArtworkDecoder.image(from: data, url: imageURL.url) else {
-                return placeholderImage(systemName: card.placeholderSystemImageName)
-            }
-            ArtworkImageCache.shared.insert(image, for: imageURL.url)
-            await ArtworkDiskCache.insert(data, for: imageURL.url)
-            return preparedCardImage(image)
-        } catch {
-            return placeholderImage(systemName: card.placeholderSystemImageName)
-        }
+        return preparedCardImage(image)
     }
 
     private func initialCardImage(for card: CarPlayCardDescriptor) -> UIImage {
         guard let imageURL = card.imageURL,
-              let cached = ArtworkImageCache.shared.image(for: imageURL.url) ?? ArtworkImageCache.shared.fallbackImage(for: imageURL.url) else {
+              let cached = ArtworkLoader.shared.cachedImage(for: imageURL, allowsFallback: true) else {
             return placeholderImage(systemName: card.placeholderSystemImageName)
         }
         return preparedCardImage(cached)

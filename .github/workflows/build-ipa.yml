@@ -15,16 +15,11 @@ concurrency:
 
 jobs:
   build:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
-
-      - name: Select latest Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: latest-stable
 
       - name: Show toolchain
         run: |
@@ -73,4 +68,57 @@ jobs:
         with:
           name: build-log
           path: build.log
+          retention-days: 7
+
+  test:
+    name: Regression tests (iOS ${{ matrix.ios }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ios: 26
+            runner: macos-26
+          - ios: 27
+            runner: xcode-27
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run simulator tests
+        env:
+          IOS_MAJOR: ${{ matrix.ios }}
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          simulator="$(xcrun simctl list devices available --json | jq -r --arg ios "$IOS_MAJOR" '
+            .devices | to_entries
+            | map(select(.key | startswith("com.apple.CoreSimulator.SimRuntime.iOS-" + $ios + "-")))
+            | sort_by(.key) | reverse
+            | [.[].value[] | select(.name | startswith("iPhone"))][0].udid // empty
+          ')"
+          if [ -z "$simulator" ]; then
+            xcrun simctl list devices available
+            echo "::error::No available iOS $IOS_MAJOR iPhone simulator on this runner."
+            exit 1
+          fi
+          xcodebuild test \
+            -project PrivSong.xcodeproj \
+            -scheme PrivSong \
+            -destination "platform=iOS Simulator,id=$simulator" \
+            -parallel-testing-enabled NO \
+            -resultBundlePath PrivSongTests.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            2>&1 | tee test.log
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-ios-${{ matrix.ios }}
+          path: |
+            test.log
+            PrivSongTests.xcresult
+          if-no-files-found: ignore
           retention-days: 7

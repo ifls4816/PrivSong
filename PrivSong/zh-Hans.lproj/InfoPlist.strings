@@ -1,1 +1,2 @@
 CFBundleDisplayName = "私音";
+NSLocalNetworkUsageDescription = "私音需要访问本地网络，才能连接你的 Emby 服务器、读取资料库并播放音乐。";
