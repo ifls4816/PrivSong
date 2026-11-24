@@ -59,7 +59,7 @@ struct PrivSongApp: App {
 @MainActor
 enum DevicePerformanceReporting {
     @ReportableMetadata
-    private struct Context: Sendable {
+    fileprivate struct Context: Sendable {
         let category: String
     }
 
@@ -75,7 +75,7 @@ enum DevicePerformanceReporting {
     private static let subscription: Task<Void, Never> = Task {
         let logger = Logger(subsystem: "local.ifls.PrivSong", category: "MetricKit")
         let manager = MetricManager(enabledStateReportingDomains: [
-            StateReportingDomain(screenDomain), StateReportingDomain(syncDomain)
+            StateReportingDomain(rawValue: screenDomain), StateReportingDomain(rawValue: syncDomain)
         ])
         for await report in manager.metricReports {
             logger.info("Received local performance report with \(report.stateEntries.count, privacy: .public) state entries")
