@@ -311,19 +311,24 @@ final class AppStore {
         } catch is CancellationError {
         } catch {
             guard signInAttempt == attempt else { return }
-            errorMessage = Self.connectionError(error, server: server)
+            let message = await Self.connectionError(error, server: server)
+            guard signInAttempt == attempt else { return }
+            errorMessage = message
         }
     }
 
-    private static func connectionError(_ error: Error, server: String) -> String {
+    private static func connectionError(_ error: Error, server: String) async -> String {
         guard let urlError = error as? URLError,
-              let host = (try? EmbyClient.normalizedServerURL(server))?.host,
+              let url = try? EmbyClient.normalizedServerURL(server), let host = url.host,
               isLocalHost(host) else {
             return error.localizedDescription
         }
         switch urlError.code {
         case .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .timedOut:
-            return "无法连接到局域网 Emby。请检查服务器地址和网络，并在系统设置中确认已允许私音访问本地网络。"
+            if await EmbyClient.localNetworkAccessDenied(for: url) {
+                return "本地网络访问被拒绝。请在系统设置中允许私音访问本地网络后重试。"
+            }
+            return "无法连接到局域网 Emby。请检查服务器是否运行、地址是否正确，以及设备是否在同一网络。"
         default:
             return error.localizedDescription
         }

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import os
 
 struct InitialHomeContent: Codable, Sendable {
@@ -1399,6 +1400,34 @@ struct EmbyClient {
         }
         guard let url = components.url else { throw EmbyError.invalidURL }
         return url
+    }
+
+    static func localNetworkAccessDenied(for url: URL) async -> Bool {
+        guard let host = url.host?.trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+              let port = UInt16(exactly: url.port ?? (url.scheme == "https" ? 443 : 80)),
+              let endpointPort = NWEndpoint.Port(rawValue: port) else { return false }
+
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+        let queue = DispatchQueue.global(qos: .utility)
+        // Diagnose the same endpoint after a failed login. The probe only opens a TCP connection.
+        let result = AsyncStream<Bool> { continuation in
+            continuation.onTermination = { _ in connection.cancel() }
+            connection.stateUpdateHandler = { [weak connection] state in
+                switch state {
+                case .waiting where connection?.currentPath?.unsatisfiedReason == .localNetworkDenied:
+                    continuation.yield(true)
+                    continuation.finish()
+                case .ready, .failed, .cancelled:
+                    continuation.finish()
+                default:
+                    break
+                }
+            }
+            connection.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + 0.75) { continuation.finish() }
+        }
+        for await denied in result { return denied }
+        return false
     }
 
     private var deviceId: String {
