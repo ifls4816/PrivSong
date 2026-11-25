@@ -305,16 +305,10 @@ struct AlbumDetailView: View {
             title: album.title,
             subtitle: album.artist,
             artworkURL: album.representativeSong.flatMap { store.imageURL(for: $0, size: 420) },
-            songs: album.songs,
-            play: play
+            songs: album.songs
         )
         .navigationTitle(album.title)
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func play(_ song: EmbyAudioItem?) {
-        guard let song else { return }
-        store.play(song: song, in: album.songs)
     }
 }
 
@@ -327,16 +321,10 @@ struct ArtistDetailView: View {
             title: artist.name,
             subtitle: "\(artist.songs.count) 首歌曲",
             artworkURL: artist.representativeSong.flatMap { store.imageURL(for: $0, size: 420) },
-            songs: artist.songs,
-            play: play
+            songs: artist.songs
         )
         .navigationTitle(artist.name)
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func play(_ song: EmbyAudioItem?) {
-        guard let song else { return }
-        store.play(song: song, in: artist.songs)
     }
 }
 
@@ -463,14 +451,12 @@ struct AudiobookDetailView: View {
 }
 
 private struct MusicCollectionDetailView: View {
-    @Environment(AppStore.self) private var store
     private let pageSize = 32
 
     let title: String
     let subtitle: String
     let artworkURL: AuthenticatedURL?
     let songs: [EmbyAudioItem]
-    let play: (EmbyAudioItem?) -> Void
 
     @State private var visibleCount = 32
     @State private var isLoadingNextPage = false
@@ -522,14 +508,7 @@ private struct MusicCollectionDetailView: View {
                     .lineLimit(1)
             }
 
-            CollectionPlaybackButtons(
-                isDisabled: songs.isEmpty,
-                play: { play(songs.first) },
-                shuffle: {
-                    guard let randomSong = songs.randomElement() else { return }
-                    store.play(song: randomSong, in: songs, shuffle: true)
-                }
-            )
+            SongListPlaybackControls(songs: songs)
         }
         .frame(maxWidth: .infinity)
     }
@@ -562,7 +541,7 @@ private struct SongListPlaybackControls: View {
             isDisabled: songs.isEmpty,
             play: {
                 guard let firstSong = songs.first else { return }
-                store.play(song: firstSong, in: songs)
+                store.play(song: firstSong, in: songs, shuffle: false)
             },
             shuffle: {
                 guard let randomSong = songs.randomElement() else { return }

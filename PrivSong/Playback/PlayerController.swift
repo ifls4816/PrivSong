@@ -265,6 +265,9 @@ final class PlayerController: ObservableObject {
         }
 
         let shouldShuffle = shuffle ?? isShuffleEnabled
+        if shuffle != nil {
+            repeatMode = .none
+        }
         isShuffleEnabled = shouldShuffle
         restoredQueueIndex = nil
         if shouldShuffle {
@@ -2025,7 +2028,9 @@ enum RepeatMode: String, Codable, Sendable {
 
     var iconName: String {
         switch self {
-        case .none, .all:
+        case .none:
+            "list.number"
+        case .all:
             "repeat"
         case .one:
             "repeat.1"

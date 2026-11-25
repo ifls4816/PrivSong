@@ -565,7 +565,7 @@ final class CarPlayCoordinator: NSObject {
             ) { [weak self] _ in
                 Task { @MainActor in
                     guard let first = songs.first else { return }
-                    self?.store.play(song: first, in: songs)
+                    self?.store.play(song: first, in: songs, shuffle: false)
                     self?.showNowPlayingAfterPlaybackStarts()
                 }
             },
