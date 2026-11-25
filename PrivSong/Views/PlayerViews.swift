@@ -432,7 +432,7 @@ struct NowPlayingView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("下一首")
 
-            PlaybackModeMenu(width: 36, height: 44)
+            PlaybackModeButton(width: 36, height: 44)
         }
         .frame(width: width)
         .foregroundStyle(.primary)
@@ -1277,7 +1277,7 @@ struct QueuePlayerView: View {
                     .foregroundStyle(.primary)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                PlaybackModeMenu(width: 32, height: 30)
+                PlaybackModeButton(width: 32, height: 30)
 
                 Button {
                     player.clearUpcomingQueue()
@@ -1373,7 +1373,7 @@ struct QueuePlayerView: View {
     }
 }
 
-private struct PlaybackModeMenu: View {
+private struct PlaybackModeButton: View {
     @EnvironmentObject private var player: PlayerController
     let width: CGFloat
     let height: CGFloat
@@ -1381,27 +1381,11 @@ private struct PlaybackModeMenu: View {
     var body: some View {
         let isShuffleEnabled = player.isShuffleEnabled
         let repeatMode = player.repeatMode
-        let icon = isShuffleEnabled && repeatMode == .none ? "shuffle" : repeatMode.iconName
+        let isShuffling = isShuffleEnabled && repeatMode == .none
+        let icon = isShuffling ? "shuffle" : repeatMode.iconName
+        let modeLabel = isShuffling ? "随机播放" : repeatMode.accessibilityValue
 
-        return Menu {
-            Toggle(isOn: Binding(
-                get: { player.isShuffleEnabled },
-                set: { enabled in
-                    if player.isShuffleEnabled != enabled { player.toggleShuffle() }
-                }
-            )) {
-                Label("随机播放", systemImage: "shuffle")
-            }
-
-            Picker("循环播放", selection: Binding(
-                get: { player.repeatMode },
-                set: { player.setRepeatMode($0) }
-            )) {
-                Text("关闭循环").tag(RepeatMode.none)
-                Text("列表循环").tag(RepeatMode.all)
-                Text("单曲循环").tag(RepeatMode.one)
-            }
-        } label: {
+        return Button(action: player.cyclePlaybackMode) {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .semibold))
                 .frame(width: width, height: height)
@@ -1410,7 +1394,8 @@ private struct PlaybackModeMenu: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("播放模式")
-        .accessibilityValue("随机\(isShuffleEnabled ? "开" : "关")，循环\(repeatMode.accessibilityValue)")
+        .accessibilityValue(modeLabel)
+        .accessibilityHint("切换到下一个播放模式")
     }
 }
 
@@ -1435,11 +1420,11 @@ private extension RepeatMode {
     var accessibilityValue: String {
         switch self {
         case .none:
-            return "关"
+            return "顺序播放"
         case .all:
-            return "全部重复"
+            return "列表循环"
         case .one:
-            return "单曲重复"
+            return "单曲循环"
         }
     }
 }

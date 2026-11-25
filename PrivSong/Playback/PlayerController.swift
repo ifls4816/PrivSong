@@ -338,7 +338,7 @@ final class PlayerController: ObservableObject {
         playRelative(offset: -1, wrap: repeatMode == .all)
     }
 
-    func toggleShuffle() {
+    private func toggleShuffle() {
         let reference = currentSong ?? restoredSong
         if isShuffleEnabled {
             if let originalQueue = queueBeforeShuffle {
@@ -414,9 +414,18 @@ final class PlayerController: ObservableObject {
         applyActiveQueue(moved.map(\.song), entries: moved)
     }
 
-    func setRepeatMode(_ mode: RepeatMode) {
-        guard repeatMode != mode else { return }
-        repeatMode = mode
+    func cyclePlaybackMode() {
+        let nextRepeatMode: RepeatMode
+        switch (repeatMode, isShuffleEnabled) {
+        case (.none, false): nextRepeatMode = .all
+        case (.all, _): nextRepeatMode = .one
+        case (.one, _), (.none, true): nextRepeatMode = .none
+        }
+        let enablesShuffle = repeatMode == .one
+        if isShuffleEnabled != enablesShuffle {
+            toggleShuffle()
+        }
+        repeatMode = nextRepeatMode
         persistQueueSnapshot()
         syncRemoteCommandAvailability()
     }

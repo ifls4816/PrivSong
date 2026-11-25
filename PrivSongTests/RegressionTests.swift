@@ -5,6 +5,26 @@ import XCTest
 
 final class RegressionTests: XCTestCase {
     @MainActor
+    func testPlaybackModeCyclesThroughRepeatAndShuffle() throws {
+        let player = PlayerController()
+        player.addToQueueEnd(try song("first"))
+        player.addToQueueEnd(try song("second"))
+
+        player.cyclePlaybackMode()
+        XCTAssertEqual(player.repeatMode, .all)
+        XCTAssertFalse(player.isShuffleEnabled)
+        player.cyclePlaybackMode()
+        XCTAssertEqual(player.repeatMode, .one)
+        XCTAssertFalse(player.isShuffleEnabled)
+        player.cyclePlaybackMode()
+        XCTAssertEqual(player.repeatMode, .none)
+        XCTAssertTrue(player.isShuffleEnabled)
+        player.cyclePlaybackMode()
+        XCTAssertEqual(player.repeatMode, .none)
+        XCTAssertFalse(player.isShuffleEnabled)
+    }
+
+    @MainActor
     func testUpcomingTracksKeepTheirEntryIDsWhenMovedInEitherDirection() throws {
         let player = PlayerController()
         let repeated = try song("repeated")
